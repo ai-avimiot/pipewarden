@@ -1,0 +1,70 @@
+name: "NFW Demo: Container Mode"
+
+on:
+  push:
+    paths:
+      - 'demo-nodejs/**'
+      - 'container/**'
+      - 'proxy/**'
+      - '.github/workflows/demo-nfw-container.yml'
+  pull_request:
+    paths:
+      - 'demo-nodejs/**'
+  workflow_dispatch:
+
+env:
+  NFW_IMAGE: ghcr.io/${{ github.repository }}/nfw:latest
+  NFW_PROXY_IMAGE: ghcr.io/${{ github.repository }}/nfw-proxy:latest
+  NFW_RUNNER_IMAGE: ghcr.io/${{ github.repository }}/nfw-runner:latest
+
+jobs:
+  container-mode:
+    name: "Container mode (act + transparent proxy)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # ============================================================================
+      # STANDARD CI SETUP (same as any normal workflow)
+      # ============================================================================
+      
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        # Standard step: Check out your code
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        # Standard step: Authenticate to pull PipeWarden container images
+
+      # ============================================================================
+      # NFW CONTAINER MODE (runs your entire workflow in a monitored network)
+      # ============================================================================
+      
+      - name: "🔒 Run CI commands in monitored container network"
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /tmp:/tmp \
+            -v "${{ github.workspace }}:${{ github.workspace }}" \
+            -v "$(dirname $GITHUB_STEP_SUMMARY):$(dirname $GITHUB_STEP_SUMMARY)" \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            -e GITHUB_WORKSPACE="${{ github.workspace }}" \
+            -e GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY}" \
+            -e GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            -e INPUT_PIPELINE_CMD="apt-get update -qq && apt-get install -y -qq nodejs npm curl && cd demo-nodejs && npm install && npm test && npm run build && curl -s https://httpbin.org/ip" \
+            -e INPUT_POLICY_FILE="${{ github.workspace }}/demo-nodejs/network-policy.yml" \
+            -e INPUT_MODE=monitor \
+            -e NFW_PROXY_IMAGE="${NFW_PROXY_IMAGE}" \
+            "$NFW_IMAGE"
+        # PipeWarden step: Runs your CI commands inside a monitored Docker network
+        # - Executes commands in an ubuntu:22.04 container on monitored network
+        # - Creates isolated Docker network with transparent proxy as gateway
+        # - All HTTP/HTTPS traffic is automatically routed through the proxy
+        # - Generates network monitoring report after commands complete
+        # - Cleanup happens automatically when container exits

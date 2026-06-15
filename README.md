@@ -1,0 +1,305 @@
+# PipeWarden
+
+[![Tests](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml/badge.svg)](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**See every outbound connection your CI pipeline makes. Block the ones it shouldn't.**
+
+Your build pipeline makes dozens of network calls you never see — package registries, CDNs, telemetry endpoints, post-install scripts phoning home. A compromised dependency can exfiltrate your secrets during `npm install` and you'd never know.
+
+PipeWarden is the missing security layer between dependency scanning and production. It monitors **actual network behavior at build time** — the blind spot that static analysis, SCA, and provenance tools can't cover.
+
+## Table of contents
+
+- [What PipeWarden catches that other tools don't](#what-pipewarden-catches-that-other-tools-dont)
+- [What PipeWarden is (and isn't)](#what-pipewarden-is-and-isnt)
+- [Key benefits](#key-benefits)
+- [Quick start](#quick-start)
+  - [60-second install](#60-second-install)
+  - [1. Discover — see what your pipeline talks to](#1-discover--see-what-your-pipeline-talks-to)
+  - [2. Review — tune the generated policy](#2-review--tune-the-generated-policy)
+  - [3. Enforce — block unauthorized traffic](#3-enforce--block-unauthorized-traffic)
+- [How it works](#how-it-works)
+- [Report output](#report-output)
+  - [GitHub Security tab integration](#github-security-tab-integration)
+- [Compliance](#compliance)
+- [OWASP CI/CD Top 10 coverage](#owasp-cicd-top-10-coverage)
+- [Modes](#modes)
+- [Configuration reference](#configuration-reference)
+- [Container mode](#container-mode)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## What PipeWarden catches that other tools don't
+
+| Threat | SCA (Snyk, Dependabot) | Provenance (Sigstore, SLSA) | **PipeWarden** |
+|--------|:-----:|:-----:|:-----:|
+| Compromised package phones home during install | | | :white_check_mark: **Blocked** |
+| Build step exfiltrates `GITHUB_TOKEN` to attacker server | | | :white_check_mark: **Blocked** |
+| Dependency downloads second-stage payload | | | :white_check_mark: **Blocked** |
+| Cryptominer injected via post-install script | | | :white_check_mark: **Blocked** |
+| DNS exfiltration of secrets during build | | | :white_check_mark: **Blocked** |
+| Known CVE in a dependency | :white_check_mark: Fixed | | |
+| Artifact tampering after build | | :white_check_mark: Detected | |
+
+> :rotating_light: **Every major CI/CD supply chain attack** — SolarWinds, Codecov, event-stream, xz-utils, tj-actions/changed-files — involved unauthorized network activity that PipeWarden would have detected.
+
+## What PipeWarden is (and isn't)
+
+**PipeWarden is a build-time network firewall.** It answers: *"What network connections did my build actually make, and were they all expected?"*
+
+| PipeWarden is | PipeWarden is not |
+|--------|-----------|
+| Runtime network monitoring during CI/CD builds | A dependency scanner (use Snyk, Socket, Dependabot) |
+| An allowlist-based egress firewall for pipelines | A SAST/DAST tool (use CodeQL, Semgrep) |
+| A network audit trail for compliance (SOC 2, PCI DSS, NIS2) | A container image scanner (use Trivy, Grype) |
+| A supply chain attack detector for zero-days SCA can't find | A production runtime security tool |
+
+PipeWarden **complements** your existing security stack — it covers the layer between "scan dependencies" and "verify the artifact."
+
+## Key benefits
+
+- **Your data stays in GitHub** — no SaaS dashboard, no third-party accounts, no data leaving your runner. Reports go to Job Summary, artifacts, and optionally the GitHub Security tab via SARIF
+- **No kernel access required** — unlike eBPF-based tools, PipeWarden works on any GitHub-hosted runner out of the box. No privileged containers, no agent installs
+- **Deep inspection** — transparent proxy sees full HTTP/HTTPS request/response content, TLS certificate chains, and DNS queries. Not just destination IPs
+- **Drop-in setup** — one step. Teardown is automatic, even if your job fails
+- **Policy as code** — define allowed destinations in a simple YAML file. Monitor first, enforce when ready
+
+## Quick start
+
+### 60-second install
+
+The simplest setup is a single action — teardown happens automatically when your job ends, even on failure:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+        with:
+          mode: monitor   # discover first; switch to enforce once stable
+
+      # --- your normal workflow, unchanged ---
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm test
+```
+
+That's it. The report lands in your job summary and in `/tmp/report/`.
+
+Pin to a specific release with `@v1.0.0` instead of `@v1`. The `@v1` tag tracks the latest 1.x.y patch automatically.
+
+### 1. Discover — see what your pipeline talks to
+
+The default action above runs in **monitor** mode and writes a policy file you can commit. After the run completes you'll find:
+
+- **Job Summary** — full connection report with destinations, TLS info, and IP ownership
+- **Build artifacts** — `network-report` contains `report.json`, `summary.md`, and an auto-generated `network-policy.yml`
+- **Artifact: `nfw-generated-network-policy`** — the ready-to-commit policy file (also uploaded automatically)
+
+If you need manual control of teardown (for example to gate other steps on the report), use the two-step variant:
+
+```yaml
+      - name: PipeWarden Setup
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        with:
+          mode: monitor
+
+      # --- your normal workflow steps, unchanged ---
+
+      - name: PipeWarden Teardown
+        if: always()
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: network-report
+          path: /tmp/report/
+```
+
+### 2. Review — tune the generated policy
+
+Download `network-policy.yml` from the build artifacts. It allows everything your build contacted. Review it, remove anything unexpected, and commit it to your repo:
+
+```yaml
+version: "1"
+mode: monitor
+
+rules:
+  - name: "npm registry"
+    allow:
+      domains:
+        - "registry.npmjs.org"
+        - "*.npmjs.org"
+      ports: [443]
+      protocols: [https]
+
+  - name: "GitHub"
+    allow:
+      domains:
+        - "*.github.com"
+        - "*.githubusercontent.com"
+      ports: [443]
+      protocols: [https]
+```
+
+### 3. Enforce — block unauthorized traffic
+
+Once the policy is stable, just point PipeWarden at it. Enforce is the default — connections outside the allowlist are blocked and the workflow fails:
+
+```yaml
+      - name: PipeWarden Setup
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        with:
+          policy-file: network-policy.yml
+```
+
+Reports appear in the GitHub Job Summary and as downloadable artifacts.
+
+## How it works
+
+PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions runner. iptables redirects all outbound HTTP/HTTPS traffic through the proxy — no `HTTP_PROXY` env vars needed, so even tools that ignore proxy settings are captured.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  GitHub Actions Runner                                       │
+│                                                              │
+│  Your workflow steps:                                        │
+│    npm install ──┐                                           │
+│    pip install ──┤── iptables ──► mitmproxy ──► policy ──► web
+│    curl / wget ──┤   (transparent redirect)                  │
+│    node https  ──┤                                           │
+│    go net/http ──┘                                           │
+│                                                              │
+│    DNS queries ───► PipeWarden DNS server ──► log + forward  │
+│    Other TCP   ───► iptables LOG ──────────► metadata logged │
+│                                                              │
+│  Output: connections.jsonl → report → Job Summary            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Report output
+
+PipeWarden generates detailed reports for every run:
+
+| File | Format | Contents |
+|------|--------|----------|
+| `report.json` | JSON | Full machine-readable report with all connection details |
+| `summary.txt` | Text | Human-readable summary for CI logs |
+| `summary.md` | Markdown | GitHub Job Summary with tables and collapsible sections |
+| `nfw.sarif` | SARIF 2.1.0 | Findings for GitHub Security tab (blocked connections, cert warnings) |
+
+Each report includes:
+
+- **Per-destination breakdown** — domain, port, protocol, request count, bytes transferred
+- **TLS certificate info** — issuer CA, validity, warnings for untrusted/self-signed certs
+- **IP enrichment** — ASN owner, country, reverse DNS (via Team Cymru)
+- **DNS query log** — every domain lookup with resolved IPs
+- **Policy analysis** — which rules matched, which are unused, suggested allowlist YAML for unmatched destinations
+
+### GitHub Security tab integration
+
+Upload the SARIF report to surface blocked connections as code scanning alerts:
+
+```yaml
+      - name: Upload to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/report/nfw.sarif
+          category: pipewarden
+```
+
+Findings appear under **Security > Code scanning** with severity levels, persist across runs, and integrate with GitHub's alert management.
+
+## Compliance
+
+PipeWarden generates the kind of continuous, immutable audit trail that compliance frameworks require:
+
+| Framework | What PipeWarden provides |
+|-----------|------------------|
+| **SOC 2** | Network activity logs for build process audit trail |
+| **PCI DSS 4.0** | Continuous monitoring evidence (CI/CD is now explicitly in-scope) |
+| **NIST 800-53** | Satisfies AU (Audit), SC (Comms Protection), SI (System Integrity) controls |
+| **EU NIS2** | Supply chain security measures with audit capability |
+
+## OWASP CI/CD Top 10 coverage
+
+PipeWarden directly addresses 5 of the [OWASP Top 10 CI/CD Security Risks](https://owasp.org/www-project-top-10-ci-cd-security-risks/):
+
+| Risk | How PipeWarden helps |
+|------|--------------|
+| **SEC-3:** Dependency Chain Abuse | Detects unexpected outbound connections during package install |
+| **SEC-4:** Poisoned Pipeline Execution | Blocks anomalous network calls from compromised workflow steps |
+| **SEC-6:** Insufficient Credential Hygiene | Detects secret exfiltration to unauthorized endpoints |
+| **SEC-8:** Ungoverned 3rd Party Services | Enforces allowlist of approved network destinations |
+| **SEC-10:** Insufficient Logging/Visibility | Complete network-level audit trail for every build |
+
+## Modes
+
+### Monitor (default)
+
+Logs all connections. Traffic outside the allowlist is flagged as `would_block` but still allowed through. Use this to discover what your pipeline connects to before writing a strict policy.
+
+### Enforce
+
+Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`. The workflow fails if any connections are blocked.
+
+## Configuration reference
+
+### Inputs (setup)
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `policy-file` | `network-policy.yml` | Path to network policy YAML |
+| `mode` | `enforce` | `enforce` (block + fail) or `monitor` (log only) |
+| `proxy-port` | `8080` | Port for the proxy to listen on |
+| `dns` | `true` | Enable DNS interception |
+| `transparent` | `true` | Enable iptables transparent proxy |
+
+### Outputs (teardown)
+
+| Output | Description |
+|--------|-------------|
+| `report-path` | Path to the generated report directory |
+| `blocked-count` | Number of blocked/would-block connections |
+| `status` | `pass` or `fail` |
+
+## Container mode
+
+For full raw TCP data inspection, PipeWarden can also run your workflow inside an isolated Docker network. See [`examples/container-mode-workflow.yml`](examples/container-mode-workflow.yml) and the [detailed docs](native-proxy/README.md).
+
+| | Native Proxy (recommended) | Container Mode |
+|--|---------------------------|----------------|
+| Setup time | ~3-5s (cached) | ~58s |
+| Docker required | No | Yes |
+| Traffic coverage | HTTP/HTTPS + DNS + TCP metadata | All TCP + DNS |
+| Workflow changes | Add 1 step | Wrapper workflow |
+
+## Development
+
+```bash
+git clone https://github.com/ai-avimiot/pipewarden.git
+cd pipewarden
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements/requirements.txt
+pytest
+```
+
+Test suite includes property-based tests via [Hypothesis](https://hypothesis.readthedocs.io/).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should be reported via [GitHub Security Advisories](https://github.com/ai-avimiot/pipewarden/security/advisories/new) — see [SECURITY.md](SECURITY.md).
+
+## License
+
+MIT

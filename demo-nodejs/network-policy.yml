@@ -1,0 +1,34 @@
+version: "1"
+mode: monitor
+
+rules:
+  - name: "Application API"
+    allow:
+      domains:
+        - "httpbin.org"
+      ports: [443]
+      protocols: [https]
+
+  - name: "GitHub"
+    allow:
+      domains:
+        - "api.github.com"
+        - "github.com"
+        - "*.githubusercontent.com"
+      ports: [443]
+      protocols: [https]
+
+  - name: "Node.js setup"
+    allow:
+      domains:
+        - "deb.nodesource.com"
+      ports: [443]
+      protocols: [https]
+
+  - name: "Ubuntu packages"
+    allow:
+      domains:
+        - "archive.ubuntu.com"
+        - "security.ubuntu.com"
+      ports: [80]
+      protocols: [http]

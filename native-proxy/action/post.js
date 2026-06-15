@@ -1,0 +1,96 @@
+// post.js — Runs teardown.sh automatically after the job completes.
+// GitHub Actions guarantees this runs even if earlier steps fail (post-if: always()).
+const { execSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
+const actionDir = __dirname;
+const nativeProxyDir = path.resolve(actionDir, "..");
+
+const env = {
+  ...process.env,
+  INPUT_ACTION_PATH: nativeProxyDir,
+};
+
+let teardownExitCode = 0;
+try {
+  execSync(`bash ${path.join(nativeProxyDir, "teardown.sh")}`, {
+    env,
+    stdio: "inherit",
+  });
+} catch (err) {
+  teardownExitCode = err.status || 1;
+  // Don't fail the post-action itself — just warn
+  console.log(`::warning::NFW teardown exited with code ${teardownExitCode}`);
+}
+
+// Read outputs from teardown and ensure they're set as action outputs
+const reportDir = "/tmp/report";
+const githubOutput = process.env.GITHUB_OUTPUT;
+
+if (githubOutput && fs.existsSync(reportDir)) {
+  try {
+    const reportJson = path.join(reportDir, "report.json");
+    if (fs.existsSync(reportJson)) {
+      const report = JSON.parse(fs.readFileSync(reportJson, "utf8"));
+      const blockedCount = report.blocked_connections || 0;
+      const mode = process.env.NFW_MODE || "monitor";
+      const status = (mode === "enforce" && blockedCount > 0) ? "fail" : "pass";
+      
+      // Append outputs (teardown.sh may have already written them, but ensure they're there)
+      const outputLines = [
+        `report-path=${reportDir}`,
+        `blocked-count=${blockedCount}`,
+        `status=${status}`
+      ];
+      
+      fs.appendFileSync(githubOutput, outputLines.join("\n") + "\n");
+      
+      console.log(`NFW outputs: status=${status}, blocked=${blockedCount}, report=${reportDir}`);
+    }
+  } catch (e) {
+    console.log(`::warning::Could not read report outputs: ${e.message}`);
+  }
+}
+
+// Display monitoring results
+console.log("\n📊 === Network Monitoring Results ===\n");
+
+const logDir = process.env.NFW_LOG_DIR || "/tmp/monitor-logs";
+const connLog = path.join(logDir, "connections.jsonl");
+if (fs.existsSync(connLog)) {
+  console.log("Connection log (first 20 entries):");
+  try {
+    const lines = fs.readFileSync(connLog, "utf8").split("\n").filter(l => l.trim()).slice(0, 20);
+    if (lines.length > 0) {
+      lines.forEach(line => console.log(line));
+    } else {
+      console.log("(empty)");
+    }
+  } catch (e) {
+    console.log("(could not read log)");
+  }
+} else {
+  console.log("Connection log: (not found)");
+}
+
+console.log("\n");
+
+const summaryTxt = path.join(reportDir, "summary.txt");
+if (fs.existsSync(summaryTxt)) {
+  console.log("Network monitoring report:");
+  try {
+    console.log(fs.readFileSync(summaryTxt, "utf8"));
+  } catch (e) {
+    console.log("(could not read report)");
+  }
+} else {
+  console.log("Report: (not generated)");
+}
+
+console.log("\n📤 Report available at: /tmp/report/");
+console.log("💡 Tip: Use actions/upload-artifact@v7 to save the report\n");
+
+// Exit with 0 so the post-action doesn't fail the job
+// The teardown script's exit code is informational only
+process.exit(0);

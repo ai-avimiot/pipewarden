@@ -1,0 +1,38 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Native proxy (transparent)
+        - Native proxy (env-var-only)
+        - Container mode
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Workflow YAML snippet or minimal reproduction
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste proxy logs, report output, or error messages
+      render: text
+  - type: input
+    id: runner
+    attributes:
+      label: Runner
+      placeholder: "e.g., ubuntu-latest, ubuntu-24.04"

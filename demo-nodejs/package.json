@@ -1,0 +1,12 @@
+{
+  "name": "demo-nodejs",
+  "version": "1.0.0",
+  "description": "Node.js demo for CI/CD Network Monitor",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo 'Tests pass' && exit 0",
+    "build": "node index.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

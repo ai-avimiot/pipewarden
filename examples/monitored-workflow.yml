@@ -1,0 +1,46 @@
+# Same CI workflow — now with network monitoring.
+# PipeWarden monitors all HTTP/HTTPS traffic via transparent proxy + DNS interception.
+# Your existing steps work without changes.
+name: CI (Monitored)
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Optional: cache mitmproxy pip install for faster setup
+      - uses: actions/cache@v5
+        with:
+          path: /root/.cache/pip
+          key: nfw-pip-${{ runner.os }}
+
+      # ── Start network monitor ──────────────────────────
+      - name: PipeWarden Setup
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        with:
+          policy-file: network-policy.yml
+          mode: monitor
+
+      # ── Your existing steps (unchanged) ────────────────
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      # ── Stop monitor and get report ────────────────────
+      - name: PipeWarden Teardown
+        if: always()
+        id: nfw
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: network-report
+          path: /tmp/report/

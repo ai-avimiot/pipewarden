@@ -1,0 +1,38 @@
+name: "PipeWarden - Native Proxy"
+description: "Set up native proxy firewall with automatic teardown via post-action. Teardown runs automatically at job end (even on failure) - no manual teardown step needed."
+
+inputs:
+  policy-file:
+    description: "Path to network-policy.yml defining allowed destinations"
+    required: false
+    default: "network-policy.yml"
+  mode:
+    description: "monitor (log only) or enforce (block unauthorized traffic)"
+    required: false
+    default: "enforce"
+  proxy-port:
+    description: "Port for mitmproxy to listen on"
+    required: false
+    default: "8080"
+  dns:
+    description: "Enable DNS interception (stops systemd-resolved, runs PipeWarden DNS server on 127.0.0.53:53)"
+    required: false
+    default: "true"
+  transparent:
+    description: "Enable iptables transparent proxy (true) or use env-var-only mode (false)"
+    required: false
+    default: "true"
+
+outputs:
+  report-path:
+    description: "Path to the generated report directory"
+  blocked-count:
+    description: "Number of blocked connections"
+  status:
+    description: "pass or fail (fail when mode is enforce and blocked connections > 0)"
+
+runs:
+  using: "node20"
+  main: "main.js"
+  post: "post.js"
+  post-if: "always()"

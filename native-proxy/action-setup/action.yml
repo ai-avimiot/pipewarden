@@ -1,0 +1,38 @@
+name: "PipeWarden - Native Proxy Setup"
+description: "Set up native proxy firewall on the GitHub Actions runner using mitmproxy as a background process"
+
+inputs:
+  policy-file:
+    description: "Path to network-policy.yml defining allowed destinations"
+    required: false
+    default: "network-policy.yml"
+  mode:
+    description: "monitor (log only) or enforce (block unauthorized traffic)"
+    required: false
+    default: "enforce"
+  proxy-port:
+    description: "Port for mitmproxy to listen on"
+    required: false
+    default: "8080"
+  dns:
+    description: "Enable DNS interception (stops systemd-resolved, runs PipeWarden DNS server on 127.0.0.53:53)"
+    required: false
+    default: "true"
+  transparent:
+    description: "Enable iptables transparent proxy (true) or use env-var-only mode (false)"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run native proxy setup
+      shell: bash
+      run: bash ${{ github.action_path }}/../setup.sh
+      env:
+        INPUT_POLICY_FILE: ${{ inputs.policy-file }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_PROXY_PORT: ${{ inputs.proxy-port }}
+        INPUT_DNS: ${{ inputs.dns }}
+        INPUT_TRANSPARENT: ${{ inputs.transparent }}
+        INPUT_ACTION_PATH: ${{ github.action_path }}/..

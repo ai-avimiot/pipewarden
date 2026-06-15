@@ -1,0 +1,25 @@
+version: "1"
+mode: monitor
+
+rules:
+  - name: "npm registry"
+    allow:
+      domains:
+        - "registry.npmjs.org"
+        - "*.npmjs.org"
+      ports: [443]
+      protocols: [https]
+
+  - name: "GitHub"
+    allow:
+      domains:
+        - "*.github.com"
+        - "*.githubusercontent.com"
+      ports: [443]
+      protocols: [https]
+
+  - name: "DNS"
+    allow:
+      domains: ["*"]
+      ports: [53]
+      protocols: [tcp, udp]

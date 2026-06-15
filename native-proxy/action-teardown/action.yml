@@ -1,0 +1,37 @@
+name: "PipeWarden - Native Proxy Teardown"
+description: "Stop native proxy firewall, generate reports, and clean up. Use with if: always() to ensure teardown runs even on failure."
+
+outputs:
+  report-path:
+    description: "Path to the generated report directory"
+    value: ${{ steps.teardown.outputs.report-path }}
+  blocked-count:
+    description: "Number of blocked connections"
+    value: ${{ steps.teardown.outputs.blocked-count }}
+  status:
+    description: "pass or fail (fail when mode is enforce and blocked connections > 0)"
+    value: ${{ steps.teardown.outputs.status }}
+  generated-policy-path:
+    description: "Path to the auto-generated network-policy.yml (present in discovery mode when no policy-file was supplied)"
+    value: ${{ steps.teardown.outputs.generated-policy-path }}
+  sarif-path:
+    description: "Path to the SARIF file for GitHub Security tab integration"
+    value: ${{ steps.teardown.outputs.sarif-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run native proxy teardown
+      id: teardown
+      shell: bash
+      run: bash ${{ github.action_path }}/../teardown.sh
+      env:
+        INPUT_ACTION_PATH: ${{ github.action_path }}/..
+
+    - name: Upload generated network policy as artifact
+      if: steps.teardown.outputs.generated-policy-path != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: nfw-generated-network-policy
+        path: ${{ steps.teardown.outputs.generated-policy-path }}
+        if-no-files-found: ignore

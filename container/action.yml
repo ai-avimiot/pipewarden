@@ -1,0 +1,50 @@
+name: "PipeWarden"
+description: "Monitor and control network connections in CI/CD pipelines using transparent proxying"
+
+inputs:
+  workflow-file:
+    description: "Path to a GitHub Actions workflow YAML to execute via nektos/act inside the monitored network"
+    required: false
+  pipeline-command:
+    description: "Shell command to run inside a monitored container (alternative to workflow-file)"
+    required: false
+  policy-file:
+    description: "Path to network-policy.yml defining allowed destinations"
+    required: false
+    default: "network-policy.yml"
+  mode:
+    description: "monitor (log only) or enforce (block unauthorized traffic)"
+    required: false
+    default: "enforce"
+  post-comment:
+    description: "Post the network report as a comment on the pull request or issue"
+    required: false
+    default: "false"
+  github-token:
+    description: "GitHub token used to post the PR/issue comment (required when post-comment is true)"
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  report-path:
+    description: "Path to the generated report directory"
+  blocked-count:
+    description: "Number of blocked connections"
+  status:
+    description: "pass or fail"
+  generated-policy-path:
+    description: "Path to the auto-generated network-policy.yml (present in discovery mode when no policy-file was supplied)"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run monitored pipeline
+      shell: bash
+      run: bash ${{ github.action_path }}/entrypoint.sh
+      env:
+        INPUT_PIPELINE_CMD: ${{ inputs.pipeline-command }}
+        INPUT_WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        INPUT_POLICY_FILE: ${{ inputs.policy-file }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_POST_COMMENT: ${{ inputs.post-comment }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}

@@ -1,0 +1,49 @@
+# Container mode — runs your CI commands inside an isolated Docker network
+# with transparent proxying. All traffic is captured via iptables.
+name: CI (Container Mode)
+
+on: [push, pull_request]
+
+env:
+  NFW_IMAGE: ghcr.io/${{ github.repository }}/nfw:latest
+  NFW_PROXY_IMAGE: ghcr.io/${{ github.repository }}/nfw-proxy:latest
+  NFW_RUNNER_IMAGE: ghcr.io/${{ github.repository }}/nfw-runner:latest
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run monitored workflow
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /tmp:/tmp \
+            -v "${{ github.workspace }}:${{ github.workspace }}" \
+            -v "$(dirname $GITHUB_STEP_SUMMARY):$(dirname $GITHUB_STEP_SUMMARY)" \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            -e GITHUB_WORKSPACE="${{ github.workspace }}" \
+            -e GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY}" \
+            -e GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            -e INPUT_WORKFLOW_FILE="${{ github.workspace }}/.github/workflows/ci.yml" \
+            -e INPUT_POLICY_FILE="${{ github.workspace }}/network-policy.yml" \
+            -e INPUT_MODE=monitor \
+            -e NFW_PROXY_IMAGE="${NFW_PROXY_IMAGE}" \
+            -e NFW_RUNNER_IMAGE="${NFW_RUNNER_IMAGE}" \
+            "$NFW_IMAGE"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: network-monitor-report
+          path: /tmp/report/

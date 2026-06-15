@@ -1,0 +1,12 @@
+.git
+.github
+.hypothesis
+.pytest_cache
+.venv
+.kiro
+__pycache__
+**/__pycache__
+*.pyc
+tests/
+LICENSE
+README.md

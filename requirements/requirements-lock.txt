@@ -1,0 +1,12 @@
+# Auto-generated hash-pinned lock file for development/CI dependencies.
+# DO NOT edit manually.
+#
+# To regenerate this file with current hashes, run:
+#   ./scripts/update-lock-files.sh
+#
+# Install with:
+#   pip install --require-hashes -r requirements/requirements-lock.txt
+#
+# When this file contains pinned packages (lines not starting with '#'),
+# CI workflows should use --require-hashes for reproducible, secure installs.
+# Until then, CI falls back to requirements/requirements.txt.
