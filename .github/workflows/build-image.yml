@@ -58,10 +58,10 @@ jobs:
       # nfw (orchestrator) image
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden main image
-        id: meta-nfw
+        id: meta-pipewarden
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=
@@ -69,46 +69,46 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push PipeWarden main image
-        id: build-nfw
+        id: build-pipewarden
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./container/Dockerfile
           push: true
-          tags: ${{ steps.meta-nfw.outputs.tags }}
-          labels: ${{ steps.meta-nfw.outputs.labels }}
+          tags: ${{ steps.meta-pipewarden.outputs.tags }}
+          labels: ${{ steps.meta-pipewarden.outputs.labels }}
           provenance: mode=max
           sbom: true
 
-      - name: Attest build provenance — nfw
+      - name: Attest build provenance — pipewarden
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw
-          subject-digest: ${{ steps.build-nfw.outputs.digest }}
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden
+          subject-digest: ${{ steps.build-pipewarden.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate SBOM — nfw
-        run: syft "${{ env.REGISTRY }}/${{ env.REPO }}/nfw@${{ steps.build-nfw.outputs.digest }}" -o spdx-json=sbom-nfw.spdx.json
+      - name: Generate SBOM — pipewarden
+        run: syft "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden@${{ steps.build-pipewarden.outputs.digest }}" -o spdx-json=sbom-pipewarden.spdx.json
 
-      - name: Attest SBOM — nfw
+      - name: Attest SBOM — pipewarden
         uses: actions/attest-sbom@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw
-          subject-digest: ${{ steps.build-nfw.outputs.digest }}
-          sbom-path: sbom-nfw.spdx.json
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden
+          subject-digest: ${{ steps.build-pipewarden.outputs.digest }}
+          sbom-path: sbom-pipewarden.spdx.json
           push-to-registry: true
 
-      - name: Cosign sign — nfw
-        run: cosign sign --yes "${{ env.REGISTRY }}/${{ env.REPO }}/nfw@${{ steps.build-nfw.outputs.digest }}"
+      - name: Cosign sign — pipewarden
+        run: cosign sign --yes "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden@${{ steps.build-pipewarden.outputs.digest }}"
 
       # ----------------------------------------------------------------
       # nfw-proxy image
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden proxy image
-        id: meta-nfw-proxy
+        id: meta-pipewarden-proxy
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-proxy
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=
@@ -116,46 +116,46 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push PipeWarden proxy image
-        id: build-nfw-proxy
+        id: build-pipewarden-proxy
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./proxy/Dockerfile
           push: true
-          tags: ${{ steps.meta-nfw-proxy.outputs.tags }}
-          labels: ${{ steps.meta-nfw-proxy.outputs.labels }}
+          tags: ${{ steps.meta-pipewarden-proxy.outputs.tags }}
+          labels: ${{ steps.meta-pipewarden-proxy.outputs.labels }}
           provenance: mode=max
           sbom: true
 
-      - name: Attest build provenance — nfw-proxy
+      - name: Attest build provenance — pipewarden-proxy
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-proxy
-          subject-digest: ${{ steps.build-nfw-proxy.outputs.digest }}
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy
+          subject-digest: ${{ steps.build-pipewarden-proxy.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate SBOM — nfw-proxy
-        run: syft "${{ env.REGISTRY }}/${{ env.REPO }}/nfw-proxy@${{ steps.build-nfw-proxy.outputs.digest }}" -o spdx-json=sbom-nfw-proxy.spdx.json
+      - name: Generate SBOM — pipewarden-proxy
+        run: syft "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy@${{ steps.build-pipewarden-proxy.outputs.digest }}" -o spdx-json=sbom-pipewarden-proxy.spdx.json
 
-      - name: Attest SBOM — nfw-proxy
+      - name: Attest SBOM — pipewarden-proxy
         uses: actions/attest-sbom@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-proxy
-          subject-digest: ${{ steps.build-nfw-proxy.outputs.digest }}
-          sbom-path: sbom-nfw-proxy.spdx.json
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy
+          subject-digest: ${{ steps.build-pipewarden-proxy.outputs.digest }}
+          sbom-path: sbom-pipewarden-proxy.spdx.json
           push-to-registry: true
 
-      - name: Cosign sign — nfw-proxy
-        run: cosign sign --yes "${{ env.REGISTRY }}/${{ env.REPO }}/nfw-proxy@${{ steps.build-nfw-proxy.outputs.digest }}"
+      - name: Cosign sign — pipewarden-proxy
+        run: cosign sign --yes "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy@${{ steps.build-pipewarden-proxy.outputs.digest }}"
 
       # ----------------------------------------------------------------
-      # nfw-runner image
+      # pipewarden-runner image
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden runner image
-        id: meta-nfw-runner
+        id: meta-pipewarden-runner
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-runner
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=
@@ -163,33 +163,33 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push PipeWarden runner image
-        id: build-nfw-runner
+        id: build-pipewarden-runner
         uses: docker/build-push-action@v7
         with:
           context: ./runner
           push: true
-          tags: ${{ steps.meta-nfw-runner.outputs.tags }}
-          labels: ${{ steps.meta-nfw-runner.outputs.labels }}
+          tags: ${{ steps.meta-pipewarden-runner.outputs.tags }}
+          labels: ${{ steps.meta-pipewarden-runner.outputs.labels }}
           provenance: mode=max
           sbom: true
 
-      - name: Attest build provenance — nfw-runner
+      - name: Attest build provenance — pipewarden-runner
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-runner
-          subject-digest: ${{ steps.build-nfw-runner.outputs.digest }}
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner
+          subject-digest: ${{ steps.build-pipewarden-runner.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate SBOM — nfw-runner
-        run: syft "${{ env.REGISTRY }}/${{ env.REPO }}/nfw-runner@${{ steps.build-nfw-runner.outputs.digest }}" -o spdx-json=sbom-nfw-runner.spdx.json
+      - name: Generate SBOM — pipewarden-runner
+        run: syft "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner@${{ steps.build-pipewarden-runner.outputs.digest }}" -o spdx-json=sbom-pipewarden-runner.spdx.json
 
-      - name: Attest SBOM — nfw-runner
+      - name: Attest SBOM — pipewarden-runner
         uses: actions/attest-sbom@v4
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.REPO }}/nfw-runner
-          subject-digest: ${{ steps.build-nfw-runner.outputs.digest }}
-          sbom-path: sbom-nfw-runner.spdx.json
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner
+          subject-digest: ${{ steps.build-pipewarden-runner.outputs.digest }}
+          sbom-path: sbom-pipewarden-runner.spdx.json
           push-to-registry: true
 
-      - name: Cosign sign — nfw-runner
-        run: cosign sign --yes "${{ env.REGISTRY }}/${{ env.REPO }}/nfw-runner@${{ steps.build-nfw-runner.outputs.digest }}"
+      - name: Cosign sign — pipewarden-runner
+        run: cosign sign --yes "${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner@${{ steps.build-pipewarden-runner.outputs.digest }}"

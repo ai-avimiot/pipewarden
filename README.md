@@ -101,7 +101,7 @@ The default action above runs in **monitor** mode and writes a policy file you c
 
 - **Job Summary** — full connection report with destinations, TLS info, and IP ownership
 - **Build artifacts** — `network-report` contains `report.json`, `summary.md`, and an auto-generated `network-policy.yml`
-- **Artifact: `nfw-generated-network-policy`** — the ready-to-commit policy file (also uploaded automatically)
+- **Artifact: `pipewarden-generated-network-policy`** — the ready-to-commit policy file (also uploaded automatically)
 
 If you need manual control of teardown (for example to gate other steps on the report), use the two-step variant:
 
@@ -194,7 +194,7 @@ PipeWarden generates detailed reports for every run:
 | `report.json` | JSON | Full machine-readable report with all connection details |
 | `summary.txt` | Text | Human-readable summary for CI logs |
 | `summary.md` | Markdown | GitHub Job Summary with tables and collapsible sections |
-| `nfw.sarif` | SARIF 2.1.0 | Findings for GitHub Security tab (blocked connections, cert warnings) |
+| `pipewarden.sarif` | SARIF 2.1.0 | Findings for GitHub Security tab (blocked connections, cert warnings) |
 
 Each report includes:
 
@@ -213,7 +213,7 @@ Upload the SARIF report to surface blocked connections as code scanning alerts:
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: /tmp/report/nfw.sarif
+          sarif_file: /tmp/report/pipewarden.sarif
           category: pipewarden
 ```
 

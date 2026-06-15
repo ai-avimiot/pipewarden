@@ -5,9 +5,9 @@ name: CI (Container Mode)
 on: [push, pull_request]
 
 env:
-  NFW_IMAGE: ghcr.io/${{ github.repository }}/nfw:latest
-  NFW_PROXY_IMAGE: ghcr.io/${{ github.repository }}/nfw-proxy:latest
-  NFW_RUNNER_IMAGE: ghcr.io/${{ github.repository }}/nfw-runner:latest
+  PIPEWARDEN_IMAGE: ghcr.io/ai-avimiot/pipewarden:latest
+  PIPEWARDEN_PROXY_IMAGE: ghcr.io/ai-avimiot/pipewarden-proxy:latest
+  PIPEWARDEN_RUNNER_IMAGE: ghcr.io/ai-avimiot/pipewarden-runner:latest
 
 jobs:
   build:
@@ -38,9 +38,9 @@ jobs:
             -e INPUT_WORKFLOW_FILE="${{ github.workspace }}/.github/workflows/ci.yml" \
             -e INPUT_POLICY_FILE="${{ github.workspace }}/network-policy.yml" \
             -e INPUT_MODE=monitor \
-            -e NFW_PROXY_IMAGE="${NFW_PROXY_IMAGE}" \
-            -e NFW_RUNNER_IMAGE="${NFW_RUNNER_IMAGE}" \
-            "$NFW_IMAGE"
+            -e PIPEWARDEN_PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE}" \
+            -e PIPEWARDEN_RUNNER_IMAGE="${PIPEWARDEN_RUNNER_IMAGE}" \
+            "$PIPEWARDEN_IMAGE"
 
       - uses: actions/upload-artifact@v7
         if: always()

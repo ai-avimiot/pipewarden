@@ -196,7 +196,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$(dirname "${GITHUB_OUTPUT}")" ]; then
         echo "generated-policy-path=" >> "${GITHUB_OUTPUT}"
     fi
     # Emit SARIF path for GitHub Security tab integration
-    SARIF_FILE="${REPORT_DIR}/nfw.sarif"
+    SARIF_FILE="${REPORT_DIR}/pipewarden.sarif"
     if [ -f "${SARIF_FILE}" ]; then
         echo "sarif-path=${SARIF_FILE}" >> "${GITHUB_OUTPUT}"
     else
