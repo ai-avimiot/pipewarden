@@ -1,9 +1,11 @@
-# AviMiot PipeWarden
+# Avimiot Pipewarden
 
 [![Tests](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml/badge.svg)](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**AviMiot PipeWarden — see every outbound connection your CI pipeline makes. Block the ones it shouldn't.**
+**Avimiot Pipewarden — see every outbound connection your CI pipeline makes. Block the ones it shouldn't.**
+
+Part of [AI Avimiot](https://github.com/ai-avimiot).
 
 Your build pipeline makes dozens of network calls you never see — package registries, CDNs, telemetry endpoints, post-install scripts phoning home. A compromised dependency can exfiltrate your secrets during `npm install` and you'd never know.
 
