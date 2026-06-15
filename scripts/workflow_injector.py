@@ -54,17 +54,21 @@ _Dumper.add_representer(str, _str_representer)
 NFW_INIT_STEP = {
     "name": "NFW: Setup monitoring",
     "run": (
+        "SUDO=\"\"\n"
+        "if [ \"$(id -u)\" != \"0\" ] && command -v sudo &>/dev/null; then\n"
+        "  SUDO=sudo\n"
+        "fi\n"
         "if ! command -v ip &>/dev/null; then\n"
-        "  apt-get update -qq > /dev/null 2>&1\n"
-        "  apt-get install -y -qq iproute2 > /dev/null 2>&1\n"
+        "  $SUDO apt-get update -qq > /dev/null 2>&1\n"
+        "  $SUDO apt-get install -y -qq iproute2 > /dev/null 2>&1\n"
         "fi\n"
         "if [ -f /ca/ca.pem ]; then\n"
-        "  cp /ca/ca.pem /usr/local/share/ca-certificates/cicd-monitor.crt\n"
-        "  update-ca-certificates > /dev/null 2>&1 || true\n"
+        "  $SUDO cp /ca/ca.pem /usr/local/share/ca-certificates/cicd-monitor.crt\n"
+        "  $SUDO update-ca-certificates > /dev/null 2>&1 || true\n"
         "fi\n"
         "if [ -n \"${PROXY_GATEWAY:-}\" ]; then\n"
-        "  ip route del default 2>/dev/null || true\n"
-        "  ip route add default via \"${PROXY_GATEWAY}\"\n"
+        "  $SUDO ip route del default 2>/dev/null || true\n"
+        "  $SUDO ip route add default via \"${PROXY_GATEWAY}\"\n"
         "fi\n"
         "git config --global --add safe.directory '*' 2>/dev/null || true\n"
     ),
