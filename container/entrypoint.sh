@@ -29,7 +29,7 @@ if [ -f "${POLICY_FILE}" ]; then
 else
     echo "Note: policy file '${POLICY_FILE}' not found — running in discovery mode (monitor all, block nothing)"
 fi
-RUNNER_IMAGE="${NFW_RUNNER_IMAGE:-catthehacker/ubuntu:act-22.04}"
+RUNNER_IMAGE="${PIPEWARDEN_RUNNER_IMAGE:-${NFW_RUNNER_IMAGE:-catthehacker/ubuntu:act-22.04}}"
 POST_COMMENT="${INPUT_POST_COMMENT:-false}"
 GH_TOKEN="${INPUT_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 
@@ -85,7 +85,7 @@ PID_CA=$!
 docker network create --subnet=172.30.0.0/16 "${NETWORK_NAME}" &
 PID_NET=$!
 
-PROXY_IMAGE="${NFW_PROXY_IMAGE:-}"
+PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE:-${NFW_PROXY_IMAGE:-}}"
 if [ -n "${PROXY_IMAGE}" ]; then
     docker pull "${PROXY_IMAGE}" &
     PID_PULL=$!

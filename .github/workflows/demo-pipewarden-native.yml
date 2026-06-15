@@ -8,7 +8,7 @@ on:
       - 'proxy/**'
       - 'policy/**'
       - 'scripts/**'
-      - '.github/workflows/demo-nfw-native.yml'
+      - '.github/workflows/demo-pipewarden-native.yml'
   pull_request:
     paths:
       - 'demo-nodejs/**'
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: nfw-pip-${{ runner.os }}-mitmproxy
+          key: pipewarden-pip-${{ runner.os }}-mitmproxy
 
       - name: "PipeWarden: Start network monitoring"
         uses: ./native-proxy/action

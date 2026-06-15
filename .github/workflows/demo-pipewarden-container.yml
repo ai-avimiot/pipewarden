@@ -1,4 +1,4 @@
-name: "NFW Demo: Container Mode"
+name: "PipeWarden Demo: Container Mode"
 
 on:
   push:
@@ -6,16 +6,16 @@ on:
       - 'demo-nodejs/**'
       - 'container/**'
       - 'proxy/**'
-      - '.github/workflows/demo-nfw-container.yml'
+      - '.github/workflows/demo-pipewarden-container.yml'
   pull_request:
     paths:
       - 'demo-nodejs/**'
   workflow_dispatch:
 
 env:
-  NFW_IMAGE: ghcr.io/${{ github.repository }}/nfw:latest
-  NFW_PROXY_IMAGE: ghcr.io/${{ github.repository }}/nfw-proxy:latest
-  NFW_RUNNER_IMAGE: ghcr.io/${{ github.repository }}/nfw-runner:latest
+  PIPEWARDEN_IMAGE: ghcr.io/${{ github.repository_owner }}/pipewarden:latest
+  PIPEWARDEN_PROXY_IMAGE: ghcr.io/${{ github.repository_owner }}/pipewarden-proxy:latest
+  PIPEWARDEN_RUNNER_IMAGE: ghcr.io/${{ github.repository_owner }}/pipewarden-runner:latest
 
 jobs:
   container-mode:
@@ -43,7 +43,7 @@ jobs:
         # Standard step: Authenticate to pull PipeWarden container images
 
       # ============================================================================
-      # NFW CONTAINER MODE (runs your entire workflow in a monitored network)
+      # PIPEWARDEN CONTAINER MODE (runs your entire workflow in a monitored network)
       # ============================================================================
       
       - name: "🔒 Run CI commands in monitored container network"
@@ -60,8 +60,8 @@ jobs:
             -e INPUT_PIPELINE_CMD="apt-get update -qq && apt-get install -y -qq nodejs npm curl && cd demo-nodejs && npm install && npm test && npm run build && curl -s https://httpbin.org/ip" \
             -e INPUT_POLICY_FILE="${{ github.workspace }}/demo-nodejs/network-policy.yml" \
             -e INPUT_MODE=monitor \
-            -e NFW_PROXY_IMAGE="${NFW_PROXY_IMAGE}" \
-            "$NFW_IMAGE"
+            -e PIPEWARDEN_PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE}" \
+            "$PIPEWARDEN_IMAGE"
         # PipeWarden step: Runs your CI commands inside a monitored Docker network
         # - Executes commands in an ubuntu:22.04 container on monitored network
         # - Creates isolated Docker network with transparent proxy as gateway
