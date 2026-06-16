@@ -94,6 +94,16 @@ jobs:
 
 That's it. The report lands in your job summary and in `/tmp/report/`.
 
+> **Want a downloadable artifact?** The single-step action above does **not** upload one automatically — it only writes the job summary and `/tmp/report/`. To persist the report as an artifact, add an upload step with `if: always()` (without `always()`, a failed build skips it):
+>
+> ```yaml
+>       - uses: actions/upload-artifact@v7
+>         if: always()
+>         with:
+>           name: network-report
+>           path: /tmp/report/
+> ```
+
 Pin to a specific release with `@v1.0.0` instead of `@v1`. The `@v1` tag tracks the latest 1.x.y patch automatically.
 
 ### 1. Discover — see what your pipeline talks to
