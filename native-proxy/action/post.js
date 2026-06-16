@@ -89,7 +89,16 @@ if (fs.existsSync(summaryTxt)) {
 }
 
 console.log("\n📤 Report available at: /tmp/report/");
-console.log("💡 Tip: Use actions/upload-artifact@v7 to save the report\n");
+// This JS post-step cannot upload artifacts itself. Make the requirement
+// explicit so users don't expect a `network-report` artifact that never fires
+// — it must be added by the user, with `if: always()` so a failed build still
+// uploads it.
+console.log(
+  "::notice title=PipeWarden::Report written to /tmp/report/ (see job summary + log above). " +
+  "This action does NOT upload an artifact automatically. To persist the report, add:  " +
+  "- uses: actions/upload-artifact@v7  /  if: always()  (required, or a failed build skips it)  /  " +
+  "with: name: network-report, path: /tmp/report/"
+);
 
 // Exit with 0 so the post-action doesn't fail the job
 // The teardown script's exit code is informational only
