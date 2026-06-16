@@ -698,7 +698,7 @@ def generate_report(input_path: str, output_dir: str,
         except ImportError:
             write_sarif = None
     if write_sarif:
-        sarif_path = os.path.join(output_dir, "nfw.sarif")
+        sarif_path = os.path.join(output_dir, "pipewarden.sarif")
         policy_rel = os.path.basename(policy_path) if policy_path else "network-policy.yml"
         write_sarif(report, sarif_path, policy_file=policy_rel)
 

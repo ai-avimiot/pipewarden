@@ -204,9 +204,20 @@ Each report includes:
 
 ### GitHub Security tab integration
 
-Upload the SARIF report to surface blocked connections as code scanning alerts:
+Upload the SARIF report to surface blocked connections as code scanning alerts. This needs the **two-step** variant: the SARIF is written by teardown, so the `upload-sarif` step must come *after* an explicit teardown (with the single-step action the SARIF is created in a post-step that runs after the whole job, so a mid-job upload would find nothing):
 
 ```yaml
+      - name: PipeWarden Setup
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        with:
+          mode: monitor
+
+      # --- your normal workflow steps ---
+
+      - name: PipeWarden Teardown
+        if: always()
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+
       - name: Upload to Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v3
@@ -215,7 +226,7 @@ Upload the SARIF report to surface blocked connections as code scanning alerts:
           category: pipewarden
 ```
 
-Findings appear under **Security > Code scanning** with severity levels, persist across runs, and integrate with GitHub's alert management.
+This needs `permissions: security-events: write` on the job. Findings appear under **Security > Code scanning** with severity levels, persist across runs, and integrate with GitHub's alert management.
 
 ## Compliance
 

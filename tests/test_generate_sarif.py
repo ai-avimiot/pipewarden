@@ -233,7 +233,7 @@ class TestWriteSarif:
             },
             "dns_summary": {"queries": []},
         }
-        out = str(tmp_path / "nfw.sarif")
+        out = str(tmp_path / "pipewarden.sarif")
         write_sarif(report, out)
 
         assert os.path.exists(out)
@@ -247,7 +247,7 @@ class TestWriteSarif:
             "access_summary": {"destinations": [], "tls_cert_warnings": []},
             "dns_summary": {"queries": []},
         }
-        out = str(tmp_path / "sub" / "dir" / "nfw.sarif")
+        out = str(tmp_path / "sub" / "dir" / "pipewarden.sarif")
         write_sarif(report, out)
         assert os.path.exists(out)
 
@@ -256,6 +256,6 @@ class TestWriteSarif:
             "access_summary": {"destinations": [], "tls_cert_warnings": []},
             "dns_summary": {"queries": []},
         }
-        out = str(tmp_path / "nfw.sarif")
+        out = str(tmp_path / "pipewarden.sarif")
         result = write_sarif(report, out)
         assert result == out
