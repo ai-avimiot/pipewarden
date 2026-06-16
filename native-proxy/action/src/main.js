@@ -3,10 +3,11 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 
-// At runtime this file is bundled to native-proxy/action/dist/, so the
-// native-proxy root (holding setup.sh/teardown.sh) is two levels up.
-const actionDir = __dirname;
-const nativeProxyDir = path.resolve(actionDir, "..", "..");
+// GITHUB_ACTION_PATH points at the action dir (native-proxy/action) regardless
+// of where this file is bundled; the native-proxy root (setup.sh/teardown.sh) is
+// one level up. Fall back to __dirname math for the bundled dist/<x>/index.js.
+const actionDir = process.env.GITHUB_ACTION_PATH || path.resolve(__dirname, "..", "..", "..");
+const nativeProxyDir = path.resolve(actionDir, "..");
 
 const env = {
   ...process.env,
