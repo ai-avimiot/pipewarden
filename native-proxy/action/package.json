@@ -1,0 +1,16 @@
+{
+  "name": "pipewarden-native-proxy-action",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PipeWarden native-proxy GitHub Action — setup, automatic teardown, and report artifact upload.",
+  "license": "MIT",
+  "scripts": {
+    "build": "ncc build src/main.js -o dist/setup --minify && ncc build src/post.js -o dist/teardown --minify"
+  },
+  "dependencies": {
+    "@actions/artifact": "^2.3.2"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  }
+}

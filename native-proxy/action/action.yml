@@ -22,6 +22,14 @@ inputs:
     description: "Enable iptables transparent proxy (true) or use env-var-only mode (false)"
     required: false
     default: "true"
+  upload-artifact:
+    description: "Upload the generated report (/tmp/report/) as a build artifact at teardown. Set to 'false' to skip."
+    required: false
+    default: "true"
+  artifact-name:
+    description: "Name of the uploaded report artifact"
+    required: false
+    default: "network-report"
 
 outputs:
   report-path:
@@ -33,6 +41,6 @@ outputs:
 
 runs:
   using: "node24"
-  main: "main.js"
-  post: "post.js"
+  main: "dist/setup/index.js"
+  post: "dist/teardown/index.js"
   post-if: "always()"

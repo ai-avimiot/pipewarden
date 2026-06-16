@@ -1,6 +1,16 @@
 name: "PipeWarden - Native Proxy Teardown"
 description: "Stop native proxy firewall, generate reports, and clean up. Use with if: always() to ensure teardown runs even on failure."
 
+inputs:
+  upload-artifact:
+    description: "Upload the generated report (/tmp/report/) as a build artifact. Set to 'false' to skip."
+    required: false
+    default: "true"
+  artifact-name:
+    description: "Name of the uploaded report artifact"
+    required: false
+    default: "network-report"
+
 outputs:
   report-path:
     description: "Path to the generated report directory"
@@ -27,6 +37,14 @@ runs:
       run: bash ${{ github.action_path }}/../teardown.sh
       env:
         INPUT_ACTION_PATH: ${{ github.action_path }}/..
+
+    - name: Upload network report as artifact
+      if: inputs.upload-artifact != 'false' && steps.teardown.outputs.report-path != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.teardown.outputs.report-path }}
+        if-no-files-found: warn
 
     - name: Upload generated network policy as artifact
       if: steps.teardown.outputs.generated-policy-path != ''

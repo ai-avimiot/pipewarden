@@ -3,8 +3,13 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 
-const actionDir = __dirname;
-const nativeProxyDir = path.resolve(actionDir, "..");
+// Resolve the native-proxy root (holds setup.sh/teardown.sh). GITHUB_ACTION_PATH
+// is only set for composite actions, not JS actions, so for the JS bundle we
+// derive it from __dirname: this file is bundled at native-proxy/action/dist/<x>/,
+// three levels below native-proxy.
+const nativeProxyDir = process.env.GITHUB_ACTION_PATH
+  ? path.resolve(process.env.GITHUB_ACTION_PATH, "..")
+  : path.resolve(__dirname, "..", "..", "..");
 
 const env = {
   ...process.env,

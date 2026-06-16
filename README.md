@@ -92,17 +92,9 @@ jobs:
       - run: npm test
 ```
 
-That's it. The report lands in your job summary and in `/tmp/report/`.
+That's it. The report lands in your job summary, in `/tmp/report/`, and is uploaded automatically as a **`network-report`** build artifact — no extra steps. (The upload happens in the action's teardown, which runs at job end even on failure.)
 
-> **Want a downloadable artifact?** The single-step action above does **not** upload one automatically — it only writes the job summary and `/tmp/report/`. To persist the report as an artifact, add an upload step with `if: always()` (without `always()`, a failed build skips it):
->
-> ```yaml
->       - uses: actions/upload-artifact@v7
->         if: always()
->         with:
->           name: network-report
->           path: /tmp/report/
-> ```
+> Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
 Pin to a specific release with `@v1.0.0` instead of `@v1`. The `@v1` tag tracks the latest 1.x.y patch automatically.
 
@@ -114,7 +106,7 @@ The default action above runs in **monitor** mode and writes a policy file you c
 - **Build artifacts** — `network-report` contains `report.json`, `summary.md`, and an auto-generated `network-policy.yml`
 - **Artifact: `pipewarden-generated-network-policy`** — the ready-to-commit policy file (also uploaded automatically)
 
-If you need manual control of teardown (for example to gate other steps on the report), use the two-step variant:
+If you need manual control of teardown (for example to gate other steps on the report), use the two-step variant. The teardown step also uploads the `network-report` artifact automatically:
 
 ```yaml
       - name: PipeWarden Setup
@@ -127,12 +119,7 @@ If you need manual control of teardown (for example to gate other steps on the r
       - name: PipeWarden Teardown
         if: always()
         uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: network-report
-          path: /tmp/report/
+        # uploads the `network-report` artifact (disable with upload-artifact: false)
 ```
 
 ### 2. Review — tune the generated policy

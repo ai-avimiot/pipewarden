@@ -31,6 +31,13 @@ env/
 venv/
 ENV/
 
+# Node.js (native-proxy action build tooling)
+node_modules/
+# The bundled action output is committed (GitHub runs it directly), so re-include
+# it despite the generic dist/ rule above.
+!native-proxy/action/dist/
+!native-proxy/action/dist/**
+
 # IDE
 .idea/
 .vscode/
