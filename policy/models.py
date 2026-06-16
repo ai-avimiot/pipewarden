@@ -62,6 +62,11 @@ class PolicyRule:
     ports: list[int] = field(default_factory=list)  # empty = all ports
     protocols: list[str] = field(default_factory=list)  # http, https, tcp
     paths: list[str] = field(default_factory=list)  # URL path patterns, empty = all paths
+    # How often this rule's traffic is expected to appear: "always" (default) or
+    # "sometimes". "sometimes" rules (e.g. cache-dependent or conditional steps)
+    # are NOT flagged as unused when not seen in a run. Report-only — does not
+    # change what traffic is allowed.
+    appears: str = "always"
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary."""
@@ -76,4 +81,5 @@ class PolicyRule:
             ports=data.get("ports", []),
             protocols=data.get("protocols", []),
             paths=data.get("paths", []),
+            appears=data.get("appears", "always"),
         )

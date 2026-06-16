@@ -22,8 +22,11 @@ def analyze_policy(rules: list[PolicyRule],
         destinations: Aggregated destination dicts from access_summary.
 
     Returns a dict with:
-        rule_usage: list of {name, domains, matched_hosts, match_count}
-        unused_rules: list of rule names with zero matches
+        rule_usage: list of {name, domains, matched_hosts, match_count, appears}
+        unused_rules: rule names with zero matches and appears="always"
+            (candidates for removal)
+        sometimes_unmatched: rule names with zero matches and appears="sometimes"
+            (expected — not flagged as unused)
         suggested_rules: list of dicts for blocked destinations
         suggested_yaml: ready-to-paste YAML string
     """
@@ -44,9 +47,20 @@ def analyze_policy(rules: list[PolicyRule],
             "domains": rule.domains,
             "matched_hosts": sorted(matched_hosts),
             "match_count": match_count,
+            "appears": rule.appears,
         })
 
-    unused_rules = [r["name"] for r in rule_usage if r["match_count"] == 0]
+    # An "always" rule with no matches is a real candidate for removal. A
+    # "sometimes" rule with no matches is expected (cache hit, conditional step)
+    # and is reported separately, not as unused.
+    unused_rules = [
+        r["name"] for r in rule_usage
+        if r["match_count"] == 0 and r.get("appears", "always") != "sometimes"
+    ]
+    sometimes_unmatched = [
+        r["name"] for r in rule_usage
+        if r["match_count"] == 0 and r.get("appears", "always") == "sometimes"
+    ]
 
     # Build suggested rules for blocked destinations
     blocked_dests = [
@@ -85,6 +99,7 @@ def analyze_policy(rules: list[PolicyRule],
     return {
         "rule_usage": rule_usage,
         "unused_rules": unused_rules,
+        "sometimes_unmatched": sometimes_unmatched,
         "suggested_rules": suggested_rules,
         "suggested_yaml": suggested_yaml,
     }

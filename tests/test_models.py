@@ -134,6 +134,7 @@ class TestPolicyRule:
             "ports": [443],
             "protocols": ["https"],
             "paths": [],
+            "appears": "always",
         }
 
     def test_from_dict(self):

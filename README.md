@@ -148,6 +148,18 @@ rules:
       protocols: [https]
 ```
 
+**Sometimes-used destinations.** Some allowed destinations aren't contacted on every run — e.g. a package cache that's only hit on a cache miss, or a conditional/matrix-only step. Mark those rules `appears: sometimes` so they aren't reported as "unused (candidate for removal)" when a run doesn't touch them (the default is `appears: always`). This is **report-only** — it doesn't change what traffic is allowed:
+
+```yaml
+  - name: "pip cache mirror"
+    appears: sometimes        # always (default) | sometimes
+    allow:
+      domains:
+        - "*.pythonhosted.org"
+      ports: [443]
+      protocols: [https]
+```
+
 ### 3. Enforce — block unauthorized traffic
 
 Once the policy is stable, just point PipeWarden at it. Enforce is the default — connections outside the allowlist are blocked and the workflow fails:

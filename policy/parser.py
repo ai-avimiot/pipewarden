@@ -62,6 +62,13 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
         if not name:
             raise ValueError(f"Rule {i}: missing required field 'name'")
 
+        appears = raw_rule.get("appears", "always")
+        if appears not in ("always", "sometimes"):
+            raise ValueError(
+                f"Rule {i} ('{name}'): 'appears' must be 'always' or 'sometimes', "
+                f"got {appears!r}"
+            )
+
         allow = raw_rule.get("allow", {})
         if not isinstance(allow, dict):
             raise ValueError(f"Rule {i} ('{name}'): 'allow' must be a mapping")
@@ -105,6 +112,7 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
                 ports=ports,
                 protocols=protocols,
                 paths=paths,
+                appears=appears,
             )
         )
 
