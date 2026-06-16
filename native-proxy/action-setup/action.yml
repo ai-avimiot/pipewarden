@@ -27,7 +27,7 @@ inputs:
     required: false
     default: "false"
   github-token:
-    description: "Token used to cancel the run when fail-fast triggers (e.g. \\${{ github.token }} with permissions: actions: write)."
+    description: "Token used to cancel the run when fail-fast triggers (pass the job's github.token; needs permissions: actions: write)."
     required: false
     default: ""
 
