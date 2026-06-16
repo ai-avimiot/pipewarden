@@ -4,6 +4,8 @@ name: "TEMP fail-fast self-test"
 # connection in enforce mode. Deleted before merge.
 
 on:
+  push:
+    branches: ["feat/wildcard-hints-and-failfast"]
   workflow_dispatch:
 
 permissions:
