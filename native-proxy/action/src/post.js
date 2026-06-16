@@ -5,11 +5,13 @@ const path = require("path");
 const fs = require("fs");
 const { DefaultArtifactClient } = require("@actions/artifact");
 
-// GITHUB_ACTION_PATH points at the action dir (native-proxy/action) regardless
-// of where this file is bundled; the native-proxy root (setup.sh/teardown.sh) is
-// one level up. Fall back to __dirname math for the bundled dist/<x>/index.js.
-const actionDir = process.env.GITHUB_ACTION_PATH || path.resolve(__dirname, "..", "..", "..");
-const nativeProxyDir = path.resolve(actionDir, "..");
+// Resolve the native-proxy root (holds setup.sh/teardown.sh). GITHUB_ACTION_PATH
+// is only set for composite actions, not JS actions, so for the JS bundle we
+// derive it from __dirname: this file is bundled at native-proxy/action/dist/<x>/,
+// three levels below native-proxy.
+const nativeProxyDir = process.env.GITHUB_ACTION_PATH
+  ? path.resolve(process.env.GITHUB_ACTION_PATH, "..")
+  : path.resolve(__dirname, "..", "..", "..");
 
 const env = {
   ...process.env,
