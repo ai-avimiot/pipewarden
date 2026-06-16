@@ -41,6 +41,7 @@ jobs:
           mode: monitor
           dns: 'true'
           transparent: 'true'
+          artifact-name: pw-custom-report-test
 
       - name: Install dependencies
         working-directory: demo-nodejs
