@@ -103,7 +103,9 @@ console.log("\n📤 Report available at: /tmp/report/");
 // here means the single-step action produces a downloadable artifact with no
 // extra workflow steps. Best-effort: never fail the job on upload problems.
 async function uploadReport() {
-  const enabled = (process.env.INPUT_UPLOAD_ARTIFACT || "true").toLowerCase() !== "false";
+  // Post-steps don't get INPUT_*; main.js persisted these to GITHUB_ENV as NFW_*.
+  const uploadSetting = process.env.NFW_UPLOAD_ARTIFACT || process.env.INPUT_UPLOAD_ARTIFACT || "true";
+  const enabled = uploadSetting.toLowerCase() !== "false";
   if (!enabled) {
     console.log("PipeWarden: artifact upload disabled (upload-artifact: false)");
     return;
@@ -131,7 +133,7 @@ async function uploadReport() {
     console.log("PipeWarden: no Actions artifact backend available, skipping upload");
     return;
   }
-  const name = process.env.INPUT_ARTIFACT_NAME || "network-report";
+  const name = process.env.NFW_ARTIFACT_NAME || process.env.INPUT_ARTIFACT_NAME || "network-report";
   try {
     const client = new DefaultArtifactClient();
     await client.uploadArtifact(name, files, reportDir);
