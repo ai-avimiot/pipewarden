@@ -15,6 +15,9 @@ on:
       - 'native-proxy/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   native-transparent:
     name: "Native proxy (transparent + DNS)"

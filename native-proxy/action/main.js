@@ -1,6 +1,6 @@
 // main.js — Thin Node.js wrapper that runs setup.sh
 // This enables the "post:" hook in action.yml for automatic teardown.
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const path = require("path");
 
 const actionDir = __dirname;
@@ -17,7 +17,7 @@ const env = {
 };
 
 try {
-  execSync(`bash ${path.join(nativeProxyDir, "setup.sh")}`, {
+  execFileSync("bash", [path.join(nativeProxyDir, "setup.sh")], {
     env,
     stdio: "inherit",
   });
