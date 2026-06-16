@@ -238,3 +238,43 @@ def test_policy_parsing_roundtrip_p4(policy):
         assert rule_dict["protocols"] == raw["allow"]["protocols"]
 
 
+# ---------------------------------------------------------------------------
+# `appears` marker
+# ---------------------------------------------------------------------------
+
+def test_appears_defaults_to_always():
+    _, rules = parse_policy_string(VALID_POLICY_YAML)
+    assert all(r.appears == "always" for r in rules)
+
+
+def test_appears_sometimes_parsed():
+    yaml_str = """\
+version: "1"
+mode: monitor
+rules:
+  - name: "pip cache mirror"
+    appears: sometimes
+    allow:
+      domains: ["*.pythonhosted.org"]
+      ports: [443]
+      protocols: [https]
+"""
+    _, rules = parse_policy_string(yaml_str)
+    assert rules[0].appears == "sometimes"
+
+
+def test_appears_invalid_value_rejected():
+    yaml_str = """\
+version: "1"
+mode: monitor
+rules:
+  - name: "bad"
+    appears: maybe
+    allow:
+      domains: ["example.com"]
+      ports: [443]
+      protocols: [https]
+"""
+    with pytest.raises(ValueError, match="appears"):
+        parse_policy_string(yaml_str)
+

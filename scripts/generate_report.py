@@ -426,7 +426,12 @@ def _format_policy_analysis_text(lines: list[str], analysis: dict) -> None:
         lines.append(f"Policy rules ({used}/{total} used):")
         lines.append("-" * 40)
         for ru in rule_usage:
-            icon = "\u2705" if ru["match_count"] > 0 else "\u26aa"
+            if ru["match_count"] > 0:
+                icon, note = "\u2705", ""
+            elif ru.get("appears", "always") == "sometimes":
+                icon, note = "\u26aa", "  (appears sometimes; not seen this run)"
+            else:
+                icon, note = "\u26aa", "  (unused; candidate for removal)"
             doms = ", ".join(ru.get("domains", [])[:4])
             if len(ru.get("domains", [])) > 4:
                 doms += f" (+{len(ru['domains']) - 4})"
@@ -434,7 +439,7 @@ def _format_policy_analysis_text(lines: list[str], analysis: dict) -> None:
             if len(ru["matched_hosts"]) > 5:
                 hosts += f" (+{len(ru['matched_hosts']) - 5} more)"
             detail = f" \u2192 {hosts}" if hosts else ""
-            lines.append(f"  {icon} {ru['name']} [{doms}]: {ru['match_count']} matches{detail}")
+            lines.append(f"  {icon} {ru['name']} [{doms}]: {ru['match_count']} matches{detail}{note}")
         lines.append("")
 
     if suggested_yaml:
@@ -572,12 +577,17 @@ def _format_policy_analysis_md(lines: list[str], analysis: dict) -> None:
                 doms += f" (+{len(ru['domains']) - 4})"
             if not doms:
                 doms = "\u2014"
-            # Show actual matched hosts
+            # Show actual matched hosts; for zero-match rules, explain why.
             hosts = ", ".join(f"`{h}`" for h in ru["matched_hosts"][:5])
             if len(ru["matched_hosts"]) > 5:
                 hosts += f" (+{len(ru['matched_hosts']) - 5} more)"
             if not hosts:
-                hosts = "\u2014"
+                if ru["match_count"] == 0 and ru.get("appears", "always") == "sometimes":
+                    hosts = "_appears sometimes; not seen this run_"
+                elif ru["match_count"] == 0:
+                    hosts = "_unused; candidate for removal_"
+                else:
+                    hosts = "\u2014"
             lines.append(f"| {icon} | {ru['name']} | {doms} | {ru['match_count']} | {hosts} |")
         lines.append("")
         lines.append("</details>")

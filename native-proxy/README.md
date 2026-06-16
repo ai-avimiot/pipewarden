@@ -150,6 +150,8 @@ rules:
       protocols: [https]
 ```
 
+Add `appears: sometimes` to a rule (sibling of `name`/`allow`) for destinations that aren't contacted every run (cache-dependent or conditional steps) so they aren't reported as unused when not seen. Default is `appears: always`. Report-only — it does not change what traffic is allowed.
+
 ## Environment Variables
 
 The setup step exports these to `GITHUB_ENV` so all subsequent steps use the proxy:

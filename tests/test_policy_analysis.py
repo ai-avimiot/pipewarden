@@ -37,6 +37,30 @@ class TestAnalyzePolicy:
         assert "DNS" in result["unused_rules"]
         assert "npm registry" not in result["unused_rules"]
 
+    def test_appears_sometimes_not_flagged_unused(self):
+        rules = [
+            PolicyRule(name="npm registry", domains=["registry.npmjs.org"],
+                       ports=[443], protocols=["https"]),
+            PolicyRule(name="pip cache mirror", domains=["*.pythonhosted.org"],
+                       ports=[443], protocols=["https"], appears="sometimes"),
+            PolicyRule(name="old telemetry", domains=["telemetry.example.com"],
+                       ports=[443], protocols=["https"]),  # appears defaults to "always"
+        ]
+        connections = [
+            {"host": "registry.npmjs.org", "port": 443, "protocol": "https", "status": "allowed"},
+        ]
+        result = analyze_policy(rules, connections, [])
+        # The "sometimes" rule with zero matches is NOT a removal candidate...
+        assert "pip cache mirror" not in result["unused_rules"]
+        assert "pip cache mirror" in result["sometimes_unmatched"]
+        # ...while an "always" rule with zero matches still is.
+        assert "old telemetry" in result["unused_rules"]
+        assert "old telemetry" not in result["sometimes_unmatched"]
+        # appears is surfaced per rule
+        usage = {r["name"]: r for r in result["rule_usage"]}
+        assert usage["pip cache mirror"]["appears"] == "sometimes"
+        assert usage["npm registry"]["appears"] == "always"
+
     def test_suggested_rules_for_blocked(self):
         rules = self._make_rules()
         connections = [
