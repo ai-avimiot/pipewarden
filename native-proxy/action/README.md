@@ -37,7 +37,7 @@ The post-action is **guaranteed to run** via `post-if: always()`, so you never n
 
 ## Inputs
 
-- `policy-file`: Path to network-policy.yml (default: `network-policy.yml`)
+- `policy-file`: Path to a network policy YAML (default: `""` = auto-resolve `.github/pipewarden/common.network-policy.yml` + `<workflow>.network-policy.yml`, falling back to repo-root `network-policy.yml`, then discovery)
 - `mode`: `monitor` (log only) or `enforce` (block unauthorized traffic) (default: `monitor`)
 - `proxy-port`: Port for mitmproxy (default: `8080`)
 - `dns`: Enable DNS interception (default: `true`)

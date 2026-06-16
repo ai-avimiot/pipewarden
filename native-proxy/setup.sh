@@ -9,7 +9,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------
-POLICY_FILE="${INPUT_POLICY_FILE:-network-policy.yml}"
+# Raw policy-file input. Empty ("") means auto-resolve (common + per-pipeline).
+POLICY_FILE_INPUT="${INPUT_POLICY_FILE:-}"
 MODE="${INPUT_MODE:-enforce}"
 PROXY_PORT="${INPUT_PROXY_PORT:-8080}"
 
@@ -29,6 +30,26 @@ PID_FILE="/tmp/nfw-proxy.pid"
 
 ACTION_PATH="$(realpath "${ACTION_PATH}")"
 PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
+
+# ---------------------------------------------------------------------------
+# 0. Resolve effective policy
+#    - explicit policy-file input wins
+#    - else merge .github/pipewarden/common.network-policy.yml +
+#      .github/pipewarden/<workflow>.network-policy.yml
+#    - else repo-root network-policy.yml
+#    - else discovery (monitor all, generate a policy)
+# ---------------------------------------------------------------------------
+echo "::group::PipeWarden: Resolve policy"
+EFFECTIVE_POLICY_OUT="/tmp/pipewarden-effective-policy.yml"
+POLICY_FILE="$(python3 "${PROJECT_ROOT}/scripts/resolve_policy.py" \
+    --explicit "${POLICY_FILE_INPUT}" \
+    --mode "${MODE}" \
+    --out "${EFFECTIVE_POLICY_OUT}" 2>/tmp/pw-resolve.log)"
+cat /tmp/pw-resolve.log || true
+# Per-pipeline policy path (for the report's "commit this" tip).
+PIPELINE_POLICY_PATH="$(python3 -c "import os, sys; sys.path.insert(0, '${PROJECT_ROOT}'); from scripts.resolve_policy import workflow_stem, pipeline_policy_name, PIPEWARDEN_DIR; s = workflow_stem(os.environ.get('GITHUB_WORKFLOW_REF', '')); print(os.path.join(PIPEWARDEN_DIR, pipeline_policy_name(s)) if s else os.path.join(PIPEWARDEN_DIR, 'network-policy.yml'))" 2>/dev/null || echo "")"
+echo "Effective policy: ${POLICY_FILE:-<discovery mode>}"
+echo "::endgroup::"
 
 # ---------------------------------------------------------------------------
 # 1. Install mitmproxy (the proven proxy engine)
@@ -277,6 +298,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NFW_ACTION_PATH=${ACTION_PATH}" >> "${GITHUB_ENV}"
     echo "NFW_MODE=${MODE}" >> "${GITHUB_ENV}"
     echo "NFW_POLICY_FILE=$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" >> "${GITHUB_ENV}"
+    echo "NFW_PIPELINE_POLICY=${PIPELINE_POLICY_PATH}" >> "${GITHUB_ENV}"
     echo "NFW_PROXY_PORT=${PROXY_PORT}" >> "${GITHUB_ENV}"
     echo "NFW_TRANSPARENT=${ENABLE_TRANSPARENT}" >> "${GITHUB_ENV}"
     echo "NFW_DNS_ENABLED=${ENABLE_DNS}" >> "${GITHUB_ENV}"

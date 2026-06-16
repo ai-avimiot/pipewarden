@@ -3,9 +3,9 @@ description: "Set up native proxy firewall on the GitHub Actions runner using mi
 
 inputs:
   policy-file:
-    description: "Path to network-policy.yml defining allowed destinations"
+    description: "Path to a network policy YAML. Leave empty to auto-resolve: merge .github/pipewarden/common.network-policy.yml + .github/pipewarden/<workflow>.network-policy.yml, falling back to repo-root network-policy.yml, then discovery."
     required: false
-    default: "network-policy.yml"
+    default: ""
   mode:
     description: "monitor (log only) or enforce (block unauthorized traffic)"
     required: false

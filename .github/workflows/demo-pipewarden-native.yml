@@ -37,7 +37,7 @@ jobs:
       - name: "PipeWarden: Start network monitoring"
         uses: ./native-proxy/action
         with:
-          policy-file: demo-nodejs/network-policy.yml
+          # No policy-file → auto-resolve .github/pipewarden/common + per-pipeline
           mode: monitor
           dns: 'true'
           transparent: 'true'

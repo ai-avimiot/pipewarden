@@ -56,7 +56,7 @@ jobs:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `policy-file` | `network-policy.yml` | Path to network policy YAML |
+| `policy-file` | `""` (auto) | Path to a network policy YAML. Empty auto-resolves `.github/pipewarden/common.network-policy.yml` + `<workflow>.network-policy.yml`, falling back to repo-root `network-policy.yml`, then discovery |
 | `mode` | `monitor` | `monitor` (log only) or `enforce` (block + fail) |
 | `proxy-port` | `8080` | Port for the proxy to listen on |
 | `dns` | `true` | Enable DNS interception (intercepts all DNS queries via PipeWarden DNS server) |
