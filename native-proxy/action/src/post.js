@@ -3,9 +3,12 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const { DefaultArtifactClient } = require("@actions/artifact");
 
+// At runtime this file is bundled to native-proxy/action/dist/, so the
+// native-proxy root (holding setup.sh/teardown.sh) is two levels up.
 const actionDir = __dirname;
-const nativeProxyDir = path.resolve(actionDir, "..");
+const nativeProxyDir = path.resolve(actionDir, "..", "..");
 
 const env = {
   ...process.env,
@@ -89,17 +92,56 @@ if (fs.existsSync(summaryTxt)) {
 }
 
 console.log("\n📤 Report available at: /tmp/report/");
-// This JS post-step cannot upload artifacts itself. Make the requirement
-// explicit so users don't expect a `network-report` artifact that never fires
-// — it must be added by the user, with `if: always()` so a failed build still
-// uploads it.
-console.log(
-  "::notice title=PipeWarden::Report written to /tmp/report/ (see job summary + log above). " +
-  "This action does NOT upload an artifact automatically. To persist the report, add:  " +
-  "- uses: actions/upload-artifact@v7  /  if: always()  (required, or a failed build skips it)  /  " +
-  "with: name: network-report, path: /tmp/report/"
-);
 
-// Exit with 0 so the post-action doesn't fail the job
-// The teardown script's exit code is informational only
-process.exit(0);
+// Upload the report as a build artifact directly from this post-step.
+// This is the only place that works for the single-step action: the report is
+// generated here (teardown), which runs AFTER all normal job steps — so an
+// in-job `upload-artifact` step would run before the report exists. Doing it
+// here means the single-step action produces a downloadable artifact with no
+// extra workflow steps. Best-effort: never fail the job on upload problems.
+async function uploadReport() {
+  const enabled = (process.env.INPUT_UPLOAD_ARTIFACT || "true").toLowerCase() !== "false";
+  if (!enabled) {
+    console.log("PipeWarden: artifact upload disabled (upload-artifact: false)");
+    return;
+  }
+  if (!fs.existsSync(reportDir)) {
+    console.log("PipeWarden: no /tmp/report/ to upload");
+    return;
+  }
+  let files = [];
+  try {
+    files = fs.readdirSync(reportDir)
+      .map((f) => path.join(reportDir, f))
+      .filter((f) => {
+        try { return fs.statSync(f).isFile(); } catch (e) { return false; }
+      });
+  } catch (e) {
+    console.log(`::warning::PipeWarden could not list report dir: ${e.message}`);
+    return;
+  }
+  if (files.length === 0) {
+    console.log("PipeWarden: report dir is empty, nothing to upload");
+    return;
+  }
+  if (!process.env.ACTIONS_RUNTIME_TOKEN && !process.env.ACTIONS_RESULTS_URL) {
+    console.log("PipeWarden: no Actions artifact backend available, skipping upload");
+    return;
+  }
+  const name = process.env.INPUT_ARTIFACT_NAME || "network-report";
+  try {
+    const client = new DefaultArtifactClient();
+    await client.uploadArtifact(name, files, reportDir);
+    console.log(`::notice title=PipeWarden::Uploaded '${name}' artifact (${files.length} files from /tmp/report/).`);
+  } catch (e) {
+    console.log(
+      `::warning::PipeWarden could not upload the '${name}' artifact: ${e.message}. ` +
+      "The report is still in the job summary and /tmp/report/."
+    );
+  }
+}
+
+uploadReport().finally(() => {
+  // Exit 0 so the post-action never fails the job; teardown exit code is informational.
+  process.exit(0);
+});

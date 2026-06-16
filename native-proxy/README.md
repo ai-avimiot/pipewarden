@@ -32,16 +32,11 @@ jobs:
         if: always()
         id: nfw
         uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: network-report
-          path: /tmp/report/
+        # Generates the report AND uploads it as the `network-report` artifact.
+        # Disable with `upload-artifact: false`, or rename via `artifact-name:`.
 ```
 
-> The `if: always()` on teardown is important — it ensures reports are generated even if your build fails.
+> The `if: always()` on teardown is important — it ensures reports are generated (and uploaded) even if your build fails.
 
 ## With pip caching (~1-3s setup)
 

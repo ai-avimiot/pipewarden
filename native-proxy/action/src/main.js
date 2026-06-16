@@ -3,8 +3,10 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 
+// At runtime this file is bundled to native-proxy/action/dist/, so the
+// native-proxy root (holding setup.sh/teardown.sh) is two levels up.
 const actionDir = __dirname;
-const nativeProxyDir = path.resolve(actionDir, "..");
+const nativeProxyDir = path.resolve(actionDir, "..", "..");
 
 const env = {
   ...process.env,

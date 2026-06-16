@@ -32,14 +32,7 @@ The post-action is **guaranteed to run** via `post-if: always()`, so you never n
 # - Generates report
 # - Displays connection log and summary
 # - Sets outputs (status, blocked-count, report-path)
-
-# Optional: Upload the report as an artifact
-- name: Upload report
-  if: always()
-  uses: actions/upload-artifact@v7
-  with:
-    name: nfw-report
-    path: /tmp/report/
+# - Uploads the report as the `network-report` artifact (no extra step needed)
 ```
 
 ## Inputs
@@ -49,6 +42,8 @@ The post-action is **guaranteed to run** via `post-if: always()`, so you never n
 - `proxy-port`: Port for mitmproxy (default: `8080`)
 - `dns`: Enable DNS interception (default: `true`)
 - `transparent`: Enable iptables transparent proxy (default: `true`)
+- `upload-artifact`: Upload the report (`/tmp/report/`) as a build artifact at teardown (default: `true`)
+- `artifact-name`: Name of the uploaded report artifact (default: `network-report`)
 
 ## Outputs
 
@@ -73,18 +68,10 @@ When your job completes (or fails), the post-action automatically:
 7. ✅ **Displays connection log (first 20 entries)**
 8. ✅ **Displays report summary**
 9. ✅ Sets outputs (status, blocked-count, report-path)
-10. ✅ Cleans up CA certificates
+10. ✅ Uploads the report as the `network-report` artifact (set `upload-artifact: false` to skip, or `artifact-name:` to rename)
+11. ✅ Cleans up CA certificates
 
-You only need to add one optional step if you want to save the report as an artifact:
-
-```yaml
-- name: Upload report
-  if: always()
-  uses: actions/upload-artifact@v7
-  with:
-    name: nfw-report
-    path: /tmp/report/
-```
+> The artifact upload happens **inside the post-action**. Don't add your own `actions/upload-artifact` step for `/tmp/report/` with the single-step action — the report is generated in this post-step, which runs *after* all your job steps, so an in-job upload step would find nothing.
 
 The post-action approach has several advantages:
 
