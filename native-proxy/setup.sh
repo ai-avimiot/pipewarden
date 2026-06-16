@@ -23,6 +23,8 @@ fi
 ENABLE_DNS="${INPUT_DNS:-true}"
 ACTION_PATH="${INPUT_ACTION_PATH:-.}"
 ENABLE_TRANSPARENT="${INPUT_TRANSPARENT:-true}"
+FAIL_FAST="${INPUT_FAIL_FAST:-false}"
+GH_TOKEN_INPUT="${INPUT_GITHUB_TOKEN:-}"
 
 CA_DIR="/tmp/nfw-ca"
 LOG_DIR="/tmp/monitor-logs"
@@ -267,6 +269,28 @@ if [ "${ENABLE_DNS}" = "true" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 8b. Fail-fast watcher (enforce mode): cancel the run on first blocked conn
+# ---------------------------------------------------------------------------
+FAILFAST_PID=""
+if [ "${FAIL_FAST}" = "true" ] && [ "${MODE}" = "enforce" ]; then
+    echo "::group::PipeWarden: Fail-fast watcher"
+    if [ -n "${GH_TOKEN_INPUT}" ] && [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+        nohup env \
+            GH_TOKEN="${GH_TOKEN_INPUT}" \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            LOG_PATH="${LOG_DIR}/connections.jsonl" \
+            python3 "${PROJECT_ROOT}/scripts/fail_fast_watcher.py" \
+            > "${LOG_DIR}/failfast.log" 2>&1 &
+        FAILFAST_PID=$!
+        echo "Fail-fast enabled — will cancel the run on the first blocked connection (watcher PID ${FAILFAST_PID})."
+    else
+        echo "::warning::fail-fast requested but no github-token / run context available — falling back to fail-at-teardown."
+    fi
+    echo "::endgroup::"
+fi
+
+# ---------------------------------------------------------------------------
 # 9. Export environment variables to GITHUB_ENV
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Export environment variables"
@@ -300,6 +324,9 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NFW_POLICY_FILE=$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" >> "${GITHUB_ENV}"
     echo "NFW_PIPELINE_POLICY=${PIPELINE_POLICY_PATH}" >> "${GITHUB_ENV}"
     echo "NFW_PROXY_PORT=${PROXY_PORT}" >> "${GITHUB_ENV}"
+    if [ -n "${FAILFAST_PID}" ]; then
+        echo "NFW_FAILFAST_PID=${FAILFAST_PID}" >> "${GITHUB_ENV}"
+    fi
     echo "NFW_TRANSPARENT=${ENABLE_TRANSPARENT}" >> "${GITHUB_ENV}"
     echo "NFW_DNS_ENABLED=${ENABLE_DNS}" >> "${GITHUB_ENV}"
     if [ -n "${DNS_PID}" ]; then

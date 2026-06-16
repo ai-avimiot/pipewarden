@@ -30,6 +30,14 @@ inputs:
     description: "Name of the uploaded report artifact"
     required: false
     default: "network-report"
+  fail-fast:
+    description: "Enforce mode only: cancel the whole workflow run on the first blocked connection (instead of failing at teardown). Requires github-token with actions:write."
+    required: false
+    default: "false"
+  github-token:
+    description: "Token used to cancel the run when fail-fast triggers (pass the job's github.token; needs permissions: actions: write). Only used when fail-fast is true."
+    required: false
+    default: ""
 
 outputs:
   report-path:

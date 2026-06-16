@@ -24,6 +24,13 @@ PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
 REPORT_DIR="/tmp/report"
 
 # ---------------------------------------------------------------------------
+# 0. Stop fail-fast watcher (if running)
+# ---------------------------------------------------------------------------
+if [ -n "${NFW_FAILFAST_PID:-}" ] && kill -0 "${NFW_FAILFAST_PID}" 2>/dev/null; then
+    kill -TERM "${NFW_FAILFAST_PID}" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Stop proxy process
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Stop proxy"

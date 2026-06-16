@@ -287,7 +287,24 @@ Logs all connections. Traffic outside the allowlist is flagged as `would_block` 
 
 ### Enforce
 
-Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`. The workflow fails if any connections are blocked.
+Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`. By default the workflow fails at **teardown** if any connections were blocked.
+
+**Fail fast.** A blocked request usually breaks the command that made it, but some tools swallow the error and keep going. Set `fail-fast: true` (enforce only) to **cancel the whole run the moment the first blocked connection is seen**, instead of waiting for teardown. It needs a token with `actions: write`:
+
+```yaml
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+        with:
+          mode: enforce
+          fail-fast: true
+          github-token: ${{ github.token }}
+    # and at the job level:
+    # permissions:
+    #   actions: write
+```
+
+Without a token it logs a warning and falls back to fail-at-teardown.
+
+> **Tip:** the auto-generated policy adds **wildcard hint comments** (e.g. `# consider "*.npmjs.org"`) when it sees several sibling subdomains — review and apply them by hand. It never suggests wildcards for multi-tenant suffixes like `s3.amazonaws.com`.
 
 ## Configuration reference
 
@@ -295,11 +312,15 @@ Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS que
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `policy-file` | `network-policy.yml` | Path to network policy YAML |
+| `policy-file` | `""` (auto) | Path to a network policy YAML; empty auto-resolves `.github/pipewarden/` (see [above](#where-policies-live-auto-resolution)) |
 | `mode` | `enforce` | `enforce` (block + fail) or `monitor` (log only) |
 | `proxy-port` | `8080` | Port for the proxy to listen on |
 | `dns` | `true` | Enable DNS interception |
 | `transparent` | `true` | Enable iptables transparent proxy |
+| `fail-fast` | `false` | Enforce only: cancel the run on the first blocked connection (needs `github-token` + `actions: write`) |
+| `github-token` | `""` | Token used to cancel the run when `fail-fast` triggers |
+| `upload-artifact` | `true` | Upload the report as a build artifact at teardown |
+| `artifact-name` | `network-report` | Name of the uploaded report artifact |
 
 ### Outputs (teardown)
 
