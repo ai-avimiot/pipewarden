@@ -96,7 +96,7 @@ That's it. The report lands in your job summary, in `/tmp/report/`, and is uploa
 
 > Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
-Pin to a specific release with `@v1.0.0` instead of `@v1`. The `@v1` tag tracks the latest 1.x.y patch automatically.
+**Versioning.** `@v1` tracks the latest 1.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major (`v2`). For production, pin to an exact release (`@v1.0.7`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
 
 ### 1. Discover — see what your pipeline talks to
 
