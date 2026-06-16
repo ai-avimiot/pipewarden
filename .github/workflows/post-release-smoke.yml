@@ -1,0 +1,105 @@
+name: Post-release smoke (demo)
+
+# After a release is published, run the consumer demo repo's workflows against the
+# freshly published action (`ai-avimiot/pipewarden@latest`, now pointing at this
+# release) to smoke-test the real, cross-repo consumer experience: action
+# resolution, release tags, and GHCR images. This complements the in-repo
+# local-ref demo workflows (which gate PRs before publishing).
+#
+# Requires a token with `actions: write` (and `contents: read`) on
+# ai-avimiot/pipewarden-demo, stored as the secret DEMO_SMOKE_TOKEN
+# (the default GITHUB_TOKEN cannot dispatch workflows in another repo).
+# If the secret is absent the job logs a warning and succeeds (no-op).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-release-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Dispatch demo workflows and wait
+    runs-on: ubuntu-latest
+    env:
+      DEMO_REPO: ai-avimiot/pipewarden-demo
+      GH_TOKEN: ${{ secrets.DEMO_SMOKE_TOKEN }}
+      WORKFLOWS: "test-nodejs-native.yml container-scenario-native.yml nodejs-pipewarden.yml"
+    steps:
+      - name: Dispatch, wait, and report
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning title=Post-release smoke::DEMO_SMOKE_TOKEN not set — skipping cross-repo demo smoke. Add a token with actions:write on ${DEMO_REPO}."
+            exit 0
+          fi
+
+          # Mark the cutoff so we can find the runs we just triggered.
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "Dispatching demo workflows in ${DEMO_REPO}..."
+          for wf in ${WORKFLOWS}; do
+            echo "  -> ${wf}"
+            gh workflow run "${wf}" --repo "${DEMO_REPO}" --ref main
+          done
+
+          # Give the runs a moment to register, then resolve their run IDs.
+          sleep 20
+          declare -A RUN_ID
+          for wf in ${WORKFLOWS}; do
+            rid="$(gh run list --repo "${DEMO_REPO}" --workflow "${wf}" --event workflow_dispatch \
+                   --created ">=${before}" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)"
+            if [ -z "${rid}" ] || [ "${rid}" = "null" ]; then
+              # Fallback: newest run for that workflow.
+              rid="$(gh run list --repo "${DEMO_REPO}" --workflow "${wf}" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)"
+            fi
+            RUN_ID[$wf]="${rid}"
+            echo "  ${wf} -> run ${rid:-<none>}"
+          done
+
+          # Poll all runs to completion (cap ~25 min).
+          deadline=$(( $(date +%s) + 1500 ))
+          declare -A RESULT
+          remaining="${WORKFLOWS}"
+          while [ -n "${remaining}" ] && [ "$(date +%s)" -lt "${deadline}" ]; do
+            still=""
+            for wf in ${remaining}; do
+              rid="${RUN_ID[$wf]:-}"
+              if [ -z "${rid}" ]; then RESULT[$wf]="no-run"; continue; fi
+              read -r status conclusion < <(gh run view "${rid}" --repo "${DEMO_REPO}" --json status,conclusion -q '"\(.status) \(.conclusion)"' 2>/dev/null || echo "unknown ")
+              if [ "${status}" = "completed" ]; then
+                RESULT[$wf]="${conclusion}"
+              else
+                still="${still} ${wf}"
+              fi
+            done
+            remaining="${still# }"
+            [ -n "${remaining}" ] && sleep 20 || true
+          done
+
+          # Summarize.
+          echo "## Post-release demo smoke" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| Demo workflow | Result | Run |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "|---|---|---|" >> "${GITHUB_STEP_SUMMARY}"
+          fail=0
+          for wf in ${WORKFLOWS}; do
+            res="${RESULT[$wf]:-timeout}"
+            rid="${RUN_ID[$wf]:-}"
+            url="https://github.com/${DEMO_REPO}/actions/runs/${rid}"
+            echo "| \`${wf}\` | ${res} | [run](${url}) |" >> "${GITHUB_STEP_SUMMARY}"
+            echo "${wf}: ${res} (${url})"
+            case "${res}" in success) ;; *) fail=1 ;; esac
+          done
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error title=Post-release smoke::One or more demo workflows did not succeed against the published release."
+            exit 1
+          fi
+          echo "All demo workflows passed against the published release."
