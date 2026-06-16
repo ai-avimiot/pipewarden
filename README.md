@@ -42,7 +42,6 @@ PipeWarden is the missing security layer between dependency scanning and product
 | Dependency downloads second-stage payload | | | :white_check_mark: **Blocked** |
 | Cryptominer injected via post-install script | | | :white_check_mark: **Blocked** |
 | DNS exfiltration of secrets during build | | | :white_check_mark: **Blocked** |
-| Known CVE in a dependency | :white_check_mark: Fixed | | |
 | Artifact tampering after build | | :white_check_mark: Detected | |
 
 > :rotating_light: **Every major CI/CD supply chain attack** — SolarWinds, Codecov, event-stream, xz-utils, tj-actions/changed-files — involved unauthorized network activity that PipeWarden would have detected.
