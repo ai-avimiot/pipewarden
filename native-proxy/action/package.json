@@ -8,7 +8,7 @@
     "build": "ncc build src/main.js -o dist/setup --minify && ncc build src/post.js -o dist/teardown --minify"
   },
   "dependencies": {
-    "@actions/artifact": "^2.3.2"
+    "@actions/artifact": "^6.2.1"
   },
   "devDependencies": {
     "@vercel/ncc": "^0.38.3"
