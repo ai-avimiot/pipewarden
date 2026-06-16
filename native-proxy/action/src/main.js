@@ -36,8 +36,10 @@ try {
 // to the post-step (same mechanism setup.sh uses for NFW_* state).
 if (process.env.GITHUB_ENV) {
   try {
-    const uploadArtifact = process.env.INPUT_UPLOAD_ARTIFACT || "true";
-    const artifactName = process.env.INPUT_ARTIFACT_NAME || "network-report";
+    // Note: GitHub maps dashed input names to dashed env keys (e.g. artifact-name
+    // -> INPUT_ARTIFACT-NAME), not underscores — same as INPUT_PROXY-PORT above.
+    const uploadArtifact = process.env["INPUT_UPLOAD-ARTIFACT"] || "true";
+    const artifactName = process.env["INPUT_ARTIFACT-NAME"] || "network-report";
     fs.appendFileSync(
       process.env.GITHUB_ENV,
       `NFW_UPLOAD_ARTIFACT=${uploadArtifact}\nNFW_ARTIFACT_NAME=${artifactName}\n`

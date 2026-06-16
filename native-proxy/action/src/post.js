@@ -104,7 +104,7 @@ console.log("\n📤 Report available at: /tmp/report/");
 // extra workflow steps. Best-effort: never fail the job on upload problems.
 async function uploadReport() {
   // Post-steps don't get INPUT_*; main.js persisted these to GITHUB_ENV as NFW_*.
-  const uploadSetting = process.env.NFW_UPLOAD_ARTIFACT || process.env.INPUT_UPLOAD_ARTIFACT || "true";
+  const uploadSetting = process.env.NFW_UPLOAD_ARTIFACT || process.env["INPUT_UPLOAD-ARTIFACT"] || "true";
   const enabled = uploadSetting.toLowerCase() !== "false";
   if (!enabled) {
     console.log("PipeWarden: artifact upload disabled (upload-artifact: false)");
@@ -133,7 +133,7 @@ async function uploadReport() {
     console.log("PipeWarden: no Actions artifact backend available, skipping upload");
     return;
   }
-  const name = process.env.NFW_ARTIFACT_NAME || process.env.INPUT_ARTIFACT_NAME || "network-report";
+  const name = process.env.NFW_ARTIFACT_NAME || process.env["INPUT_ARTIFACT-NAME"] || "network-report";
   try {
     const client = new DefaultArtifactClient();
     await client.uploadArtifact(name, files, reportDir);
