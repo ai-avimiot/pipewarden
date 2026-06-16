@@ -1,6 +1,6 @@
 // post.js — Runs teardown.sh automatically after the job completes.
 // GitHub Actions guarantees this runs even if earlier steps fail (post-if: always()).
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -14,7 +14,7 @@ const env = {
 
 let teardownExitCode = 0;
 try {
-  execSync(`bash ${path.join(nativeProxyDir, "teardown.sh")}`, {
+  execFileSync("bash", [path.join(nativeProxyDir, "teardown.sh")], {
     env,
     stdio: "inherit",
   });
