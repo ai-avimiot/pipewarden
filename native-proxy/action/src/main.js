@@ -19,6 +19,9 @@ const env = {
   INPUT_PROXY_PORT: process.env["INPUT_PROXY-PORT"] || "8080",
   INPUT_DNS: process.env.INPUT_DNS || "true",
   INPUT_TRANSPARENT: process.env.INPUT_TRANSPARENT || "true",
+  // Dashed input names map to dashed env keys (e.g. INPUT_FAIL-FAST).
+  INPUT_FAIL_FAST: process.env["INPUT_FAIL-FAST"] || "false",
+  INPUT_GITHUB_TOKEN: process.env["INPUT_GITHUB-TOKEN"] || "",
   INPUT_ACTION_PATH: nativeProxyDir,
 };
 

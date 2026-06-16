@@ -693,6 +693,21 @@ def generate_complete_policy_yaml(report: dict) -> str:
         lines.append(f"      protocols: [{proto}]")
         lines.append("")
 
+    # Append wildcard hints (comments only — never auto-applied).
+    try:
+        from scripts.policy_hints import hint_comment_lines
+    except ImportError:
+        from policy_hints import hint_comment_lines
+    hosts = [
+        d.get("host", "") for d in destinations
+        if d.get("host") and d.get("protocol") != "dns"
+    ]
+    hints = hint_comment_lines(hosts)
+    if hints:
+        lines.append("")
+        lines.extend(hints)
+        lines.append("")
+
     return "\n".join(lines) + "\n"
 
 
