@@ -160,6 +160,22 @@ rules:
       protocols: [https]
 ```
 
+### Where policies live (auto-resolution)
+
+Leave `policy-file` unset and PipeWarden resolves the policy automatically, **merging two files** so a shared baseline and per-pipeline rules are both applied:
+
+```
+.github/pipewarden/
+  common.network-policy.yml      # shared baseline (GitHub, DNS, …) — you maintain this
+  ci.network-policy.yml          # rules for ci.yml — PipeWarden auto-generates this
+  release.network-policy.yml     # rules for release.yml
+```
+
+- **Both are watched:** the effective allowlist is the **union** of `common.network-policy.yml` and the per-workflow `<workflow>.network-policy.yml` (named after the workflow *file*, e.g. `ci.yml` → `ci.network-policy.yml`). Per-pipeline rules override same-named common rules.
+- **PipeWarden auto-generates the per-pipeline file**, not the common one. In monitor/discovery the report tells you to download the generated `network-policy.yml` and commit it to `.github/pipewarden/<workflow>.network-policy.yml`.
+- **Fallback:** if no `.github/pipewarden/` files exist, a repo-root `network-policy.yml` is used; if nothing exists, the run is discovery (monitor all, generate a policy).
+- Setting `policy-file:` explicitly bypasses auto-resolution and uses exactly that file.
+
 ### 3. Enforce — block unauthorized traffic
 
 Once the policy is stable, just point PipeWarden at it. Enforce is the default — connections outside the allowlist are blocked and the workflow fails:

@@ -1,0 +1,28 @@
+# Per-pipeline policy for .github/workflows/demo-pipewarden-native.yml
+# (auto-generatable by PipeWarden; merged with common.network-policy.yml).
+version: "1"
+mode: monitor
+
+rules:
+  - name: "Application API"
+    allow:
+      domains:
+        - "httpbin.org"
+      ports: [443]
+      protocols: [https]
+
+  - name: "npm registry"
+    appears: sometimes        # only hit on a cache miss
+    allow:
+      domains:
+        - "registry.npmjs.org"
+        - "*.npmjs.org"
+      ports: [443]
+      protocols: [https]
+
+  - name: "Node.js setup"
+    allow:
+      domains:
+        - "deb.nodesource.com"
+      ports: [443]
+      protocols: [https]

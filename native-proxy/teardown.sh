@@ -151,7 +151,10 @@ fi
 # 4. Generate report
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Generate report"
-REPORT_ARGS="--input ${CONN_LOG} --output ${REPORT_DIR}"
+REPORT_ARGS="--input ${CONN_LOG} --output ${REPORT_DIR} --mode ${MODE:-monitor}"
+if [ -n "${NFW_PIPELINE_POLICY:-}" ]; then
+    REPORT_ARGS="${REPORT_ARGS} --commit-path ${NFW_PIPELINE_POLICY}"
+fi
 if [ -n "${POLICY_FILE}" ] && [ -f "${POLICY_FILE}" ]; then
     REPORT_ARGS="${REPORT_ARGS} --policy ${POLICY_FILE}"
 fi

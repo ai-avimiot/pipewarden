@@ -332,10 +332,18 @@ def _dest_display_name(dest: dict) -> str:
 
 def format_summary(report: dict) -> str:
     """Format a human-readable summary from a report dict."""
+    run_mode = report.get("run_mode", "monitor")
+    blocked = report.get("blocked_connections", 0)
+    if run_mode == "enforce":
+        banner = "Mode: ENFORCE \u2014 connections outside the policy are blocked; the workflow fails on violations."
+    else:
+        extra = f" ({blocked} would-be-blocked)" if blocked else ""
+        banner = f"Mode: MONITOR \u2014 observing only, nothing was blocked{extra}."
     lines = [
         "PipeWarden \u2014 Connection Report",
         "=" * 44,
         f"Generated at: {report['generated_at']}",
+        banner,
         "",
         f"Total connections:   {report['total_connections']}",
         f"Allowed connections: {report['allowed_connections']}",
@@ -343,6 +351,14 @@ def format_summary(report: dict) -> str:
         f"DNS queries:         {report.get('dns_queries', 0)}",
         "",
     ]
+    if report.get("discovery"):
+        cp = report.get("commit_path") or "network-policy.yml"
+        lines += [
+            "TIP: PipeWarden generated a network policy from this run. Download the",
+            "     'network-report' artifact, review its network-policy.yml, and commit it to",
+            f"     {cp} \u2014 then set mode: enforce.",
+            "",
+        ]
 
     access = report.get("access_summary", {})
     destinations = access.get("destinations", [])
@@ -459,11 +475,29 @@ def format_markdown_summary(report: dict) -> str:
     destinations = access.get("destinations", [])
     cert_warnings = access.get("tls_cert_warnings", [])
 
+    run_mode = report.get("run_mode", "monitor")
+    if run_mode == "enforce":
+        banner = "> 🔴 **Enforce mode** — connections outside the policy are blocked; the workflow fails on violations."
+    else:
+        extra = f" ({blocked} would-be-blocked)" if blocked else ""
+        banner = f"> 🟡 **Monitor mode** — observing only, nothing was blocked{extra}."
     lines = [
         "## \U0001f512 PipeWarden Report",
         "",
         f"> Generated at `{report['generated_at']}`",
         "",
+        banner,
+        "",
+    ]
+    if report.get("discovery"):
+        cp = report.get("commit_path") or "network-policy.yml"
+        lines.append(
+            "> 💾 **Get your settings:** PipeWarden generated a network policy from this run. "
+            "Download the `network-report` artifact, review its `network-policy.yml`, and commit it to "
+            f"`{cp}` — then set `mode: enforce`."
+        )
+        lines.append("")
+    lines += [
         "| Metric | Count |",
         "|--------|------:|",
         f"| Total connections | {total} |",
@@ -663,15 +697,22 @@ def generate_complete_policy_yaml(report: dict) -> str:
 
 
 def generate_report(input_path: str, output_dir: str,
-                    policy_path: str | None = None) -> dict:
+                    policy_path: str | None = None,
+                    mode: str | None = None,
+                    commit_path: str | None = None) -> dict:
     """Read JSONL log, produce report.json, summary.txt, summary.md.
 
     If policy_path is provided, also runs policy analysis (dry-run mode).
+    ``mode`` ("monitor"/"enforce") drives the report banner; ``commit_path`` is
+    the suggested location to commit the generated policy (discovery mode).
     Returns the report dict.
     """
     connections = read_jsonl(input_path)
     report = build_report(connections)
     _enrich_destinations(report)
+    report["run_mode"] = mode or "monitor"
+    report["discovery"] = policy_path is None
+    report["commit_path"] = commit_path or "network-policy.yml"
 
     if policy_path:
         report["policy_analysis"] = _run_policy_analysis(
@@ -722,9 +763,14 @@ def main():
     parser.add_argument("--input", required=True, help="Path to connections.jsonl")
     parser.add_argument("--output", required=True, help="Output directory for report files")
     parser.add_argument("--policy", default=None, help="Path to network-policy.yml for dry-run analysis")
+    parser.add_argument("--mode", default=None, help="Run mode: monitor or enforce (for the report banner)")
+    parser.add_argument("--commit-path", default=None, help="Suggested path to commit the generated policy")
     args = parser.parse_args()
 
-    report = generate_report(args.input, args.output, policy_path=args.policy)
+    report = generate_report(
+        args.input, args.output, policy_path=args.policy,
+        mode=args.mode, commit_path=args.commit_path,
+    )
     print(format_summary(report))
 
 

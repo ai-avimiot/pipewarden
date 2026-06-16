@@ -14,7 +14,7 @@ const nativeProxyDir = process.env.GITHUB_ACTION_PATH
 
 const env = {
   ...process.env,
-  INPUT_POLICY_FILE: process.env.INPUT_POLICY_FILE || "network-policy.yml",
+  INPUT_POLICY_FILE: process.env.INPUT_POLICY_FILE || "",
   INPUT_MODE: process.env.INPUT_MODE || "monitor",
   INPUT_PROXY_PORT: process.env["INPUT_PROXY-PORT"] || "8080",
   INPUT_DNS: process.env.INPUT_DNS || "true",
