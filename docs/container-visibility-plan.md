@@ -1,7 +1,17 @@
 # Design plan: network visibility for containerized build steps
 
-**Status:** proposal · **Scope:** `native-proxy` mode · **Driver:** builds that run Docker
-themselves (AWS CDK Lambda bundling, `docker build`/`docker run` in a job step)
+**Status:** proposal (not yet implemented) · **Scope:** `native-proxy` mode · **Driver:**
+builds that run Docker themselves (AWS CDK Lambda bundling, `docker build`/`docker run`
+in a job step)
+
+> **Current state (2026-06):** the blind spot described below is **confirmed empirically**
+> and reproducible — see the runnable demo
+> [`container-scenario-native.yml`](https://github.com/ai-avimiot/pipewarden-demo/blob/main/.github/workflows/container-scenario-native.yml)
+> + [`container-bundling/bundle.sh`](https://github.com/ai-avimiot/pipewarden-demo/blob/main/container-bundling/bundle.sh)
+> in `ai-avimiot/pipewarden-demo`. **None of the tiers below are implemented yet** —
+> `native-proxy` (as of v1.0.4) still only covers host egress. The unrelated artifact
+> work in v1.0.3/v1.0.4 (the action now auto-uploads its report) is *not* part of this
+> plan. Next step remains the **Tier 0 + Tier 1** spike.
 
 ## 1. Problem
 
@@ -38,6 +48,26 @@ All of this is currently invisible. The existing **container mode**
 (`container/entrypoint.sh`) does not help: it only captures containers it attaches to
 `cicd-monitor-net`; a `docker run` a build step launches itself lands on the default
 bridge, off that network.
+
+### Empirically observed (GitHub-hosted runner, monitor mode)
+
+Confirmed with the demo workflow (a host `curl` next to a `docker run … pip install`):
+
+- **Host egress is captured** — `curl https://httpbin.org/ip` shows up with full
+  connection detail and TLS SNI.
+- **Container HTTPS connections are NOT captured** — the in-container `pip install`'s
+  downloads from `pypi.org` and `files.pythonhosted.org` are entirely absent from the
+  report (no connection record, no SNI).
+- **Container DNS is inconsistent / mostly bypassed** — Docker rewrites loopback
+  resolvers, so most container lookups go to a public resolver over the bridge and are
+  not seen. (Some unrelated host-side lookups still appear, so don't rely on DNS-only
+  entries as proof of container visibility.)
+- **Image pulls by the Docker daemon** (e.g. `docker pull`) happen in the host netns and
+  *may* be captured; the demo pre-pulls before monitoring to keep the focus on the
+  container's own egress.
+
+Net: today a compromised dependency pulled during in-container bundling would leave
+**no connection trace** in the report.
 
 ## 2. Constraints
 
@@ -128,6 +158,7 @@ Spike → **Tier 0 + Tier 1** as the first shippable release (this *is* the
 "improve visibility" goal, safely) → Tier 2 (docker shim) → Tier 3 (enforce).
 
 ## References
+- Runnable repro: [pipewarden-demo container-scenario](https://github.com/ai-avimiot/pipewarden-demo/blob/main/.github/workflows/container-scenario-native.yml)
 - mitmproxy: [transparent proxying](https://docs.mitmproxy.org/stable/howto/transparent/),
   [docker bridge issue #7889](https://github.com/mitmproxy/mitmproxy/issues/7889)
 - [Transparent squid proxy for Docker](https://jpetazzo.github.io/2014/06/17/transparent-squid-proxy-docker/)
