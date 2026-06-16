@@ -33,7 +33,7 @@ class _Loader(yaml.SafeLoader):
 _Loader.add_implicit_resolver(
     "tag:yaml.org,2002:bool",
     # Only match true/false/yes/no — NOT 'on'/'off'
-    __import__("re").compile(
+    re.compile(
         r"^(?:true|True|TRUE|false|False|FALSE|yes|Yes|YES|no|No|NO)$"
     ),
     list("tTfFyYnN"),
@@ -104,10 +104,27 @@ def inject_init_step(workflow_path: str, output_path: str) -> str:
         raise ValueError("Invalid workflow file: missing 'jobs' key")
 
     jobs = wf["jobs"]
+    if not isinstance(jobs, dict):
+        raise ValueError("Invalid workflow file: 'jobs' must be a mapping")
+    if not jobs:
+        raise ValueError("Invalid workflow file: 'jobs' must contain at least one job")
+
     job_name = next(iter(jobs))
     job = jobs[job_name]
+    if not isinstance(job, dict):
+        raise ValueError(
+            f"Invalid workflow job '{job_name}': expected mapping"
+        )
+    if "steps" not in job:
+        raise ValueError(
+            f"Invalid workflow job '{job_name}': missing 'steps' key"
+        )
 
-    steps = job.get("steps", [])
+    steps = job["steps"]
+    if not isinstance(steps, list):
+        raise ValueError(
+            f"Invalid workflow job '{job_name}': 'steps' must be a list"
+        )
 
     # Prepend the NFW init step (after checkout if present)
     checkout_idx = -1
