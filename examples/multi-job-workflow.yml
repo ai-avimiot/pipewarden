@@ -1,0 +1,62 @@
+# Multi-job workflow with PipeWarden.
+#
+# Each job runs on its own runner, so the action is added to every job that
+# should be monitored. All jobs in this file auto-resolve the SAME policy
+# (.github/pipewarden/common.network-policy.yml + multi-job-workflow.network-policy.yml),
+# so one allowlist governs the whole workflow.
+#
+# See docs/multi-job-workflows.md for the full explanation.
+name: CI (multi-job)
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+        with:
+          mode: monitor
+          artifact-name: network-report-build   # unique per job to avoid collisions
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - run: npm ci && npm run build
+
+  # Matrix job: each leg uploads under a distinct artifact name.
+  test:
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+        with:
+          mode: monitor
+          artifact-name: network-report-test-node${{ matrix.node }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci && npm test
+
+  # Aggregation job (optional): one combined view of every job's traffic.
+  pipewarden-report:
+    needs: [build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: network-report-*     # collect every per-job / per-matrix report
+          path: reports/
+      - name: Merge reports
+        run: |
+          find reports -name report.json -print
+          # Adapt this to your needs, e.g.:
+          # jq -s 'add' reports/*/report.json > merged-report.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: network-report-merged
+          path: reports/

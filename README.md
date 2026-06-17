@@ -176,6 +176,8 @@ Leave `policy-file` unset and PipeWarden resolves the policy automatically, **me
 - **Fallback:** if no `.github/pipewarden/` files exist, a repo-root `network-policy.yml` is used; if nothing exists, the run is discovery (monitor all, generate a policy).
 - Setting `policy-file:` explicitly bypasses auto-resolution and uses exactly that file.
 
+> **Workflows with multiple jobs?** Each job runs on its own runner, so add the action to every job you want covered — they all auto-resolve the same per-workflow policy. For matrix jobs, aggregating reports, and the union vs. least-privilege tradeoff, see [docs/multi-job-workflows.md](docs/multi-job-workflows.md).
+
 ### 3. Enforce — block unauthorized traffic
 
 Once the policy is stable, just point PipeWarden at it. Enforce is the default — connections outside the allowlist are blocked and the workflow fails:
