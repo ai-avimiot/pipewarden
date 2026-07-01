@@ -1,7 +1,6 @@
 """Unit and property-based tests for PolicyEngine."""
 
-import pytest
-from hypothesis import given, settings, assume
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from policy.models import ConnectionEntry, PolicyRule
