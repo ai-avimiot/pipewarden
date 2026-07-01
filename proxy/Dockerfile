@@ -1,7 +1,8 @@
-# Pin to a specific version to avoid mutable :latest tag (supply chain risk).
-# To digest-pin, run: docker buildx imagetools inspect mitmproxy/mitmproxy:12.2.3
-# then append @sha256:<digest> to the image reference below.
-FROM mitmproxy/mitmproxy:12.2.3
+# Pinned by digest so the base image is immutable (a tag can be repointed at a
+# new image — a supply-chain risk). The tag is kept for readability; the digest
+# is authoritative. To refresh after a version bump (Dependabot also does this):
+#   docker buildx imagetools inspect mitmproxy/mitmproxy:<tag>
+FROM mitmproxy/mitmproxy:12.2.3@sha256:00b77b5d8804c8ad18cb6caefbf9d5849e895e8986c5ce011f4ae30f4385962f
 
 USER root
 
