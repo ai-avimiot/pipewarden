@@ -1,7 +1,5 @@
 """Unit and property tests for policy parser."""
 
-import os
-import tempfile
 
 import pytest
 import yaml
