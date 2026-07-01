@@ -3,10 +3,10 @@
 import json
 import os
 
-import pytest
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from policy.models import ConnectionEntry
+from scripts.count_blocked import count_blocked
 from scripts.generate_report import (
     build_report,
     format_markdown_summary,
@@ -15,8 +15,6 @@ from scripts.generate_report import (
     generate_report,
     read_jsonl,
 )
-from scripts.count_blocked import count_blocked
-
 
 # ---------------------------------------------------------------------------
 # Strategies for property-based tests
@@ -348,7 +346,7 @@ class TestGenerateReport:
              "path": "/api", "method": "GET", "status": "allowed", "bytes_transferred": 512},
         ])
         out_dir = str(tmp_path / "output")
-        report = generate_report(str(log_path), out_dir)
+        generate_report(str(log_path), out_dir)
 
         report_file = os.path.join(out_dir, "report.json")
         assert os.path.exists(report_file)

@@ -3,11 +3,11 @@
 
 import pytest
 import yaml
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from policy.models import PolicyRule
 from policy.parser import parse_policy_file, parse_policy_string
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -255,7 +255,7 @@ def test_policy_parsing_roundtrip_p4(policy):
     assert len(rules) == len(policy["rules"])
 
     # Each rule must match the original dict
-    for rule, raw in zip(rules, policy["rules"]):
+    for rule, raw in zip(rules, policy["rules"], strict=True):
         assert rule.name == raw["name"]
         assert rule.domains == raw["allow"]["domains"]
         assert rule.ports == raw["allow"]["ports"]

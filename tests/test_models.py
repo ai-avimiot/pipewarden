@@ -1,10 +1,10 @@
 """Unit tests for policy data models."""
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from policy.models import ConnectionEntry, PolicyRule
-
 
 # --- ConnectionEntry unit tests ---
 

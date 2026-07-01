@@ -1,22 +1,20 @@
 """Tests for native-proxy/env_vars.py — environment variable generation and exit logic."""
 
-import sys
 import os
+import sys
 
 # Ensure native-proxy is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "native-proxy"))
 
 from env_vars import (
-    generate_proxy_env_vars,
-    generate_ca_env_vars,
-    generate_state_env_vars,
     determine_exit_code,
+    generate_ca_env_vars,
+    generate_proxy_env_vars,
+    generate_state_env_vars,
     generate_transparent_state_vars,
 )
-
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
 
 # ------------------------------------------------------------------
 # generate_proxy_env_vars

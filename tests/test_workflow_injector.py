@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.workflow_injector import inject_init_step, NFW_INIT_STEP
+from scripts.workflow_injector import NFW_INIT_STEP, inject_init_step
 
 
 @pytest.fixture

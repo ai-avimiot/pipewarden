@@ -31,9 +31,9 @@ _parent = os.path.dirname(_project_root)
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
 
-from policy.parser import parse_policy_file  # noqa: E402
 from policy.matcher import PolicyEngine  # noqa: E402
 from policy.models import ConnectionEntry  # noqa: E402
+from policy.parser import parse_policy_file  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

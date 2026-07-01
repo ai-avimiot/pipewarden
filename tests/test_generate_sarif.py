@@ -3,8 +3,6 @@
 import json
 import os
 
-import pytest
-
 from scripts.generate_sarif import generate_sarif, write_sarif
 
 

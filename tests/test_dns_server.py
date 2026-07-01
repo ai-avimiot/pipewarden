@@ -1,17 +1,16 @@
 """Tests for the DNS server module."""
 
+import os
 import struct
 import sys
-import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxy"))
 
 from dns_server import (
+    _make_nxdomain,
     parse_dns_name,
     parse_dns_query,
     parse_dns_response,
-    _make_nxdomain,
-    ip_to_domain,
 )
 
 

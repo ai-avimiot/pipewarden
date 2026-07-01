@@ -1,7 +1,7 @@
 """Tests for policy analysis module."""
 
 from policy.models import PolicyRule
-from scripts.policy_analysis import analyze_policy, _generate_yaml
+from scripts.policy_analysis import _generate_yaml, analyze_policy
 
 
 class TestAnalyzePolicy:

@@ -8,7 +8,6 @@ cryptography library to keep the Docker image small.
 import argparse
 import os
 import subprocess
-import sys
 
 
 def generate_ca(out_dir: str) -> tuple[str, str]:

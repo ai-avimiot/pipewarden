@@ -10,11 +10,9 @@ import tempfile
 # Ensure native-proxy is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "native-proxy"))
 
-from hypothesis import given, settings, assume
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-
-from log_parser import parse_nfw_log_line, parse_nfw_log_file, merge_iptables_entries
-
+from log_parser import merge_iptables_entries, parse_nfw_log_file, parse_nfw_log_line
 
 # ------------------------------------------------------------------
 # Generators

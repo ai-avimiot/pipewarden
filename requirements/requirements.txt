@@ -1,6 +1,11 @@
 pytest>=9.1.1
+pytest-cov>=6.0.0
 hypothesis>=6.155.7
 pyyaml>=6.0.3
 mitmproxy>=12.2.3
 cryptography>=42.0,<49
 dnspython>=2.8.0
+# Linting / type-checking (CI: see .github/workflows/test.yml)
+ruff>=0.14.0
+mypy>=1.18.0
+types-PyYAML>=6.0.12

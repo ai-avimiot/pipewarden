@@ -3,21 +3,18 @@
 import json
 import os
 
-import pytest
-
+from proxy.addon import NetworkMonitorAddon
 from tests.conftest import (
+    MockCert,
+    MockClientConn,
     MockHTTPFlow,
     MockRequest,
     MockResponse,
-    MockClientConn,
-    MockCert,
     MockServerConn,
     MockServerConnWithCert,
     MockTCPFlow,
     MockTCPMessage,
 )
-from proxy.addon import NetworkMonitorAddon
-
 
 # ------------------------------------------------------------------
 # Helpers

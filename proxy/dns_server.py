@@ -19,7 +19,6 @@ import socket
 import struct
 import sys
 import threading
-import time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -283,8 +282,8 @@ if __name__ == "__main__":
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from policy.parser import parse_policy_file
             from policy.matcher import PolicyEngine
+            from policy.parser import parse_policy_file
             _, rules = parse_policy_file(policy_file)
             mode = os.environ.get("MODE", "monitor")
             engine = PolicyEngine(rules, mode=mode)

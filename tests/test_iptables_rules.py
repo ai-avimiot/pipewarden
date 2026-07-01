@@ -3,19 +3,16 @@
 Feature: native-transparent-proxy
 """
 
-import sys
 import os
+import sys
 
 # Ensure native-proxy is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "native-proxy"))
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
-import pytest
-
-from iptables_rules import generate_nat_rules, generate_log_rules, generate_flush_commands
-
+from iptables_rules import generate_flush_commands, generate_log_rules, generate_nat_rules
 
 # ------------------------------------------------------------------
 # Property 1: NAT rule generation correctness
