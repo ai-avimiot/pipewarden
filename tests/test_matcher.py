@@ -112,6 +112,42 @@ class TestPolicyEngineAllows:
         assert engine.allows(_conn(host="x.com", port=80, protocol="http")) is True
 
 
+class TestPolicyEngineCaseInsensitivity:
+    """Domain matching must be case-insensitive and OS-independent.
+
+    Hostnames are case-insensitive per RFC 4343, and a client fully controls
+    the casing of the SNI/Host it sends. ``fnmatch`` (as opposed to
+    ``fnmatchcase``) is case-sensitive on Linux, so these cases regress-guard
+    against mixed-case hosts silently failing to match on the Linux CI runners
+    this tool targets.
+    """
+
+    def test_uppercase_host_matches_lowercase_pattern(self):
+        engine = PolicyEngine([_rule(domains=["example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host="EXAMPLE.COM")) is True
+
+    def test_mixed_case_host_matches_wildcard(self):
+        engine = PolicyEngine([_rule(domains=["*.example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host="CDN.Example.COM")) is True
+
+    def test_uppercase_pattern_matches_lowercase_host(self):
+        engine = PolicyEngine([_rule(domains=["*.EXAMPLE.COM"], protocols=["https"])])
+        assert engine.allows(_conn(host="cdn.example.com")) is True
+
+    def test_dns_matching_is_case_insensitive(self):
+        engine = PolicyEngine([_rule(domains=["example.com"], protocols=["dns"])])
+        assert engine.allows(_conn(host="Example.Com", protocol="dns")) is True
+
+    @given(host=st.sampled_from(["a.example.com", "sub.example.com", "example.com"]))
+    @settings(max_examples=25)
+    def test_case_folding_is_symmetric(self, host):
+        """Matching a host must not depend on the casing of that host."""
+        engine = PolicyEngine([_rule(domains=["*.example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host=host)) is engine.allows(
+            _conn(host=host.upper())
+        )
+
+
 class TestPolicyEngineEvaluate:
     """Unit tests for PolicyEngine.evaluate()."""
 
