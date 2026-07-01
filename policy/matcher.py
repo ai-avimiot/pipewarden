@@ -78,9 +78,20 @@ class PolicyEngine:
     def _domain_matches(patterns: list[str], host: str) -> bool:
         """Check if a host matches any of the domain patterns.
 
-        Uses fnmatch for wildcard support (e.g. *.example.com).
+        Hostnames are case-insensitive (RFC 4343), so both the host and the
+        patterns are lowercased before matching. ``fnmatchcase`` is used rather
+        than ``fnmatch`` so behaviour is identical across operating systems:
+        ``fnmatch`` applies ``os.path.normcase``, which is case-sensitive on
+        Linux but case-insensitive on macOS/Windows — meaning a mixed-case SNI
+        such as ``CDN.Example.COM`` would silently fail to match ``*.example.com``
+        on the Linux CI runners this tool targets.
+
+        Uses wildcards for subdomain support (e.g. ``*.example.com``).
         """
-        return any(fnmatch.fnmatch(host, pattern) for pattern in patterns)
+        host_lower = host.lower()
+        return any(
+            fnmatch.fnmatchcase(host_lower, pattern.lower()) for pattern in patterns
+        )
 
     @staticmethod
     def _port_matches(ports: list[int], port: int) -> bool:
@@ -96,7 +107,11 @@ class PolicyEngine:
 
         An empty patterns list means all paths are allowed.
         Uses fnmatch for wildcard support (e.g. /api/*, /simple/*).
+
+        Unlike hostnames, URL paths are case-sensitive, so matching preserves
+        case. ``fnmatchcase`` is used so the result does not depend on the host
+        operating system's filename case semantics.
         """
         if not patterns:
             return True
-        return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+        return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)

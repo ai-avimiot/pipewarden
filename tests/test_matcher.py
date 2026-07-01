@@ -110,6 +110,42 @@ class TestPolicyEngineAllows:
         assert engine.allows(_conn(host="x.com", port=80, protocol="http")) is True
 
 
+class TestPolicyEngineCaseInsensitivity:
+    """Domain matching must be case-insensitive and OS-independent.
+
+    Hostnames are case-insensitive per RFC 4343, and a client fully controls
+    the casing of the SNI/Host it sends. ``fnmatch`` (as opposed to
+    ``fnmatchcase``) is case-sensitive on Linux, so these cases regress-guard
+    against mixed-case hosts silently failing to match on the Linux CI runners
+    this tool targets.
+    """
+
+    def test_uppercase_host_matches_lowercase_pattern(self):
+        engine = PolicyEngine([_rule(domains=["example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host="EXAMPLE.COM")) is True
+
+    def test_mixed_case_host_matches_wildcard(self):
+        engine = PolicyEngine([_rule(domains=["*.example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host="CDN.Example.COM")) is True
+
+    def test_uppercase_pattern_matches_lowercase_host(self):
+        engine = PolicyEngine([_rule(domains=["*.EXAMPLE.COM"], protocols=["https"])])
+        assert engine.allows(_conn(host="cdn.example.com")) is True
+
+    def test_dns_matching_is_case_insensitive(self):
+        engine = PolicyEngine([_rule(domains=["example.com"], protocols=["dns"])])
+        assert engine.allows(_conn(host="Example.Com", protocol="dns")) is True
+
+    @given(host=st.sampled_from(["a.example.com", "sub.example.com", "example.com"]))
+    @settings(max_examples=25)
+    def test_case_folding_is_symmetric(self, host):
+        """Matching a host must not depend on the casing of that host."""
+        engine = PolicyEngine([_rule(domains=["*.example.com"], protocols=["https"])])
+        assert engine.allows(_conn(host=host)) is engine.allows(
+            _conn(host=host.upper())
+        )
+
+
 class TestPolicyEngineEvaluate:
     """Unit tests for PolicyEngine.evaluate()."""
 
@@ -130,123 +166,122 @@ class TestPolicyEngineEvaluate:
         assert engine.evaluate(_conn()) == "allowed"
 
 
-    class TestDnsPolicyFiltering:
-        """Unit tests for DNS query filtering via _allows_dns()."""
+class TestDnsPolicyFiltering:
+    """Unit tests for DNS query filtering via _allows_dns()."""
 
-        def test_dns_allowed_when_domain_in_rule(self):
-            """DNS query for a domain that appears in a rule's domains → allowed."""
-            engine = PolicyEngine([
-                _rule(domains=["registry.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="registry.npmjs.org", port=53, protocol="dns")
-            assert engine.allows(conn) is True
+    def test_dns_allowed_when_domain_in_rule(self):
+        """DNS query for a domain that appears in a rule's domains → allowed."""
+        engine = PolicyEngine([
+            _rule(domains=["registry.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="registry.npmjs.org", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
-        def test_dns_blocked_when_domain_not_in_any_rule(self):
-            """DNS query for a domain NOT in any rule → blocked."""
-            engine = PolicyEngine([
-                _rule(domains=["registry.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="evil-exfil.example.com", port=53, protocol="dns")
-            assert engine.allows(conn) is False
+    def test_dns_blocked_when_domain_not_in_any_rule(self):
+        """DNS query for a domain NOT in any rule → blocked."""
+        engine = PolicyEngine([
+            _rule(domains=["registry.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="evil-exfil.example.com", port=53, protocol="dns")
+        assert engine.allows(conn) is False
 
-        def test_dns_with_service_prefix_allowed(self):
-            """DNS query with _http._tcp. prefix for an allowed domain → allowed."""
-            engine = PolicyEngine([
-                _rule(domains=["registry.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="_http._tcp.registry.npmjs.org", port=53, protocol="dns")
-            assert engine.allows(conn) is True
+    def test_dns_with_service_prefix_allowed(self):
+        """DNS query with _http._tcp. prefix for an allowed domain → allowed."""
+        engine = PolicyEngine([
+            _rule(domains=["registry.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="_http._tcp.registry.npmjs.org", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
-        def test_dns_with_service_prefix_blocked(self):
-            """DNS query with _http._tcp. prefix for unknown domain → blocked."""
-            engine = PolicyEngine([
-                _rule(domains=["registry.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="_http._tcp.evil.com", port=53, protocol="dns")
-            assert engine.allows(conn) is False
+    def test_dns_with_service_prefix_blocked(self):
+        """DNS query with _http._tcp. prefix for unknown domain → blocked."""
+        engine = PolicyEngine([
+            _rule(domains=["registry.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="_http._tcp.evil.com", port=53, protocol="dns")
+        assert engine.allows(conn) is False
 
-        def test_dns_wildcard_domain_match(self):
-            """Wildcard domain pattern (*.npmjs.org) allows DNS for sub.npmjs.org."""
-            engine = PolicyEngine([
-                _rule(domains=["*.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="registry.npmjs.org", port=53, protocol="dns")
-            assert engine.allows(conn) is True
+    def test_dns_wildcard_domain_match(self):
+        """Wildcard domain pattern (*.npmjs.org) allows DNS for sub.npmjs.org."""
+        engine = PolicyEngine([
+            _rule(domains=["*.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="registry.npmjs.org", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
-        def test_dns_wildcard_no_match_bare(self):
-            """Wildcard *.npmjs.org does NOT match bare npmjs.org for DNS."""
-            engine = PolicyEngine([
-                _rule(domains=["*.npmjs.org"], protocols=["https"]),
-            ])
-            conn = _conn(host="npmjs.org", port=53, protocol="dns")
-            assert engine.allows(conn) is False
+    def test_dns_wildcard_no_match_bare(self):
+        """Wildcard *.npmjs.org does NOT match bare npmjs.org for DNS."""
+        engine = PolicyEngine([
+            _rule(domains=["*.npmjs.org"], protocols=["https"]),
+        ])
+        conn = _conn(host="npmjs.org", port=53, protocol="dns")
+        assert engine.allows(conn) is False
 
-        def test_dns_star_matches_everything(self):
-            """Star (*) domain pattern allows DNS for any domain."""
-            engine = PolicyEngine([
-                _rule(domains=["*"], protocols=["https"]),
-            ])
-            conn = _conn(host="anything.example.com", port=53, protocol="dns")
-            assert engine.allows(conn) is True
+    def test_dns_star_matches_everything(self):
+        """Star (*) domain pattern allows DNS for any domain."""
+        engine = PolicyEngine([
+            _rule(domains=["*"], protocols=["https"]),
+        ])
+        conn = _conn(host="anything.example.com", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
-        def test_dns_no_rules_blocks_all(self):
-            """Empty rules → all DNS queries blocked."""
-            engine = PolicyEngine([])
-            conn = _conn(host="example.com", port=53, protocol="dns")
-            assert engine.allows(conn) is False
+    def test_dns_no_rules_blocks_all(self):
+        """Empty rules → all DNS queries blocked."""
+        engine = PolicyEngine([])
+        conn = _conn(host="example.com", port=53, protocol="dns")
+        assert engine.allows(conn) is False
 
-        def test_dns_ignores_protocol_and_port_of_rules(self):
-            """DNS matching checks only domain patterns, ignoring rule protocol/port."""
-            engine = PolicyEngine([
-                _rule(domains=["example.com"], ports=[443], protocols=["https"]),
-            ])
-            # DNS query on port 53 with protocol "dns" should still match
-            conn = _conn(host="example.com", port=53, protocol="dns")
-            assert engine.allows(conn) is True
+    def test_dns_ignores_protocol_and_port_of_rules(self):
+        """DNS matching checks only domain patterns, ignoring rule protocol/port."""
+        engine = PolicyEngine([
+            _rule(domains=["example.com"], ports=[443], protocols=["https"]),
+        ])
+        # DNS query on port 53 with protocol "dns" should still match
+        conn = _conn(host="example.com", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
-        def test_dns_multiple_rules_any_domain_matches(self):
-            """DNS allowed if domain appears in ANY rule's domain list."""
-            engine = PolicyEngine([
-                _rule(name="npm", domains=["registry.npmjs.org"], protocols=["https"]),
-                _rule(name="github", domains=["github.com", "*.github.com"], protocols=["https"]),
-            ])
-            assert engine.allows(_conn(host="github.com", port=53, protocol="dns")) is True
-            assert engine.allows(_conn(host="api.github.com", port=53, protocol="dns")) is True
-            assert engine.allows(_conn(host="registry.npmjs.org", port=53, protocol="dns")) is True
-            assert engine.allows(_conn(host="unknown.com", port=53, protocol="dns")) is False
+    def test_dns_multiple_rules_any_domain_matches(self):
+        """DNS allowed if domain appears in ANY rule's domain list."""
+        engine = PolicyEngine([
+            _rule(name="npm", domains=["registry.npmjs.org"], protocols=["https"]),
+            _rule(name="github", domains=["github.com", "*.github.com"], protocols=["https"]),
+        ])
+        assert engine.allows(_conn(host="github.com", port=53, protocol="dns")) is True
+        assert engine.allows(_conn(host="api.github.com", port=53, protocol="dns")) is True
+        assert engine.allows(_conn(host="registry.npmjs.org", port=53, protocol="dns")) is True
+        assert engine.allows(_conn(host="unknown.com", port=53, protocol="dns")) is False
 
-        def test_dns_evaluate_blocked_in_enforce(self):
-            """In enforce mode, unknown DNS query → 'blocked'."""
-            engine = PolicyEngine([
-                _rule(domains=["example.com"], protocols=["https"]),
-            ], mode="enforce")
-            conn = _conn(host="evil.com", port=53, protocol="dns")
-            assert engine.evaluate(conn) == "blocked"
+    def test_dns_evaluate_blocked_in_enforce(self):
+        """In enforce mode, unknown DNS query → 'blocked'."""
+        engine = PolicyEngine([
+            _rule(domains=["example.com"], protocols=["https"]),
+        ], mode="enforce")
+        conn = _conn(host="evil.com", port=53, protocol="dns")
+        assert engine.evaluate(conn) == "blocked"
 
-        def test_dns_evaluate_would_block_in_monitor(self):
-            """In monitor mode, unknown DNS query → 'would_block'."""
-            engine = PolicyEngine([
-                _rule(domains=["example.com"], protocols=["https"]),
-            ], mode="monitor")
-            conn = _conn(host="evil.com", port=53, protocol="dns")
-            assert engine.evaluate(conn) == "would_block"
+    def test_dns_evaluate_would_block_in_monitor(self):
+        """In monitor mode, unknown DNS query → 'would_block'."""
+        engine = PolicyEngine([
+            _rule(domains=["example.com"], protocols=["https"]),
+        ], mode="monitor")
+        conn = _conn(host="evil.com", port=53, protocol="dns")
+        assert engine.evaluate(conn) == "would_block"
 
-        def test_dns_evaluate_allowed(self):
-            """Known DNS query → 'allowed' in any mode."""
-            engine = PolicyEngine([
-                _rule(domains=["example.com"], protocols=["https"]),
-            ], mode="enforce")
-            conn = _conn(host="example.com", port=53, protocol="dns")
-            assert engine.evaluate(conn) == "allowed"
+    def test_dns_evaluate_allowed(self):
+        """Known DNS query → 'allowed' in any mode."""
+        engine = PolicyEngine([
+            _rule(domains=["example.com"], protocols=["https"]),
+        ], mode="enforce")
+        conn = _conn(host="example.com", port=53, protocol="dns")
+        assert engine.evaluate(conn) == "allowed"
 
-        def test_dns_nested_service_prefix(self):
-            """Multiple underscore prefixes like _srv._tcp.example.com are stripped."""
-            engine = PolicyEngine([
-                _rule(domains=["example.com"], protocols=["https"]),
-            ])
-            conn = _conn(host="_srv._tcp.example.com", port=53, protocol="dns")
-            assert engine.allows(conn) is True
-
+    def test_dns_nested_service_prefix(self):
+        """Multiple underscore prefixes like _srv._tcp.example.com are stripped."""
+        engine = PolicyEngine([
+            _rule(domains=["example.com"], protocols=["https"]),
+        ])
+        conn = _conn(host="_srv._tcp.example.com", port=53, protocol="dns")
+        assert engine.allows(conn) is True
 
 
 # ---------------------------------------------------------------------------

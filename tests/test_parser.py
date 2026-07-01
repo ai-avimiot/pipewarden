@@ -127,6 +127,36 @@ class TestParsePolicyString:
         with pytest.raises(ValueError, match="invalid protocol"):
             parse_policy_string(content)
 
+    def test_non_string_domain_rejected(self):
+        content = (
+            'version: "1"\nmode: monitor\nrules:\n'
+            '  - name: "bad"\n    allow:\n      domains: [123]\n'
+        )
+        with pytest.raises(ValueError, match="domain patterns must be non-empty"):
+            parse_policy_string(content)
+
+    def test_empty_string_domain_rejected(self):
+        content = (
+            'version: "1"\nmode: monitor\nrules:\n'
+            '  - name: "bad"\n    allow:\n      domains: [""]\n'
+        )
+        with pytest.raises(ValueError, match="domain patterns must be non-empty"):
+            parse_policy_string(content)
+
+    def test_non_string_name_rejected(self):
+        content = 'version: "1"\nmode: monitor\nrules:\n  - name: 123\n    allow: {}\n'
+        with pytest.raises(ValueError, match="'name' must be a string"):
+            parse_policy_string(content)
+
+    def test_duplicate_rule_name_rejected(self):
+        content = (
+            'version: "1"\nmode: monitor\nrules:\n'
+            '  - name: "dup"\n    allow:\n      domains: ["a.com"]\n'
+            '  - name: "dup"\n    allow:\n      domains: ["b.com"]\n'
+        )
+        with pytest.raises(ValueError, match="duplicate rule name"):
+            parse_policy_string(content)
+
     def test_invalid_yaml(self):
         with pytest.raises(ValueError, match="Invalid YAML"):
             parse_policy_string(":\n  :\n  - [invalid")
@@ -199,7 +229,10 @@ _policy_st = st.fixed_dictionaries(
     {
         "version": st.just("1"),
         "mode": _mode_st,
-        "rules": st.lists(_rule_st, min_size=0, max_size=5),
+        # Rule names must be unique within a policy (enforced by the parser).
+        "rules": st.lists(
+            _rule_st, min_size=0, max_size=5, unique_by=lambda r: r["name"]
+        ),
     }
 )
 
