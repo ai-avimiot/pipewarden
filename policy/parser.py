@@ -54,6 +54,7 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
         raise ValueError("'rules' must be a list")
 
     rules: list[PolicyRule] = []
+    seen_names: set[str] = set()
     for i, raw_rule in enumerate(raw_rules):
         if not isinstance(raw_rule, dict):
             raise ValueError(f"Rule {i}: must be a mapping")
@@ -61,6 +62,11 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
         name = raw_rule.get("name")
         if not name:
             raise ValueError(f"Rule {i}: missing required field 'name'")
+        if not isinstance(name, str):
+            raise ValueError(f"Rule {i}: 'name' must be a string, got {name!r}")
+        if name in seen_names:
+            raise ValueError(f"Rule {i}: duplicate rule name {name!r}")
+        seen_names.add(name)
 
         appears = raw_rule.get("appears", "always")
         if appears not in ("always", "sometimes"):
@@ -76,6 +82,12 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
         domains = allow.get("domains", [])
         if not isinstance(domains, list):
             raise ValueError(f"Rule {i} ('{name}'): 'domains' must be a list")
+        for domain in domains:
+            if not isinstance(domain, str) or not domain:
+                raise ValueError(
+                    f"Rule {i} ('{name}'): domain patterns must be non-empty "
+                    f"strings, got {domain!r}"
+                )
 
         ports = allow.get("ports", [])
         if not isinstance(ports, list):
