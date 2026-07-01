@@ -1,9 +1,9 @@
 ## PipeWarden runner — minimal act-compatible runner with iproute2 for route switching.
 ## Uses Ubuntu LTS base for minimal size. Tools (Node.js, Python, etc.) are downloaded
 ## on first run and cached in Docker volumes for subsequent runs.
-# To digest-pin: docker buildx imagetools inspect ubuntu:26.04
-# then use: FROM ubuntu:26.04@sha256:<digest>
-FROM ubuntu:26.04
+# Pinned by digest (tag kept for readability). To refresh after a version bump
+# (Dependabot also does this): docker buildx imagetools inspect ubuntu:<tag>
+FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
 
 ENV DEBIAN_FRONTEND=noninteractive
 
