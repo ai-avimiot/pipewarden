@@ -1,6 +1,6 @@
 """Data models for PipeWarden."""
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass

@@ -1,15 +1,13 @@
 """Unit tests for IP enrichment module."""
 
 import socket
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from scripts.ip_enrichment import (
     _reverse_ip,
+    enrich_ips,
     lookup_asn,
     reverse_dns,
-    enrich_ips,
 )
 
 

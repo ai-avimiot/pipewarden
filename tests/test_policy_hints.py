@@ -38,8 +38,8 @@ def test_multi_label_public_suffix_suppressed():
 
 def test_comment_lines_render():
     lines = hint_comment_lines(["registry.npmjs.org", "www.npmjs.org"])
-    assert any("*.npmjs.org" in l for l in lines)
-    assert all(l.startswith("#") for l in lines)
+    assert any("*.npmjs.org" in line for line in lines)
+    assert all(line.startswith("#") for line in lines)
 
 
 def test_no_comment_when_no_hints():

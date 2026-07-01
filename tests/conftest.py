@@ -1,14 +1,11 @@
 """Shared test fixtures for PipeWarden tests."""
 
-import os
-import tempfile
 import textwrap
 
 import pytest
 
-from policy.models import ConnectionEntry, PolicyRule
 from policy.matcher import PolicyEngine
-
+from policy.models import PolicyRule
 
 # ------------------------------------------------------------------
 # Policy fixtures

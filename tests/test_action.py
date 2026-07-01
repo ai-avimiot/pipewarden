@@ -6,7 +6,6 @@ import yaml
 
 from policy.parser import parse_policy_file
 
-
 ROOT = Path(__file__).resolve().parent.parent
 
 

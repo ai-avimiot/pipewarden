@@ -1,0 +1,45 @@
+[project]
+name = "pipewarden"
+version = "0.1.0"
+description = "See every outbound connection your CI pipeline makes. Block the ones it shouldn't."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# This project runs as scripts / containers rather than an installed package,
+# so there is intentionally no [build-system]. The tables below configure the
+# developer tooling (ruff, mypy, pytest, coverage) run in CI.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pragmatic starter set: pyflakes (F), a subset of pycodestyle (E/W),
+# import sorting (I), and bugbear (B). E501 (line length) is left ungated
+# for now so the tooling can land without a large reflow diff.
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# The proxy addon manipulates sys.path before importing local packages.
+"proxy/addon.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+# Start type-checking with the security-critical policy core; expand over time.
+files = ["policy"]
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["policy", "proxy", "scripts", "native-proxy"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true

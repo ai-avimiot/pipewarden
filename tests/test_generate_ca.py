@@ -1,12 +1,10 @@
 """Tests for the TLS CA certificate generator (openssl-based)."""
 
 import os
-import subprocess
 
-import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from scripts.generate_ca import generate_ca
 
