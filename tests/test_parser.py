@@ -231,7 +231,10 @@ _policy_st = st.fixed_dictionaries(
     {
         "version": st.just("1"),
         "mode": _mode_st,
-        "rules": st.lists(_rule_st, min_size=0, max_size=5),
+        # Rule names must be unique within a policy (enforced by the parser).
+        "rules": st.lists(
+            _rule_st, min_size=0, max_size=5, unique_by=lambda r: r["name"]
+        ),
     }
 )
 
