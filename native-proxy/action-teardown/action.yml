@@ -40,7 +40,7 @@ runs:
 
     - name: Upload network report as artifact
       if: inputs.upload-artifact != 'false' && steps.teardown.outputs.report-path != ''
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ inputs.artifact-name }}
         path: ${{ steps.teardown.outputs.report-path }}
@@ -48,7 +48,7 @@ runs:
 
     - name: Upload generated network policy as artifact
       if: steps.teardown.outputs.generated-policy-path != ''
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: pipewarden-generated-network-policy
         path: ${{ steps.teardown.outputs.generated-policy-path }}
