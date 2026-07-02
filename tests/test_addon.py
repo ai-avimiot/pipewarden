@@ -2,8 +2,15 @@
 
 import json
 import os
+import ssl
+from datetime import datetime, timedelta, timezone
 
-from proxy.addon import NetworkMonitorAddon
+from proxy.addon import (
+    NetworkMonitorAddon,
+    _cert_dns_names,
+    _hostname_matches_cert_names,
+    verify_server_cert,
+)
 from tests.conftest import (
     MockCert,
     MockClientConn,
@@ -15,6 +22,34 @@ from tests.conftest import (
     MockTCPFlow,
     MockTCPMessage,
 )
+
+
+def _self_signed_pem(cn: str = "evil.test", sans: list[str] | None = None) -> bytes:
+    """Build a self-signed certificate PEM for tests (no CA, so it's untrusted)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import Encoding
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=1))
+    )
+    if sans:
+        builder = builder.add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(s) for s in sans]),
+            critical=False,
+        )
+    cert = builder.sign(key, hashes.SHA256())
+    return cert.public_bytes(Encoding.PEM)
 
 # ------------------------------------------------------------------
 # Helpers
@@ -399,6 +434,156 @@ class TestCertificateVerification:
 
         entries = _read_log_entries(log_file)
         assert len(entries) == 1  # Should not crash
+
+
+# ------------------------------------------------------------------
+# Hostname ↔ certificate name matching (RFC 6125)
+# ------------------------------------------------------------------
+
+class TestHostnameMatching:
+    """Tests for _hostname_matches_cert_names."""
+
+    def test_exact_match(self):
+        assert _hostname_matches_cert_names("api.github.com", ["api.github.com"])
+
+    def test_case_insensitive(self):
+        assert _hostname_matches_cert_names("API.GitHub.COM", ["api.github.com"])
+
+    def test_trailing_dot_ignored(self):
+        assert _hostname_matches_cert_names("api.github.com.", ["api.github.com"])
+
+    def test_wildcard_matches_one_label(self):
+        assert _hostname_matches_cert_names("cdn.example.com", ["*.example.com"])
+
+    def test_wildcard_does_not_match_bare_domain(self):
+        assert not _hostname_matches_cert_names("example.com", ["*.example.com"])
+
+    def test_wildcard_matches_only_leftmost_label(self):
+        assert not _hostname_matches_cert_names("a.b.example.com", ["*.example.com"])
+
+    def test_no_match_against_other_names(self):
+        assert not _hostname_matches_cert_names(
+            "evil.com", ["api.github.com", "*.github.com"]
+        )
+
+    def test_empty_hostname_never_matches(self):
+        assert not _hostname_matches_cert_names("", ["api.github.com"])
+
+
+# ------------------------------------------------------------------
+# verify_server_cert return contract
+# ------------------------------------------------------------------
+
+class TestVerifyServerCert:
+    """Tests for the tri-state verify_server_cert contract."""
+
+    def test_none_when_trust_store_missing(self):
+        status, err = verify_server_cert(b"anything", "example.com", None)
+        assert status is None
+        assert "trust store" in err.lower()
+
+    def test_none_when_unparseable(self):
+        ctx = ssl.create_default_context()
+        status, err = verify_server_cert(
+            b"-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----\n",
+            "example.com", ctx,
+        )
+        assert status is None
+
+    def test_false_for_self_signed(self):
+        pem = _self_signed_pem(cn="evil.test", sans=["evil.test"])
+        ctx = ssl.create_default_context()
+        status, err = verify_server_cert(pem, "evil.test", ctx)
+        assert status is False
+        assert "self-signed" in err.lower()
+
+    def test_cert_dns_names_reads_san(self):
+        from cryptography import x509
+        pem = _self_signed_pem(cn="cn.test", sans=["a.test", "b.test"])
+        cert = x509.load_pem_x509_certificate(pem)
+        assert _cert_dns_names(cert) == ["a.test", "b.test"]
+
+    def test_cert_dns_names_falls_back_to_cn(self):
+        from cryptography import x509
+        pem = _self_signed_pem(cn="only-cn.test", sans=None)
+        cert = x509.load_pem_x509_certificate(pem)
+        assert _cert_dns_names(cert) == ["only-cn.test"]
+
+
+# ------------------------------------------------------------------
+# Enforce-mode certificate gate (anti spoofed-SNI / MITM)
+# ------------------------------------------------------------------
+
+class TestEnforceCertGate:
+    """An allowlisted HTTPS host with a definitively invalid upstream cert
+    must be blocked in enforce mode and only recorded in monitor mode."""
+
+    _ALLOW_ALL_HTTPS = (
+        'version: "1"\n'
+        "mode: enforce\n"
+        "rules:\n"
+        "  - name: all\n"
+        "    allow:\n"
+        '      domains: ["*"]\n'
+        "      ports: [443]\n"
+        "      protocols: [https]\n"
+    )
+
+    def _policy(self, tmp_path):
+        p = tmp_path / "allow-all.yml"
+        p.write_text(self._ALLOW_ALL_HTTPS)
+        return str(p)
+
+    def _flow_with_bad_cert(self, host="api.github.com"):
+        pem = _self_signed_pem(cn=host, sans=[host])
+        cert = MockCert(cn=host, issuer_cn=host, pem=pem)
+        return MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host=host, port=443, path="/", method="GET",
+            ),
+            client_conn=MockClientConn(sni=host),
+            server_conn=MockServerConnWithCert(cert=cert),
+        )
+
+    def test_enforce_blocks_allowed_host_with_invalid_cert(self, tmp_path, log_file):
+        addon = _make_addon(self._policy(tmp_path), mode="enforce", log_path=log_file)
+        flow = self._flow_with_bad_cert()
+
+        addon.request(flow)
+
+        entries = _read_log_entries(log_file)
+        assert entries[0]["status"] == "blocked"
+        assert entries[0]["tls_cert_valid"] is False
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+
+    def test_monitor_records_invalid_cert_but_does_not_block(self, tmp_path, log_file):
+        addon = _make_addon(self._policy(tmp_path), mode="monitor", log_path=log_file)
+        flow = self._flow_with_bad_cert()
+
+        addon.request(flow)
+
+        entries = _read_log_entries(log_file)
+        assert entries[0]["status"] == "allowed"
+        assert entries[0]["tls_cert_valid"] is False
+        assert flow.response is None
+
+    def test_enforce_does_not_block_when_cert_absent(self, tmp_path, log_file):
+        """No presented cert => can't verify => must not block a policy-allowed host."""
+        addon = _make_addon(self._policy(tmp_path), mode="enforce", log_path=log_file)
+        flow = MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host="api.github.com", port=443, path="/", method="GET",
+            ),
+            client_conn=MockClientConn(sni="api.github.com"),
+            server_conn=MockServerConnWithCert(cert=None),
+        )
+
+        addon.request(flow)
+
+        entries = _read_log_entries(log_file)
+        assert entries[0]["status"] == "allowed"
+        assert flow.response is None
 
 
 # ------------------------------------------------------------------
