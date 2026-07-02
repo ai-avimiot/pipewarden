@@ -63,15 +63,69 @@ def _build_trust_store() -> ssl.SSLContext | None:
         return None
 
 
+def _cert_dns_names(cert) -> list[str]:
+    """Return the DNS names a certificate is valid for.
+
+    Prefers the SubjectAlternativeName dNSName entries (the authoritative
+    source per RFC 6125); falls back to the subject CommonName only when no
+    SAN is present.
+    """
+    from cryptography import x509 as crypto_x509
+
+    names: list[str] = []
+    try:
+        san = cert.extensions.get_extension_for_class(
+            crypto_x509.SubjectAlternativeName
+        )
+        names.extend(san.value.get_values_for_type(crypto_x509.DNSName))
+    except crypto_x509.ExtensionNotFound:
+        pass
+    except Exception:
+        pass
+    if not names:
+        for attr in cert.subject:
+            if attr.oid == crypto_x509.oid.NameOID.COMMON_NAME:
+                names.append(attr.value)
+    return names
+
+
+def _hostname_matches_cert_names(hostname: str, names: list[str]) -> bool:
+    """Check a hostname against a certificate's DNS names (RFC 6125).
+
+    Matching is case-insensitive. A leading ``*.`` wildcard matches exactly
+    one left-most label (``*.example.com`` matches ``a.example.com`` but not
+    ``example.com`` or ``a.b.example.com``).
+    """
+    host = hostname.lower().rstrip(".")
+    if not host:
+        return False
+    for name in names:
+        name = name.lower().rstrip(".")
+        if not name:
+            continue
+        if name.startswith("*."):
+            suffix = name[1:]  # ".example.com"
+            first_dot = host.find(".")
+            if first_dot > 0 and host[first_dot:] == suffix:
+                return True
+        elif host == name:
+            return True
+    return False
+
+
 def verify_server_cert(cert_pem: bytes, hostname: str,
                        trust_ctx: ssl.SSLContext | None,
                        chain_pems: list[bytes] | None = None,
-                       ) -> tuple[bool, str]:
+                       ) -> tuple[bool | None, str]:
     """Verify a server certificate against the system trust store.
 
     Uses pyOpenSSL's X509StoreContext with the full intermediate chain
     so that certs from CAs like Amazon, Google Trust Services, etc.
-    validate correctly.
+    validate correctly, then checks the certificate was actually issued for
+    ``hostname`` (SAN/CN match). The hostname check is what makes the result
+    meaningful for policy attribution: without it, a valid certificate for an
+    attacker-controlled domain would "pass" even when the client spoofed the
+    SNI of an allowlisted host.
 
     Args:
         cert_pem: PEM-encoded leaf (server) certificate bytes.
@@ -80,11 +134,15 @@ def verify_server_cert(cert_pem: bytes, hostname: str,
         chain_pems: Optional list of PEM-encoded intermediate certificates.
 
     Returns:
-        (is_valid, error_message) — is_valid is True if the cert chains
-        to a trusted public CA.
+        (status, error_message) where status is:
+          True  — chains to a trusted public CA and is valid for hostname
+          False — definitively invalid (self-signed, untrusted chain, or
+                  issued for a different host): a MITM/impersonation signal
+          None  — could not be verified (no trust store, parse/verify error);
+                  callers must treat this as "unknown", never as trusted.
     """
     if trust_ctx is None:
-        return True, ""  # Can't verify, assume OK
+        return None, "trust store unavailable — certificate not verified"
 
     from cryptography import x509 as crypto_x509
 
@@ -96,20 +154,23 @@ def verify_server_cert(cert_pem: bytes, hostname: str,
 
     try:
         cert = crypto_x509.load_pem_x509_certificate(cert_pem)
+    except Exception as e:
+        return None, f"certificate parse error: {e}"
 
-        # Check if self-signed (issuer == subject)
-        if cert.issuer == cert.subject:
-            cn = _extract_issuer_cn(cert)
-            return False, f"self-signed certificate (issuer: {cn})"
+    # Check if self-signed (issuer == subject)
+    if cert.issuer == cert.subject:
+        cn = _extract_issuer_cn(cert)
+        return False, f"self-signed certificate (issuer: {cn})"
 
-        # Verify the certificate chain using pyOpenSSL's X509Store
-        from OpenSSL import crypto as openssl_crypto
+    from OpenSSL import crypto as openssl_crypto
 
+    # Verify the certificate chain using pyOpenSSL's X509Store
+    try:
         store = openssl_crypto.X509Store()
         try:
             import certifi
             store.load_locations(certifi.where())
-        except (ImportError, Exception):
+        except ImportError:
             store.set_default_paths()
 
         x509_leaf = openssl_crypto.load_certificate(
@@ -132,13 +193,21 @@ def verify_server_cert(cert_pem: bytes, hostname: str,
             store, x509_leaf, intermediates or None
         )
         ctx.verify_certificate()
-        return True, ""
-
     except openssl_crypto.X509StoreContextError as e:
         cn = _extract_issuer_cn(cert)
         return False, f"untrusted certificate (issuer: {cn}, error: {e})"
     except Exception as e:
-        return False, f"certificate verification error: {e}"
+        return None, f"certificate verification error: {e}"
+
+    # Chain is trusted — now confirm the cert was issued for this host, so a
+    # spoofed SNI can't borrow an allowlisted domain's identity.
+    if hostname:
+        names = _cert_dns_names(cert)
+        if names and not _hostname_matches_cert_names(hostname, names):
+            shown = ", ".join(names[:5])
+            return False, f"certificate not valid for {hostname} (cert names: {shown})"
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +248,12 @@ class NetworkMonitorAddon:
 
         # Pre-build the trust store once for cert verification
         self._trust_ctx = _build_trust_store()
+        if self._trust_ctx is None:
+            logger.warning(
+                "TLS trust store unavailable — upstream certificate "
+                "verification is disabled; certificate-based enforcement "
+                "(blocking spoofed-SNI / MITM certs) will not trigger."
+            )
 
         # DNS IP→domain map (populated by dns_server.py)
         self._dns_ip_map: dict[str, str] = {}
@@ -243,6 +318,26 @@ class NetworkMonitorAddon:
                 entry.server_ip = addr[0] if isinstance(addr, tuple) else str(addr)
 
         status = self.engine.evaluate(entry)
+
+        # Certificate-based enforcement: in enforce mode, a connection the
+        # policy would allow but whose upstream cert is *definitively* invalid
+        # (self-signed, untrusted chain, or not issued for this SNI host) is a
+        # TLS impersonation / SNI-spoofing signal. Block it so a forged SNI
+        # can't borrow an allowlisted domain's identity. Monitor mode only
+        # records the finding (tls_cert_valid=False) and never blocks.
+        if (
+            status == "allowed"
+            and is_https
+            and self.mode == "enforce"
+            and entry.tls_cert_valid is False
+        ):
+            status = "blocked"
+            reason = entry.tls_cert_error or "invalid TLS certificate"
+            logger.warning(
+                "Blocking %s:%s — allowed by policy but %s",
+                host, req.port, reason,
+            )
+
         entry.status = status
 
         if status == "blocked":
@@ -334,7 +429,11 @@ class NetworkMonitorAddon:
             is_valid, error = verify_server_cert(
                 cert_pem, hostname, self._trust_ctx, chain_pems
             )
-            entry.tls_cert_valid = is_valid
+            # Only flag tls_cert_valid=False on a definitive failure. A None
+            # result means "could not verify" — leave the default so we don't
+            # falsely claim invalidity (and don't trigger enforce blocking).
+            if is_valid is False:
+                entry.tls_cert_valid = False
             if error:
                 entry.tls_cert_error = error
 
