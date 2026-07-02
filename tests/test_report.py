@@ -8,6 +8,7 @@ from hypothesis import strategies as st
 
 from scripts.count_blocked import count_blocked
 from scripts.generate_report import (
+    _md,
     build_report,
     format_markdown_summary,
     format_summary,
@@ -574,3 +575,64 @@ def test_p9_report_field_completeness(connections):
         # HTTP/S entries must also have path
         if conn["protocol"] in ("http", "https"):
             assert "path" in conn, "HTTP/S entry missing 'path' field"
+
+
+# ---------------------------------------------------------------------------
+# Markdown injection hardening — untrusted hostnames in PR-comment reports
+# ---------------------------------------------------------------------------
+
+class TestMarkdownSanitization:
+    """The Markdown summary is posted verbatim as a PR comment, so any value
+    that originates from network traffic (hostnames, cert subjects, ...) must
+    be neutralised before rendering."""
+
+    def test_md_leaves_plain_hostnames_untouched(self):
+        assert _md("api.github.com") == "api.github.com"
+        assert _md("140.82.121.4") == "140.82.121.4"
+
+    def test_md_neutralizes_backticks(self):
+        assert "`" not in _md("evil`code`host")
+
+    def test_md_escapes_table_pipes(self):
+        assert _md("a|b") == "a\\|b"
+
+    def test_md_collapses_newlines_and_control_chars(self):
+        out = _md("line1\nline2\ttab\r\x00null")
+        assert "\n" not in out and "\r" not in out and "\t" not in out
+        assert "\x00" not in out
+
+    def test_md_escapes_angle_brackets(self):
+        out = _md("<img src=x onerror=alert(1)>")
+        assert "<" not in out and ">" not in out
+        assert "&lt;" in out and "&gt;" in out
+
+    def test_md_defuses_link_syntax(self):
+        assert "[" not in _md("[click](http://evil)")
+        assert "]" not in _md("[click](http://evil)")
+
+    def test_markdown_summary_neutralizes_malicious_host(self):
+        # A crafted destination host tries to break the table and inject a link.
+        evil = "evil`.com | [click](http://attacker) <b>x</b>"
+        report = build_report([
+            {"status": "blocked", "host": evil, "port": 443, "protocol": "https"},
+        ])
+        md = format_markdown_summary(report)
+        # No raw backtick should survive to break the code span, no live link,
+        # no raw HTML, and any table pipe from the payload must be escaped.
+        assert "evil`.com" not in md
+        assert "[click](http://attacker)" not in md
+        assert "<b>x</b>" not in md
+        assert "evil'.com \\| " in md  # backtick->' , pipe escaped
+
+    def test_markdown_summary_neutralizes_malicious_cert_fields(self):
+        report = build_report([
+            {
+                "status": "allowed", "host": "cdn.example.com", "port": 443,
+                "protocol": "https", "tls_cert_valid": False,
+                "tls_cert_error": "untrusted | [x](http://evil) <script>evil</script>",
+                "tls_cert_issuer": "Evil|CA <x>",
+            },
+        ])
+        md = format_markdown_summary(report)
+        assert "<script>" not in md
+        assert "[x](http://evil)" not in md

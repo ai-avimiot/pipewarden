@@ -15,9 +15,31 @@ import argparse
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+_MD_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _md(value) -> str:
+    """Sanitize an untrusted string for safe embedding in a Markdown table cell.
+
+    Hostnames, reverse-DNS names, certificate subjects and ASN owner strings all
+    originate from network traffic and are attacker-influenced. The Markdown
+    summary is posted verbatim as a PR/issue comment, so a crafted value could
+    otherwise break out of a table cell or inject links/HTML. This neutralises
+    the handful of characters that enable that (control chars/newlines,
+    backticks, table pipes, angle brackets) while leaving ordinary hostnames and
+    IPs untouched.
+    """
+    s = _MD_CONTROL_RE.sub(" ", str(value))       # newlines, tabs, control chars
+    s = s.replace("`", "'")                         # can't open/close a code span
+    s = s.replace("|", "\\|")                       # keep table columns intact
+    s = s.replace("<", "&lt;").replace(">", "&gt;")  # no raw HTML
+    s = s.replace("[", "&#91;").replace("]", "&#93;")  # no [text](url) link injection
+    return s
 
 
 def read_jsonl(input_path: str) -> list[dict]:
@@ -515,7 +537,7 @@ def format_markdown_summary(report: dict) -> str:
         lines.append("| Host | Error |")
         lines.append("|------|-------|")
         for w in cert_warnings:
-            lines.append(f"| `{w['host']}:{w['port']}` | {w.get('tls_cert_error', 'untrusted')} |")
+            lines.append(f"| `{_md(w['host'])}:{w['port']}` | {_md(w.get('tls_cert_error', 'untrusted'))} |")
         lines.append("")
 
     if destinations:
@@ -526,21 +548,21 @@ def format_markdown_summary(report: dict) -> str:
         lines.append("|-------------|-------|----------|------|--------|-------|----|")
         for dest in sorted(destinations, key=lambda d: d["count"], reverse=True):
             display = _dest_display_name(dest)
-            host_port = f"`{display}:{dest['port']}`"
-            proto = dest.get("protocol", "?")
+            host_port = f"`{_md(display)}:{dest['port']}`"
+            proto = _md(dest.get("protocol", "?"))
             count = dest["count"]
             data = _format_bytes(dest.get("bytes_transferred", 0))
             statuses = dest.get("statuses", {})
             status_parts = []
             for s, n in sorted(statuses.items()):
                 icon = "\u2705" if s == "allowed" else "\U0001f6ab" if s in ("blocked", "would_block") else ""
-                status_parts.append(f"{icon}{s}={n}")
+                status_parts.append(f"{icon}{_md(s)}={n}")
             status_str = ", ".join(status_parts)
-            issuer = dest.get("tls_cert_issuer", "\u2014")
+            issuer = _md(dest.get("tls_cert_issuer", "\u2014"))
             cert_flag = " \u26a0\ufe0f" if dest.get("tls_cert_valid") is False else ""
             ip_info = dest.get("ip_info", {})
-            owner = ip_info.get("owner", "\u2014")
-            country = ip_info.get("country", "")
+            owner = _md(ip_info.get("owner", "\u2014"))
+            country = _md(ip_info.get("country", ""))
             if country and owner != "\u2014":
                 owner = f"{owner} ({country})"
             lines.append(f"| {host_port} | {proto} | {count} | {data} | {status_str} | {owner} | {issuer}{cert_flag} |")
@@ -558,7 +580,7 @@ def format_markdown_summary(report: dict) -> str:
         lines.append("|-------------|-------|------:|------------|")
         grouped = _group_blocked(blocked_conns)
         for key, info in sorted(grouped.items(), key=lambda x: x[1]["count"], reverse=True):
-            lines.append(f"| `{key}` | {info['protocol']} | {info['count']} | {info['time_range']} |")
+            lines.append(f"| `{_md(key)}` | {_md(info['protocol'])} | {info['count']} | {info['time_range']} |")
         lines.append("")
         lines.append("</details>")
         lines.append("")
@@ -577,12 +599,12 @@ def format_markdown_summary(report: dict) -> str:
         lines.append("|--|--------|--------:|------|-------------|")
         for q in sorted(dns_queries, key=lambda d: d["count"], reverse=True):
             icon = "\u2705" if q["status"] == "allowed" else "\U0001f6ab"
-            ips = ", ".join(f"`{ip}`" for ip in q["resolved_ips"][:3])
+            ips = ", ".join(f"`{_md(ip)}`" for ip in q["resolved_ips"][:3])
             if len(q["resolved_ips"]) > 3:
                 ips += f" (+{len(q['resolved_ips']) - 3})"
             if not ips:
                 ips = "\u2014"
-            lines.append(f"| {icon} | `{q['host']}` | {q['count']} | {q['query_type']} | {ips} |")
+            lines.append(f"| {icon} | `{_md(q['host'])}` | {q['count']} | {_md(q['query_type'])} | {ips} |")
         lines.append("")
         lines.append("</details>")
         lines.append("")
@@ -606,13 +628,13 @@ def _format_policy_analysis_md(lines: list[str], analysis: dict) -> None:
         for ru in rule_usage:
             icon = "\u2705" if ru["match_count"] > 0 else "\u26aa"
             # Show domain patterns from the rule
-            doms = ", ".join(f"`{d}`" for d in ru.get("domains", [])[:4])
+            doms = ", ".join(f"`{_md(d)}`" for d in ru.get("domains", [])[:4])
             if len(ru.get("domains", [])) > 4:
                 doms += f" (+{len(ru['domains']) - 4})"
             if not doms:
                 doms = "\u2014"
             # Show actual matched hosts; for zero-match rules, explain why.
-            hosts = ", ".join(f"`{h}`" for h in ru["matched_hosts"][:5])
+            hosts = ", ".join(f"`{_md(h)}`" for h in ru["matched_hosts"][:5])
             if len(ru["matched_hosts"]) > 5:
                 hosts += f" (+{len(ru['matched_hosts']) - 5} more)"
             if not hosts:
@@ -622,7 +644,7 @@ def _format_policy_analysis_md(lines: list[str], analysis: dict) -> None:
                     hosts = "_unused; candidate for removal_"
                 else:
                     hosts = "\u2014"
-            lines.append(f"| {icon} | {ru['name']} | {doms} | {ru['match_count']} | {hosts} |")
+            lines.append(f"| {icon} | {_md(ru['name'])} | {doms} | {ru['match_count']} | {hosts} |")
         lines.append("")
         lines.append("</details>")
         lines.append("")
