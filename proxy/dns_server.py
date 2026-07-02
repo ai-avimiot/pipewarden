@@ -19,6 +19,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,32 @@ LISTEN_PORT = int(os.environ.get("DNS_LISTEN_PORT", "53"))
 LOG_PATH = os.environ.get("DNS_LOG_PATH", "/var/log/dns_queries.jsonl")
 IP_MAP_PATH = os.environ.get("DNS_IP_MAP_PATH", "/var/log/dns_ip_map.json")
 CONN_LOG_PATH = os.environ.get("LOG_PATH", "/var/log/connections.jsonl")
+# Cap the ip→domain map so a long-running job with lots of unique resolutions
+# can't grow it without bound.
+MAX_IP_MAP_ENTRIES = int(os.environ.get("DNS_IP_MAP_MAX", "4096"))
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
+
+
+def _same_txn_id(query: bytes, response: bytes) -> bool:
+    """Return True if a response's transaction ID matches the query's."""
+    if len(query) < 2 or len(response) < 2:
+        return False
+    return query[:2] == response[:2]
+
+
+def _remember_ip(ip: str, qname: str) -> None:
+    """Record an ip→domain mapping, most-recent last, bounded in size.
+
+    Uses the insertion-ordered dict as an LRU-ish cache: a refreshed IP moves
+    to the end, and the oldest entries are evicted once the cap is exceeded.
+    """
+    if ip in ip_to_domain:
+        del ip_to_domain[ip]
+    ip_to_domain[ip] = qname
+    while len(ip_to_domain) > MAX_IP_MAP_ENTRIES:
+        del ip_to_domain[next(iter(ip_to_domain))]
 
 
 def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
@@ -116,22 +140,41 @@ def parse_dns_response(data: bytes) -> list[str]:
 
 
 def forward_query(data: bytes, timeout: float = 3.0) -> bytes | None:
-    """Forward a DNS query to upstream resolvers and return the response."""
+    """Forward a DNS query to upstream resolvers and return the response.
+
+    Hardened against off-path spoofing: the socket is ``connect()``-ed to the
+    chosen resolver so the kernel only delivers datagrams from that peer, and
+    the response's transaction ID must match the query's (stray/mismatched
+    datagrams are ignored until a matching one arrives or the deadline passes).
+    """
     for upstream in UPSTREAM_DNS:
         upstream = upstream.strip()
+        if not upstream:
+            continue
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
-            sock.sendto(data, (upstream, 53))
-            response, _ = sock.recvfrom(4096)
-            sock.close()
-            return response
+            # connect() restricts recv() to datagrams from this resolver only.
+            sock.connect((upstream, 53))
+            sock.send(data)
+            deadline = time.monotonic() + timeout
+            while True:
+                response = sock.recv(4096)
+                if _same_txn_id(data, response):
+                    return response
+                # Wrong transaction ID — a spoofed or stale datagram; keep
+                # waiting for the legitimate reply until the deadline.
+                if time.monotonic() >= deadline:
+                    break
         except (socket.timeout, OSError):
-            try:
-                sock.close()
-            except Exception:
-                pass
             continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
     return None
 
 
@@ -213,7 +256,7 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
     # Parse resolved IPs and update the map
     resolved_ips = parse_dns_response(response)
     for ip in resolved_ips:
-        ip_to_domain[ip] = qname
+        _remember_ip(ip, qname)
 
     if resolved_ips:
         update_ip_map()

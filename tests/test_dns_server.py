@@ -6,8 +6,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxy"))
 
+import dns_server
 from dns_server import (
     _make_nxdomain,
+    _remember_ip,
+    _same_txn_id,
     parse_dns_name,
     parse_dns_query,
     parse_dns_response,
@@ -110,3 +113,58 @@ class TestMakeNxdomain:
         response = _make_nxdomain(query)
         txn_id = struct.unpack("!H", response[0:2])[0]
         assert txn_id == 0xBEEF
+
+
+class TestSameTxnId:
+    """Transaction-ID matching used to reject spoofed/stale upstream replies."""
+
+    def test_matching_ids(self):
+        q = _build_dns_query("a.com", txn_id=0x1234)
+        r = _build_dns_response("a.com", ["1.2.3.4"], txn_id=0x1234)
+        assert _same_txn_id(q, r) is True
+
+    def test_mismatched_ids(self):
+        q = _build_dns_query("a.com", txn_id=0x1234)
+        r = _build_dns_response("a.com", ["1.2.3.4"], txn_id=0x5678)
+        assert _same_txn_id(q, r) is False
+
+    def test_short_packets_never_match(self):
+        assert _same_txn_id(b"", b"") is False
+        assert _same_txn_id(b"\x12", b"\x12") is False
+
+
+class TestRememberIp:
+    """The ip→domain map must stay bounded and refresh recency."""
+
+    def setup_method(self):
+        self._orig_max = dns_server.MAX_IP_MAP_ENTRIES
+        dns_server.ip_to_domain.clear()
+
+    def teardown_method(self):
+        dns_server.MAX_IP_MAP_ENTRIES = self._orig_max
+        dns_server.ip_to_domain.clear()
+
+    def test_records_mapping(self):
+        _remember_ip("1.2.3.4", "a.com")
+        assert dns_server.ip_to_domain["1.2.3.4"] == "a.com"
+
+    def test_evicts_oldest_over_cap(self):
+        dns_server.MAX_IP_MAP_ENTRIES = 3
+        for i in range(5):
+            _remember_ip(f"10.0.0.{i}", f"host{i}.com")
+        assert len(dns_server.ip_to_domain) == 3
+        # The two oldest (10.0.0.0, 10.0.0.1) should have been evicted.
+        assert "10.0.0.0" not in dns_server.ip_to_domain
+        assert "10.0.0.1" not in dns_server.ip_to_domain
+        assert "10.0.0.4" in dns_server.ip_to_domain
+
+    def test_refresh_moves_to_most_recent(self):
+        dns_server.MAX_IP_MAP_ENTRIES = 3
+        for i in range(3):
+            _remember_ip(f"10.0.0.{i}", f"host{i}.com")
+        # Refresh the oldest so it's now most-recent, then push one more.
+        _remember_ip("10.0.0.0", "host0.com")
+        _remember_ip("10.0.0.9", "host9.com")
+        # 10.0.0.1 was the oldest after the refresh and should be evicted.
+        assert "10.0.0.1" not in dns_server.ip_to_domain
+        assert "10.0.0.0" in dns_server.ip_to_domain
