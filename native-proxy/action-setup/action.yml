@@ -30,6 +30,10 @@ inputs:
     description: "Token used to cancel the run when fail-fast triggers (pass the job's github.token; needs permissions: actions: write)."
     required: false
     default: ""
+  mitmproxy-version:
+    description: "Pinned mitmproxy version to install on the runner. Keep in lockstep with the proxy container base image."
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -45,6 +49,7 @@ runs:
         INPUT_TRANSPARENT: ${{ inputs.transparent }}
         INPUT_FAIL_FAST: ${{ inputs.fail-fast }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_MITMPROXY_VERSION: ${{ inputs.mitmproxy-version }}
         INPUT_ACTION_PATH: ${{ github.action_path }}/..
         GITHUB_RUN_ID: ${{ github.run_id }}
         GITHUB_REPOSITORY: ${{ github.repository }}

@@ -56,19 +56,24 @@ echo "::endgroup::"
 # ---------------------------------------------------------------------------
 # 1. Install mitmproxy (the proven proxy engine)
 # ---------------------------------------------------------------------------
+# Pin the version so a compromised or breaking PyPI release can't be pulled
+# into the runner at job time. Keep this in lockstep with the proxy container
+# base image (proxy/Dockerfile: mitmproxy/mitmproxy:<version>). Overridable via
+# the mitmproxy-version input for testing against a newer release.
+MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.2.3}"
 echo "::group::PipeWarden: Install proxy"
 if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     if [ -x /usr/local/bin/mitmdump ]; then
         echo "mitmproxy already installed, skipping"
     else
-        echo "Installing mitmproxy..."
-        sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions mitmproxy
+        echo "Installing mitmproxy==${MITMPROXY_VERSION}..."
+        sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
     fi
 else
     if command -v mitmdump &>/dev/null; then
         echo "mitmdump already on PATH, skipping"
     else
-        pip install --quiet mitmproxy
+        pip install --quiet "mitmproxy==${MITMPROXY_VERSION}"
     fi
 fi
 echo "::endgroup::"
