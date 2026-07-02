@@ -7,6 +7,14 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    # tornado and msgpack are transitive dependencies of mitmproxy, which caps
+    # them (tornado<=6.5.5, msgpack<=1.1.2). The lock already sits at those
+    # ceilings, so independent Dependabot bumps only produce unmergeable PRs
+    # (pip --require-hashes ResolutionImpossible). They move when mitmproxy is
+    # bumped and the lock is regenerated via scripts/update-lock-files.sh.
+    ignore:
+      - dependency-name: "tornado"
+      - dependency-name: "msgpack"
 
   - package-ecosystem: "pip"
     directory: "/proxy"
