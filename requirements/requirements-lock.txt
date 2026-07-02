@@ -1107,9 +1107,9 @@ typing-extensions==4.14.0 \
     #   mitmproxy
     #   mypy
     #   pyopenssl
-urwid==3.0.5 \
-    --hash=sha256:24be27ffafdb68c09cd95dc21b60ccfd02843320b25ce5feee1708b34fad5a23 \
-    --hash=sha256:f188144261224fdfc9b56b4222869bd0eac90fd7895cf1e376129cdc7e13bc84
+urwid==4.0.3 \
+    --hash=sha256:0f9a1d9b51a529f04c363d04c53dc446dada47a9eab641a82244ff9d1fe5029b \
+    --hash=sha256:4fdab0874e6df5c8315811be49627c62e208f776951d6704bd00133a0688a08c
     # via mitmproxy
 wcwidth==0.8.2 \
     --hash=sha256:91fbef97204b96a3d4d421609b80340b760cf33e26da123ff243d76b1fda8dda \
