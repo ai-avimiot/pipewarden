@@ -14,11 +14,25 @@ updates:
     # bumped and the lock is regenerated via scripts/update-lock-files.sh.
     # cryptography is likewise capped by mitmproxy (<=48.1), so major bumps
     # to 49+ are unmergeable; within-range patch bumps are still allowed.
+    # The remaining entries are other mitmproxy-capped deps sitting at their
+    # ceilings (typing-extensions<=4.14, urwid<=3.0.5, aioquic==1.2.0,
+    # pydivert<=2.1.0) and pyopenssl, whose 26.3+ releases require
+    # cryptography>=49. Revisit ALL of these when mitmproxy is bumped.
     ignore:
       - dependency-name: "tornado"
       - dependency-name: "msgpack"
       - dependency-name: "cryptography"
         versions: [">=49"]
+      - dependency-name: "typing-extensions"
+        versions: [">4.14"]
+      - dependency-name: "urwid"
+        versions: [">3.0.5"]
+      - dependency-name: "aioquic"
+        versions: [">1.2.0"]
+      - dependency-name: "pydivert"
+        versions: [">2.1.0"]
+      - dependency-name: "pyopenssl"
+        versions: [">=26.3"]
 
   - package-ecosystem: "pip"
     directory: "/proxy"
