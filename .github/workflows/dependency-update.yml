@@ -25,7 +25,18 @@ jobs:
       # requests"). Auto-merge alone completes once required checks pass.
       - name: Auto-merge patch and minor updates
         if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --squash "$PR_URL"
+        # Two known non-error failure modes are tolerated with a retry +
+        # warning instead of a red run: a stale-base race (another PR merged
+        # into main between check and merge — retry succeeds), and PRs that
+        # modify .github/workflows/*, which GITHUB_TOKEN is never permitted
+        # to merge directly ("refusing to allow a GitHub App to create or
+        # update workflow") — those need a manual merge.
+        run: |
+          if ! gh pr merge --auto --squash "$PR_URL"; then
+            sleep 20
+            gh pr merge --auto --squash "$PR_URL" || \
+              echo "::warning::Could not auto-merge ${PR_URL}: merge it manually (GITHUB_TOKEN cannot merge PRs that modify workflow files)."
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
