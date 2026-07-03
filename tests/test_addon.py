@@ -640,3 +640,93 @@ class TestResponseDataTracking:
         addon.response(flow)
 
         assert not os.path.exists(log_file) or _read_log_entries(log_file) == []
+
+
+# ------------------------------------------------------------------
+# Policy loading: fail-closed and mode precedence
+# ------------------------------------------------------------------
+
+class TestPolicyLoadFailure:
+    """An invalid policy file must fail closed, never silently allow."""
+
+    def test_invalid_policy_sets_init_error(self, tmp_path, log_file):
+        bad = tmp_path / "bad-policy.yml"
+        bad.write_text("version: '1'\nmode: bogus\nrules: []\n")
+        addon = NetworkMonitorAddon(
+            policy_file=str(bad), mode="enforce", log_path=log_file,
+        )
+        assert addon.init_error is not None
+        assert "bad-policy.yml" in addon.init_error
+
+    def test_invalid_policy_blocks_everything_in_enforce(self, tmp_path, log_file):
+        bad = tmp_path / "bad-policy.yml"
+        bad.write_text("rules: [")  # unparseable YAML
+        addon = NetworkMonitorAddon(
+            policy_file=str(bad), mode="enforce", log_path=log_file,
+        )
+        flow = MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/", method="GET",
+        ))
+
+        addon.request(flow)
+
+        entries = _read_log_entries(log_file)
+        assert entries[0]["status"] == "blocked"
+        assert flow.response is not None
+
+    def test_running_hook_is_safe_outside_mitmproxy(self, tmp_path, log_file):
+        bad = tmp_path / "bad-policy.yml"
+        bad.write_text("rules: [")
+        addon = NetworkMonitorAddon(
+            policy_file=str(bad), mode="enforce", log_path=log_file,
+        )
+        # Outside mitmproxy there is no master to shut down; must not raise.
+        addon.running()
+
+    def test_valid_policy_has_no_init_error(self, sample_policy_file, log_file):
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        assert addon.init_error is None
+        addon.running()  # no-op
+
+
+class TestModePrecedence:
+    """Mode: constructor arg > MODE env > policy file mode > monitor."""
+
+    def test_policy_file_mode_used_when_no_arg_or_env(
+        self, sample_policy_file, log_file, monkeypatch,
+    ):
+        monkeypatch.delenv("MODE", raising=False)
+        addon = NetworkMonitorAddon(
+            policy_file=sample_policy_file, log_path=log_file,
+        )
+        # The sample policy declares mode: enforce
+        assert addon.mode == "enforce"
+        assert addon.engine.mode == "enforce"
+
+    def test_env_mode_overrides_policy_file(
+        self, sample_policy_file, log_file, monkeypatch,
+    ):
+        monkeypatch.setenv("MODE", "monitor")
+        addon = NetworkMonitorAddon(
+            policy_file=sample_policy_file, log_path=log_file,
+        )
+        assert addon.mode == "monitor"
+
+    def test_arg_overrides_env_and_policy_file(
+        self, sample_policy_file, log_file, monkeypatch,
+    ):
+        monkeypatch.setenv("MODE", "monitor")
+        addon = NetworkMonitorAddon(
+            policy_file=sample_policy_file, mode="enforce", log_path=log_file,
+        )
+        assert addon.mode == "enforce"
+
+    def test_defaults_to_monitor_without_policy_or_env(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        monkeypatch.delenv("MODE", raising=False)
+        addon = NetworkMonitorAddon(
+            policy_file=str(tmp_path / "missing.yml"), log_path=log_file,
+        )
+        assert addon.mode == "monitor"
+        assert addon.init_error is None  # missing file is discovery, not error

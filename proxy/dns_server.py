@@ -20,6 +20,7 @@ import struct
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ CONN_LOG_PATH = os.environ.get("LOG_PATH", "/var/log/connections.jsonl")
 # Cap the ip→domain map so a long-running job with lots of unique resolutions
 # can't grow it without bound.
 MAX_IP_MAP_ENTRIES = int(os.environ.get("DNS_IP_MAP_MAX", "4096"))
+# Cap concurrent query handlers so a flood of queries can't exhaust threads.
+MAX_WORKERS = int(os.environ.get("DNS_MAX_WORKERS", "32"))
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
@@ -286,16 +289,13 @@ def run_dns_server(policy_engine=None) -> None:
     print(f"[dns] Listening on {LISTEN_ADDR}:{LISTEN_PORT}", flush=True)
     print(f"[dns] Upstream resolvers: {UPSTREAM_DNS}", flush=True)
 
+    # Bounded pool: queries are handled concurrently without letting a
+    # query flood spawn an unbounded number of threads.
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="dns")
     while True:
         try:
             data, addr = sock.recvfrom(4096)
-            # Handle each query in a thread to avoid blocking
-            t = threading.Thread(
-                target=handle_query,
-                args=(data, addr, sock, policy_engine),
-                daemon=True,
-            )
-            t.start()
+            executor.submit(handle_query, data, addr, sock, policy_engine)
         except Exception as e:
             logger.debug(f"DNS server error: {e}")
 
@@ -318,7 +318,10 @@ def start_dns_server_thread(policy_engine=None) -> threading.Thread:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
 
-    # Optionally load policy for DNS filtering
+    # Optionally load policy for DNS filtering. A missing policy file means
+    # discovery mode (log everything, block nothing), but a policy that
+    # exists and fails to load must not silently disable filtering — exit
+    # non-zero so the container/CI step fails visibly (fail closed).
     engine = None
     policy_file = os.environ.get("POLICY_FILE", "")
     if policy_file and os.path.exists(policy_file):
@@ -327,11 +330,13 @@ if __name__ == "__main__":
             sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             from policy.matcher import PolicyEngine
             from policy.parser import parse_policy_file
-            _, rules = parse_policy_file(policy_file)
-            mode = os.environ.get("MODE", "monitor")
+            parsed_mode, rules = parse_policy_file(policy_file)
+            mode = os.environ.get("MODE") or parsed_mode or "monitor"
             engine = PolicyEngine(rules, mode=mode)
             print(f"[dns] Policy loaded: {len(rules)} rules, mode={mode}")
         except Exception as e:
-            print(f"[dns] Could not load policy: {e}")
+            print(f"[dns] FATAL: could not load policy {policy_file!r}: {e}",
+                  file=sys.stderr, flush=True)
+            sys.exit(1)
 
     run_dns_server(engine)

@@ -219,8 +219,16 @@ class NetworkMonitorAddon:
 
     Configuration is read from environment variables:
         POLICY_FILE — path to the YAML policy file (required)
-        MODE        — "monitor" (default) or "enforce"
+        MODE        — "monitor" or "enforce"
         LOG_PATH    — path to the JSONL log file
+
+    Mode precedence: constructor argument, then the MODE environment
+    variable, then the policy file's own ``mode:`` field, then "monitor".
+
+    An invalid (unparseable) policy file fails closed: the addon runs with
+    an empty allowlist and, once mitmproxy is serving, shuts the proxy down
+    via the ``running`` hook so the CI run fails visibly instead of
+    silently proxying unfiltered traffic.
     """
 
     def __init__(
@@ -230,12 +238,13 @@ class NetworkMonitorAddon:
         log_path: str | None = None,
     ):
         policy_file = policy_file or os.environ.get("POLICY_FILE", "network-policy.yml")
-        mode = mode or os.environ.get("MODE", "monitor")
+        env_mode = os.environ.get("MODE", "")
         self.log_path = log_path or os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
 
+        self.init_error: str | None = None
+        parsed_mode = ""
         try:
             parsed_mode, rules = parse_policy_file(policy_file)
-            self.mode = mode if mode else parsed_mode
         except FileNotFoundError:
             logger.info(
                 "Policy file not found: %r — running in discovery mode "
@@ -243,7 +252,13 @@ class NetworkMonitorAddon:
                 policy_file,
             )
             rules = []
-            self.mode = mode if mode else "monitor"
+        except ValueError as exc:
+            # Fail closed: an empty allowlist blocks everything in enforce
+            # mode, and running() shuts the proxy down so the error surfaces.
+            self.init_error = f"invalid policy file {policy_file!r}: {exc}"
+            logger.critical("%s", self.init_error)
+            rules = []
+        self.mode = mode or env_mode or parsed_mode or "monitor"
         self.engine = PolicyEngine(rules, mode=self.mode)
 
         # Pre-build the trust store once for cert verification
@@ -271,6 +286,32 @@ class NetworkMonitorAddon:
         except (FileNotFoundError, ValueError, OSError):
             pass
         return self._dns_ip_map.get(ip, "")
+
+    # ------------------------------------------------------------------
+    # mitmproxy lifecycle
+    # ------------------------------------------------------------------
+
+    def running(self) -> None:
+        """mitmproxy hook: refuse to serve if the policy failed to load.
+
+        mitmproxy keeps proxying (unfiltered) when an addon errors, so a
+        broken policy must actively shut the proxy down to fail closed.
+        Until this hook fires, the empty allowlist set in __init__ blocks
+        all traffic in enforce mode.
+        """
+        if not self.init_error:
+            return
+        logger.critical(
+            "Shutting down proxy: %s — fix the policy file and re-run.",
+            self.init_error,
+        )
+        try:
+            from mitmproxy import ctx
+            ctx.master.shutdown()
+        except Exception:
+            # Not running under mitmproxy (e.g. direct instantiation in
+            # tests) — nothing to shut down.
+            pass
 
     # ------------------------------------------------------------------
     # HTTP / HTTPS interception
@@ -515,9 +556,8 @@ def _make_blocked_response() -> _BlockedResponse:
 # mitmproxy entry-point
 # ------------------------------------------------------------------
 
-# Only instantiate when loaded by mitmproxy (not during test imports).
-# Tests create their own addon instances with explicit arguments.
-try:
-    addons = [NetworkMonitorAddon()]
-except (FileNotFoundError, Exception):
-    addons = []
+# __init__ never raises for policy problems: a missing policy file means
+# discovery mode, and an invalid one stores init_error so the running()
+# hook shuts the proxy down (fail closed). Swallowing errors here would
+# leave mitmproxy serving with no addon at all — unfiltered traffic.
+addons = [NetworkMonitorAddon()]

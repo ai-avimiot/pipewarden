@@ -324,6 +324,8 @@ Without a token it logs a warning and falls back to fail-at-teardown.
 | `upload-artifact` | `true` | Upload the report as a build artifact at teardown |
 | `artifact-name` | `network-report` | Name of the uploaded report artifact |
 
+The `mode` input (via the `MODE` environment variable) takes precedence over the policy file's own `mode:` field; the file's value is used only when no input/env mode is set, falling back to `monitor`.
+
 ### Outputs (teardown)
 
 | Output | Description |
