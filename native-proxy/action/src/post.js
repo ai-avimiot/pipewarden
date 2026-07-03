@@ -3,7 +3,8 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const { DefaultArtifactClient } = require("@actions/artifact");
+// @actions/artifact v6 is ESM-only (its exports map has no "require" entry),
+// so it must be loaded with dynamic import() — see uploadReport().
 
 // Resolve the native-proxy root (holds setup.sh/teardown.sh). GITHUB_ACTION_PATH
 // is only set for composite actions, not JS actions, so for the JS bundle we
@@ -135,6 +136,7 @@ async function uploadReport() {
   }
   const name = process.env.NFW_ARTIFACT_NAME || process.env["INPUT_ARTIFACT-NAME"] || "network-report";
   try {
+    const { DefaultArtifactClient } = await import("@actions/artifact");
     const client = new DefaultArtifactClient();
     await client.uploadArtifact(name, files, reportDir);
     console.log(`::notice title=PipeWarden::Uploaded '${name}' artifact (${files.length} files from /tmp/report/).`);

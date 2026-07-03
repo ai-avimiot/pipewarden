@@ -12,9 +12,13 @@ updates:
     # ceilings, so independent Dependabot bumps only produce unmergeable PRs
     # (pip --require-hashes ResolutionImpossible). They move when mitmproxy is
     # bumped and the lock is regenerated via scripts/update-lock-files.sh.
+    # cryptography is likewise capped by mitmproxy (<=48.1), so major bumps
+    # to 49+ are unmergeable; within-range patch bumps are still allowed.
     ignore:
       - dependency-name: "tornado"
       - dependency-name: "msgpack"
+      - dependency-name: "cryptography"
+        versions: [">=49"]
 
   - package-ecosystem: "pip"
     directory: "/proxy"
@@ -22,6 +26,24 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+
+  - package-ecosystem: "npm"
+    directory: "/native-proxy/action"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    # @actions/artifact 6.x is ESM-only and pulls in @azure/storage-common's
+    # emscripten/WASM crc64 module, which does not survive ncc bundling
+    # (uploads fail at runtime with "crc64_require is not a function").
+    # 5.x is the newest line that bundles and runs; a bump past it requires
+    # re-verifying `npm run build` + a runtime smoke test of dist/teardown.
+    # This also covers Dependabot *security* updates, which run even without
+    # an npm config section (that's how the broken 6.2.1 bump in PR #17
+    # landed without dist/ being rebuilt).
+    ignore:
+      - dependency-name: "@actions/artifact"
+        versions: [">=6"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
