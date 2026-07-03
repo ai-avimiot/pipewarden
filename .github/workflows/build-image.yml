@@ -59,7 +59,7 @@ jobs:
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden main image
         id: meta-pipewarden
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden
           tags: |
@@ -106,7 +106,7 @@ jobs:
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden proxy image
         id: meta-pipewarden-proxy
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-proxy
           tags: |
@@ -153,7 +153,7 @@ jobs:
       # ----------------------------------------------------------------
       - name: Docker meta for PipeWarden runner image
         id: meta-pipewarden-runner
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/pipewarden-runner
           tags: |
