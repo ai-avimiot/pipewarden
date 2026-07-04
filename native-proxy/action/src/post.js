@@ -148,7 +148,29 @@ async function uploadReport() {
   }
 }
 
-uploadReport().finally(() => {
-  // Exit 0 so the post-action never fails the job; teardown exit code is informational.
-  process.exit(0);
-});
+// Save the pip wheel cache when main.js recorded a cache miss. Best-effort:
+// a failed save only costs the next run a PyPI download, never the job.
+async function savePipCache() {
+  const key = process.env.NFW_PIP_CACHE_SAVE_KEY;
+  const dir = process.env.NFW_PIP_CACHE_DIR;
+  if (!key || !dir) return; // hit (or caching disabled/unavailable) — nothing to save
+  if (!fs.existsSync(dir)) {
+    console.log("PipeWarden: pip cache dir empty, nothing to save");
+    return;
+  }
+  try {
+    const cache = await import("@actions/cache");
+    if (!cache.isFeatureAvailable()) return;
+    await cache.saveCache([dir], key);
+    console.log(`PipeWarden: saved pip cache (${key})`);
+  } catch (e) {
+    console.log(`::warning::PipeWarden pip cache save failed: ${e.message}`);
+  }
+}
+
+savePipCache()
+  .then(() => uploadReport())
+  .finally(() => {
+    // Exit 0 so the post-action never fails the job; teardown exit code is informational.
+    process.exit(0);
+  });

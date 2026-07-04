@@ -67,7 +67,14 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
         echo "mitmproxy already installed, skipping"
     else
         echo "Installing mitmproxy==${MITMPROXY_VERSION}..."
-        sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+        # sudo strips the environment, so the wheel cache restored by the JS
+        # action (PIP_CACHE_DIR, see action/src/main.js) is forwarded
+        # explicitly. Unset means no cache was restored — plain install.
+        if [ -n "${PIP_CACHE_DIR:-}" ]; then
+            sudo PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+        else
+            sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+        fi
     fi
 else
     if command -v mitmdump &>/dev/null; then

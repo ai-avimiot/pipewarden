@@ -22,6 +22,10 @@ inputs:
     description: "Enable iptables transparent proxy (true) or use env-var-only mode (false)"
     required: false
     default: "true"
+  cache:
+    description: "Cache the proxy engine's pip wheels across runs (saves ~10-20s of setup). Set to 'false' to disable."
+    required: false
+    default: "true"
   upload-artifact:
     description: "Upload the generated report (/tmp/report/) as a build artifact at teardown. Set to 'false' to skip."
     required: false

@@ -321,6 +321,7 @@ Without a token it logs a warning and falls back to fail-at-teardown.
 | `transparent` | `true` | Enable iptables transparent proxy |
 | `fail-fast` | `false` | Enforce only: cancel the run on the first blocked connection (needs `github-token` + `actions: write`) |
 | `github-token` | `""` | Token used to cancel the run when `fail-fast` triggers |
+| `cache` | `true` | Cache the proxy engine's pip wheels across runs (saves ~10-20s of setup); `false` to disable |
 | `upload-artifact` | `true` | Upload the report as a build artifact at teardown |
 | `artifact-name` | `network-report` | Name of the uploaded report artifact |
 

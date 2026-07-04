@@ -55,8 +55,12 @@ updates:
     # This also covers Dependabot *security* updates, which run even without
     # an npm config section (that's how the broken 6.2.1 bump in PR #17
     # landed without dist/ being rebuilt).
+    # @actions/cache 6.x has the same Azure crc64 bundling breakage; 5.x is
+    # the newest line that loads under ncc.
     ignore:
       - dependency-name: "@actions/artifact"
+        versions: [">=6"]
+      - dependency-name: "@actions/cache"
         versions: [">=6"]
 
   - package-ecosystem: "github-actions"
