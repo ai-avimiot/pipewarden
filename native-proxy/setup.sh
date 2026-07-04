@@ -71,9 +71,12 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
         # action (PIP_CACHE_DIR, see action/src/main.js) is forwarded
         # explicitly. Unset means no cache was restored — plain install.
         if [ -n "${PIP_CACHE_DIR:-}" ]; then
+            # pip refuses (silently disables) a cache dir not owned by the
+            # current user, so ownership must follow whoever touches it:
+            # root during the sudo install, the runner user afterwards so
+            # the post-step can archive it for the cache save.
+            sudo chown -R 0:0 "${PIP_CACHE_DIR}" 2>/dev/null || true
             sudo PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
-            # pip as root writes cache entries 0600/root; hand the dir to the
-            # runner user so the post-step can archive it for the cache save.
             sudo chown -R "$(id -u)":"$(id -g)" "${PIP_CACHE_DIR}" 2>/dev/null || true
         else
             sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
