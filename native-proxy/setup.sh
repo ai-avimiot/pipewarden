@@ -72,6 +72,9 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
         # explicitly. Unset means no cache was restored — plain install.
         if [ -n "${PIP_CACHE_DIR:-}" ]; then
             sudo PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+            # pip as root writes cache entries 0600/root; hand the dir to the
+            # runner user so the post-step can archive it for the cache save.
+            sudo chown -R "$(id -u)":"$(id -g)" "${PIP_CACHE_DIR}" 2>/dev/null || true
         else
             sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
         fi

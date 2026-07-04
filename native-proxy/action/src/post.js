@@ -161,8 +161,13 @@ async function savePipCache() {
   try {
     const cache = await import("@actions/cache");
     if (!cache.isFeatureAvailable()) return;
-    await cache.saveCache([dir], key);
-    console.log(`PipeWarden: saved pip cache (${key})`);
+    const size = execFileSync("du", ["-sh", dir]).toString().split("\t")[0];
+    const cacheId = await cache.saveCache([dir], key);
+    if (cacheId === -1) {
+      console.log(`::warning::PipeWarden pip cache save was skipped by the cache service (${key}, ${size})`);
+    } else {
+      console.log(`PipeWarden: saved pip cache (${key}, ${size}, id ${cacheId})`);
+    }
   } catch (e) {
     console.log(`::warning::PipeWarden pip cache save failed: ${e.message}`);
   }
