@@ -36,9 +36,17 @@ CONN_LOG_PATH = os.environ.get("LOG_PATH", "/var/log/connections.jsonl")
 MAX_IP_MAP_ENTRIES = int(os.environ.get("DNS_IP_MAP_MAX", "4096"))
 # Cap concurrent query handlers so a flood of queries can't exhaust threads.
 MAX_WORKERS = int(os.environ.get("DNS_MAX_WORKERS", "32"))
+# Minimum seconds between ip→domain map writes (see _map_flusher).
+MAP_FLUSH_INTERVAL = float(os.environ.get("DNS_MAP_FLUSH_INTERVAL", "0.5"))
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
+
+# Set when the map has unwritten changes; a single flusher thread persists
+# it. Handler threads must not write the file directly: concurrent writers
+# raced on the shared .tmp path, and a dict mutated mid-json.dump raises
+# "dictionary changed size during iteration".
+_map_dirty = threading.Event()
 
 
 def _same_txn_id(query: bytes, response: bytes) -> bool:
@@ -181,9 +189,13 @@ def forward_query(data: bytes, timeout: float = 3.0) -> bytes | None:
     return None
 
 
+_conn_log_dir_ready = False
+
+
 def log_dns_query(qname: str, qtype: int, resolved_ips: list[str],
                   status: str) -> None:
     """Write a DNS query log entry to the connections JSONL."""
+    global _conn_log_dir_ready
     qtype_name = {1: "A", 28: "AAAA", 5: "CNAME", 15: "MX", 16: "TXT",
                   2: "NS", 6: "SOA", 33: "SRV", 65: "HTTPS"}.get(qtype, str(qtype))
     entry = {
@@ -196,9 +208,11 @@ def log_dns_query(qname: str, qtype: int, resolved_ips: list[str],
         "dns_resolved_ips": resolved_ips,
     }
     try:
-        log_dir = os.path.dirname(CONN_LOG_PATH)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
+        if not _conn_log_dir_ready:
+            log_dir = os.path.dirname(CONN_LOG_PATH)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            _conn_log_dir_ready = True
         with open(CONN_LOG_PATH, "a") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.write(json.dumps(entry) + "\n")
@@ -212,10 +226,26 @@ def update_ip_map() -> None:
     try:
         tmp = IP_MAP_PATH + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(ip_to_domain, f)
+            # dict() snapshots atomically under the GIL so concurrent
+            # _remember_ip calls can't mutate the dict mid-serialization.
+            json.dump(dict(ip_to_domain), f)
         os.replace(tmp, IP_MAP_PATH)
     except Exception as e:
         logger.debug(f"Failed to write IP map: {e}")
+
+
+def _map_flusher() -> None:
+    """Persist the ip→domain map when dirty, at most every flush interval.
+
+    A busy pipeline resolves hundreds of names; rewriting the whole JSON
+    file per query is O(n) each time. The flusher writes promptly after
+    the first change, then coalesces bursts.
+    """
+    while True:
+        _map_dirty.wait()
+        _map_dirty.clear()
+        update_ip_map()
+        time.sleep(MAP_FLUSH_INTERVAL)
 
 
 def handle_query(data: bytes, addr: tuple, sock: socket.socket,
@@ -262,7 +292,7 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
         _remember_ip(ip, qname)
 
     if resolved_ips:
-        update_ip_map()
+        _map_dirty.set()
 
     log_dns_query(qname, qtype, resolved_ips, status)
     sock.sendto(response, addr)
@@ -288,6 +318,9 @@ def run_dns_server(policy_engine=None) -> None:
     sock.bind((LISTEN_ADDR, LISTEN_PORT))
     print(f"[dns] Listening on {LISTEN_ADDR}:{LISTEN_PORT}", flush=True)
     print(f"[dns] Upstream resolvers: {UPSTREAM_DNS}", flush=True)
+
+    # Single writer for the ip→domain map file (see _map_flusher).
+    threading.Thread(target=_map_flusher, daemon=True).start()
 
     # Bounded pool: queries are handled concurrently without letting a
     # query flood spawn an unbounded number of threads.

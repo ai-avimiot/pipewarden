@@ -9,6 +9,7 @@ verified against the system trust store to detect rogue/private certs.
 """
 
 import fcntl
+import ipaddress
 import json
 import logging
 import os
@@ -44,6 +45,30 @@ DNS_IP_MAP_PATH = "/var/log/dns_ip_map.json"
 # ---------------------------------------------------------------------------
 # Certificate verification helper
 # ---------------------------------------------------------------------------
+
+_x509_store = None
+
+
+def _get_x509_store():
+    """Return a process-wide pyOpenSSL X509Store, built on first use.
+
+    Loading the certifi CA bundle parses ~150 certificates from disk;
+    doing that once instead of per HTTPS request matters on busy
+    pipelines. The store is only read during verification, so reuse
+    across X509StoreContext instances is safe.
+    """
+    global _x509_store
+    if _x509_store is None:
+        from OpenSSL import crypto as openssl_crypto
+        store = openssl_crypto.X509Store()
+        try:
+            import certifi
+            store.load_locations(certifi.where())
+        except ImportError:
+            store.set_default_paths()
+        _x509_store = store
+    return _x509_store
+
 
 def _build_trust_store() -> ssl.SSLContext | None:
     """Build an SSL context loaded with the system trust store.
@@ -164,14 +189,9 @@ def verify_server_cert(cert_pem: bytes, hostname: str,
 
     from OpenSSL import crypto as openssl_crypto
 
-    # Verify the certificate chain using pyOpenSSL's X509Store
+    # Verify the certificate chain using the shared pyOpenSSL X509Store
     try:
-        store = openssl_crypto.X509Store()
-        try:
-            import certifi
-            store.load_locations(certifi.where())
-        except ImportError:
-            store.set_default_paths()
+        store = _get_x509_store()
 
         x509_leaf = openssl_crypto.load_certificate(
             openssl_crypto.FILETYPE_PEM, cert_pem
@@ -274,14 +294,21 @@ class NetworkMonitorAddon:
         self._dns_ip_map: dict[str, str] = {}
         self._dns_map_mtime: float = 0
 
+        # Cache of definitive cert-verification verdicts keyed by
+        # (leaf PEM, hostname, chain PEMs): pipelines hammer the same few
+        # hosts, and chain verification costs milliseconds per request.
+        # None ("could not verify") results are never cached so transient
+        # errors don't stick.
+        self._cert_verify_cache: dict[tuple, tuple[bool, str]] = {}
+        self._log_dir_ready = False
+
     def _resolve_host_from_dns(self, ip: str) -> str:
         """Look up a domain name for an IP from the DNS resolver's map."""
         try:
             mtime = os.path.getmtime(DNS_IP_MAP_PATH)
             if mtime > self._dns_map_mtime:
                 with open(DNS_IP_MAP_PATH, "r") as f:
-                    import json as _json
-                    self._dns_ip_map = _json.load(f)
+                    self._dns_ip_map = json.load(f)
                 self._dns_map_mtime = mtime
         except (FileNotFoundError, ValueError, OSError):
             pass
@@ -465,11 +492,20 @@ class NetworkMonitorAddon:
                 except Exception:
                     pass
 
-            # Verify against system trust store
+            # Verify against system trust store (cached per cert+hostname)
             cert_pem = leaf_cert.to_pem()
-            is_valid, error = verify_server_cert(
-                cert_pem, hostname, self._trust_ctx, chain_pems
-            )
+            cache_key = (cert_pem, hostname, tuple(chain_pems))
+            cached = self._cert_verify_cache.get(cache_key)
+            if cached is not None:
+                is_valid, error = cached
+            else:
+                is_valid, error = verify_server_cert(
+                    cert_pem, hostname, self._trust_ctx, chain_pems
+                )
+                if is_valid is not None:
+                    if len(self._cert_verify_cache) >= 512:
+                        self._cert_verify_cache.clear()
+                    self._cert_verify_cache[cache_key] = (is_valid, error)
             # Only flag tls_cert_valid=False on a definitive failure. A None
             # result means "could not verify" — leave the default so we don't
             # falsely claim invalidity (and don't trigger enforce blocking).
@@ -516,9 +552,11 @@ class NetworkMonitorAddon:
 
     def _write_log(self, entry: ConnectionEntry) -> None:
         """Append a connection entry as a JSON line to the log file."""
-        log_dir = os.path.dirname(self.log_path)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
+        if not self._log_dir_ready:
+            log_dir = os.path.dirname(self.log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            self._log_dir_ready = True
         with open(self.log_path, "a", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             fh.write(json.dumps(entry.to_dict()) + "\n")
@@ -531,7 +569,6 @@ class NetworkMonitorAddon:
 
 def _looks_like_ip(host: str) -> bool:
     """Return True if host looks like an IP address rather than a domain."""
-    import ipaddress
     try:
         ipaddress.ip_address(host)
         return True

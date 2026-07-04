@@ -730,3 +730,51 @@ class TestModePrecedence:
         )
         assert addon.mode == "monitor"
         assert addon.init_error is None  # missing file is discovery, not error
+
+
+class TestCertVerifyCache:
+    """Definitive verification verdicts are cached per cert+hostname."""
+
+    def test_repeat_cert_verified_once(self, sample_policy_file, log_file, monkeypatch):
+        import proxy.addon as addon_mod
+
+        calls = {"n": 0}
+
+        def fake_verify(cert_pem, hostname, trust_ctx, chain_pems=None):
+            calls["n"] += 1
+            return False, "untrusted"
+
+        monkeypatch.setattr(addon_mod, "verify_server_cert", fake_verify)
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        cert = MockCert(issuer_cn="Evil CA")
+        conn = MockServerConnWithCert(cert=cert)
+
+        for _ in range(3):
+            entry = addon_mod.ConnectionEntry(
+                timestamp="t", protocol="https", host="api.github.com", port=443,
+            )
+            addon._check_server_cert(conn, "api.github.com", entry)
+            assert entry.tls_cert_valid is False
+
+        assert calls["n"] == 1
+
+    def test_unverifiable_result_not_cached(self, sample_policy_file, log_file, monkeypatch):
+        import proxy.addon as addon_mod
+
+        calls = {"n": 0}
+
+        def fake_verify(cert_pem, hostname, trust_ctx, chain_pems=None):
+            calls["n"] += 1
+            return None, "transient error"
+
+        monkeypatch.setattr(addon_mod, "verify_server_cert", fake_verify)
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        conn = MockServerConnWithCert(cert=MockCert())
+
+        for _ in range(2):
+            entry = addon_mod.ConnectionEntry(
+                timestamp="t", protocol="https", host="api.github.com", port=443,
+            )
+            addon._check_server_cert(conn, "api.github.com", entry)
+
+        assert calls["n"] == 2
