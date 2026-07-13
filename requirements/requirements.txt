@@ -1,6 +1,6 @@
 pytest>=9.1.1
 pytest-cov>=6.0.0
-hypothesis>=6.156.1
+hypothesis>=6.156.6
 pyyaml>=6.0.3
 mitmproxy>=12.2.3
 # <49: mitmproxy 12.2.3 caps cryptography<=48.1; raise when mitmproxy is bumped
