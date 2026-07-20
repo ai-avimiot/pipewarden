@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@actions/artifact": "^5.0.3",
-    "@actions/cache": "^5.1.0"
+    "@actions/cache": "^5.2.0"
   },
   "devDependencies": {
     "@vercel/ncc": "^0.44.1"
