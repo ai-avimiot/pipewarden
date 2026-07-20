@@ -858,8 +858,8 @@ mitmproxy-rs==0.12.9 \
     --hash=sha256:afeb3a2da2bc26474e1a2febaea4432430c5fde890dfce33bc4c1e65e6baef1b \
     --hash=sha256:c6ffc35c002c675cac534442d92d1cdebd66fafd63754ad33b92ae968ea6e449
     # via mitmproxy
-mitmproxy-windows==0.12.9 ; os_name == 'nt' \
-    --hash=sha256:fdec21fb66a5ba237d9106bfdc09d9428f315551bf4b41ba06b261e7beb56417
+mitmproxy-windows==0.12.10 ; os_name == 'nt' \
+    --hash=sha256:d921445b97c98627611a0f1919f6a406bbcf575cd229de54105f4aacbb04855f
     # via mitmproxy-rs
 msgpack==1.1.2 \
     --hash=sha256:0051fffef5a37ca2cd16978ae4f0aef92f164df86823871b5162812bebecd8e2 \
