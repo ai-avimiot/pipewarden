@@ -855,12 +855,12 @@ mitmproxy-linux==0.12.9 ; sys_platform == 'linux' \
 mitmproxy-macos==0.12.11 ; sys_platform == 'darwin' \
     --hash=sha256:63349d9b46514ca679547651f7c0548f9222892edfbcba087b82b3244fbae859
     # via mitmproxy-rs
-mitmproxy-rs==0.12.9 \
-    --hash=sha256:1fb9fb4aac9ecb82e2c3c5c439ef5e4961be7934d80ade5e9a99c0a944b8ea2f \
-    --hash=sha256:1fd716e87da8be3c62daa4325a5ff42bedd951fb8614c5f66caa94b7c21e2593 \
-    --hash=sha256:245922663440330c4b5a36d0194ed559b1dbd5e38545db2eb947180ed12a5e92 \
-    --hash=sha256:afeb3a2da2bc26474e1a2febaea4432430c5fde890dfce33bc4c1e65e6baef1b \
-    --hash=sha256:c6ffc35c002c675cac534442d92d1cdebd66fafd63754ad33b92ae968ea6e449
+mitmproxy-rs==0.12.11 \
+    --hash=sha256:6f5ecf3dd3c21e56191b84fc90364dc4d1dc95c660beedab4c816a0119ecb785 \
+    --hash=sha256:93f86706e779dd4a798c2d53cb82886b8c1f20edac5dee05da35f5c644da3531 \
+    --hash=sha256:9a55abf1b9cb0bf0ac073b1297a4fd83a7ae8a6b8311156cb71fb61320be233e \
+    --hash=sha256:c5d00a02414de0a81c088e1b3b8bcb6af4c55332fa106dd8c454512b671477ba \
+    --hash=sha256:d57eabeb5317e42a26d2878046c46079865e488f667898b1d67cc6f28d5bf85d
     # via mitmproxy
 mitmproxy-windows==0.12.11 ; os_name == 'nt' \
     --hash=sha256:59addc8864669a08f8cb48d8b29129efb1ca5f6cba9696e2d91f1f506b21a2d7
