@@ -18,6 +18,24 @@ updates:
     # ceilings (typing-extensions<=4.14, urwid<=3.0.5, aioquic==1.2.0,
     # pydivert<=2.1.0) and pyopenssl, whose 26.3+ releases require
     # cryptography>=49. Revisit ALL of these when mitmproxy is bumped.
+    #
+    # The full set of mitmproxy 12.2.3 ceilings the lock currently sits on
+    # (verified against its PyPI metadata on 2026-07-28) is listed below. Any
+    # bump past one of them is unmergeable by construction, so they are all
+    # ignored above their ceiling rather than left to generate dead PRs:
+    #   aioquic==1.2.0        argon2-cffi<=25.1.0   asgiref<=3.11.1
+    #   bcrypt==5.0.0         brotli<=1.2.0         flask<=3.1.3
+    #   h11==0.16.0           h2==4.3.0             hyperframe<=6.1.0
+    #   kaitaistruct<=0.11    ldap3<=2.9.1          msgpack<=1.1.2
+    #   publicsuffix2<=2.20191221                   pyparsing<=3.3.2
+    #   pyperclip<=1.11.0     ruamel.yaml<=0.19.1   sortedcontainers<=2.4.0
+    #   tornado<=6.5.5        typing-extensions<=4.14                urwid<=3.0.5
+    #   wsproto<=1.3.2        zstandard<=0.25.0     pydivert<=2.1.0
+    # cryptography (<=48.1) and pyopenssl (<=27.0.0) are NOT at their ceiling,
+    # so they keep their existing narrower ignores and can still be bumped.
+    # PRs #90 (h2 4.4.0) and #71 (asgiref 3.12.1) were closed for exactly this
+    # reason. mitmproxy 12.2.3 is the newest release on PyPI, so nothing here
+    # can be lifted yet.
     ignore:
       - dependency-name: "tornado"
       - dependency-name: "msgpack"
@@ -33,6 +51,53 @@ updates:
         versions: [">2.1.0"]
       - dependency-name: "pyopenssl"
         versions: [">=26.3"]
+      - dependency-name: "h2"
+        versions: [">4.3.0"]
+      - dependency-name: "asgiref"
+        versions: [">3.11.1"]
+      - dependency-name: "argon2-cffi"
+        versions: [">25.1.0"]
+      - dependency-name: "bcrypt"
+        versions: [">5.0.0"]
+      - dependency-name: "brotli"
+        versions: [">1.2.0"]
+      - dependency-name: "flask"
+        versions: [">3.1.3"]
+      - dependency-name: "h11"
+        versions: [">0.16.0"]
+      - dependency-name: "hyperframe"
+        versions: [">6.1.0"]
+      - dependency-name: "kaitaistruct"
+        versions: [">0.11"]
+      - dependency-name: "ldap3"
+        versions: [">2.9.1"]
+      - dependency-name: "publicsuffix2"
+        versions: [">2.20191221"]
+      - dependency-name: "pyparsing"
+        versions: [">3.3.2"]
+      - dependency-name: "pyperclip"
+        versions: [">1.11.0"]
+      - dependency-name: "ruamel.yaml"
+        versions: [">0.19.1"]
+      - dependency-name: "sortedcontainers"
+        versions: [">2.4.0"]
+      - dependency-name: "wsproto"
+        versions: [">1.3.2"]
+      - dependency-name: "zstandard"
+        versions: [">0.25.0"]
+    # mitmproxy-rs pins its platform wheels to its own exact version
+    # (mitmproxy-rs 0.12.11 requires mitmproxy-linux/-macos/-windows==0.12.11).
+    # Bumped individually they contradict each other and every such PR is
+    # unmergeable (#88, #81). mitmproxy itself does NOT cap them
+    # (mitmproxy-rs<0.13,>=0.12.6), so these bumps are wanted — they just have
+    # to arrive as a single PR.
+    groups:
+      mitmproxy-rs:
+        patterns:
+          - "mitmproxy-rs"
+          - "mitmproxy-linux"
+          - "mitmproxy-macos"
+          - "mitmproxy-windows"
 
   - package-ecosystem: "pip"
     directory: "/proxy"
