@@ -3,7 +3,7 @@
 ## on first run and cached in Docker volumes for subsequent runs.
 # Pinned by digest (tag kept for readability). To refresh after a version bump
 # (Dependabot also does this): docker buildx imagetools inspect ubuntu:<tag>
-FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
+FROM ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
 
 ENV DEBIAN_FRONTEND=noninteractive
 
