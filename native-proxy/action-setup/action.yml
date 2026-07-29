@@ -34,6 +34,10 @@ inputs:
     description: "Pinned mitmproxy version to install on the runner. Keep in lockstep with the proxy container base image."
     required: false
     default: ""
+  canary:
+    description: "Startup canary: after setup, make one HTTPS request and require it to appear in the connection log. 'true' fails setup (with full rollback of DNS/iptables changes) when the intercept records nothing, 'warn' only annotates, 'false' skips."
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -50,6 +54,7 @@ runs:
         INPUT_FAIL_FAST: ${{ inputs.fail-fast }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_MITMPROXY_VERSION: ${{ inputs.mitmproxy-version }}
+        INPUT_CANARY: ${{ inputs.canary }}
         INPUT_ACTION_PATH: ${{ github.action_path }}/..
         GITHUB_RUN_ID: ${{ github.run_id }}
         GITHUB_REPOSITORY: ${{ github.repository }}

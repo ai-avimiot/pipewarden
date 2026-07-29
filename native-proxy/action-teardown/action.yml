@@ -7,9 +7,9 @@ inputs:
     required: false
     default: "true"
   artifact-name:
-    description: "Name of the uploaded report artifact"
+    description: "Name of the uploaded report artifact. Defaults to network-report-<job id> so two instrumented jobs in one workflow don't collide on upload."
     required: false
-    default: "network-report"
+    default: ""
 
 outputs:
   report-path:
@@ -42,7 +42,7 @@ runs:
       if: inputs.upload-artifact != 'false' && steps.teardown.outputs.report-path != ''
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: ${{ inputs.artifact-name }}
+        name: ${{ inputs.artifact-name || format('network-report-{0}', github.job) }}
         path: ${{ steps.teardown.outputs.report-path }}
         if-no-files-found: warn
 
@@ -50,6 +50,6 @@ runs:
       if: steps.teardown.outputs.generated-policy-path != ''
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: pipewarden-generated-network-policy
+        name: pipewarden-generated-network-policy-${{ github.job }}
         path: ${{ steps.teardown.outputs.generated-policy-path }}
         if-no-files-found: ignore

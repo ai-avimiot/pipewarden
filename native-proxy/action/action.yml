@@ -31,9 +31,13 @@ inputs:
     required: false
     default: "true"
   artifact-name:
-    description: "Name of the uploaded report artifact"
+    description: "Name of the uploaded report artifact. Defaults to network-report-<job id> so two instrumented jobs in one workflow don't collide on upload."
     required: false
-    default: "network-report"
+    default: ""
+  canary:
+    description: "Startup canary: after setup, make one HTTPS request and require it to appear in the connection log. 'true' fails setup (with full rollback of DNS/iptables changes) when the intercept records nothing, 'warn' only annotates, 'false' skips."
+    required: false
+    default: "true"
   fail-fast:
     description: "Enforce mode only: cancel the whole workflow run on the first blocked connection (instead of failing at teardown). Requires github-token with actions:write."
     required: false

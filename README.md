@@ -27,6 +27,7 @@ PipeWarden is the missing security layer between dependency scanning and product
 - [Compliance](#compliance)
 - [OWASP CI/CD Top 10 coverage](#owasp-cicd-top-10-coverage)
 - [Modes](#modes)
+- [Deploy and credentialed jobs](#deploy-and-credentialed-jobs)
 - [Configuration reference](#configuration-reference)
 - [Container mode](#container-mode)
 - [Development](#development)
@@ -97,6 +98,8 @@ That's it. The report lands in your job summary, in `/tmp/report/`, and is uploa
 > Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
 **Versioning.** `@v1` tracks the latest 1.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major (`v2`). For production, pin to an exact release (`@v1.0.7`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
+
+> **Pinning to a SHA:** annotated tags resolve to a *tag object* SHA that Actions cannot use in `uses:`. Always pin to the **commit** SHA: `git rev-list -n 1 vX.Y.Z` (or take the SHA shown next to the tag on the release page), not `git rev-parse vX.Y.Z`.
 
 ### 1. Discover — see what your pipeline talks to
 
@@ -215,6 +218,10 @@ PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions 
 
 ## Report output
 
+**The report is metadata-only by design.** A connection entry carries host, port, path, method, byte counts, TLS SNI and certificate-chain details — never request headers, bodies, cookies, or credentials. Even though the proxy terminates TLS, nothing it decrypts is persisted, which is what makes it safe to run in jobs holding live cloud credentials (see [Deploy and credentialed jobs](#deploy-and-credentialed-jobs)).
+
+Every report also includes an **intercept health** section (`health.json` + a block in the Job Summary): whether the proxy and DNS server were still alive at teardown and how many entries each interception leg recorded. A broken intercept is reported as broken — it can no longer masquerade as a clean run with zero connections.
+
 PipeWarden generates detailed reports for every run:
 
 | File | Format | Contents |
@@ -308,6 +315,15 @@ Without a token it logs a warning and falls back to fail-at-teardown.
 
 > **Tip:** the auto-generated policy adds **wildcard hint comments** (e.g. `# consider "*.npmjs.org"`) when it sees several sibling subdomains — review and apply them by hand. It never suggests wildcards for multi-tenant suffixes like `s3.amazonaws.com`.
 
+## Deploy and credentialed jobs
+
+PipeWarden is designed to be safe in jobs that hold live credentials (cloud deploys, OIDC token exchanges, package publishing):
+
+- **TLS interception does not break signed traffic.** The proxy terminates TLS and re-encrypts upstream; request contents — including AWS SigV4 signatures, which sign headers and payload, not the TLS session — pass through unmodified. GitHub OIDC exchanges, `aws-actions/configure-aws-credentials`, and full `cdk deploy` runs work through the intercept with no changes.
+- **Clients trust the intercept via the standard CA env vars.** Setup exports `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `NPM_CONFIG_CAFILE`, etc., and installs the ephemeral CA into the system trust store, so npm, pip, the AWS SDKs and curl all verify normally.
+- **Nothing decrypted is persisted.** The report records connection metadata only (host/port/path/method/bytes/SNI/cert chain) — never headers, bodies, or credentials. See [Report output](#report-output).
+- **A broken intercept fails loudly, not silently.** The startup canary fails setup (rolling back all DNS and iptables changes so the runner keeps working) if the intercept records nothing, and the teardown health section flags a proxy or DNS server that died mid-job. For a deploy job where you'd rather proceed unmonitored than block the deploy, use `canary: warn`.
+
 ## Configuration reference
 
 ### Inputs (setup)
@@ -323,7 +339,8 @@ Without a token it logs a warning and falls back to fail-at-teardown.
 | `github-token` | `""` | Token used to cancel the run when `fail-fast` triggers |
 | `cache` | `true` | Cache the proxy engine's pip wheels across runs (saves ~10-20s of setup); `false` to disable |
 | `upload-artifact` | `true` | Upload the report as a build artifact at teardown |
-| `artifact-name` | `network-report` | Name of the uploaded report artifact |
+| `artifact-name` | `network-report-<job id>` | Name of the uploaded report artifact (per-job default so two instrumented jobs in one workflow don't collide) |
+| `canary` | `true` | Startup canary: after setup, make one HTTPS request and require it in the connection log. `true` fails setup (with full rollback of DNS/iptables changes) if the intercept records nothing; `warn` only annotates; `false` skips |
 
 The `mode` input (via the `MODE` environment variable) takes precedence over the policy file's own `mode:` field; the file's value is used only when no input/env mode is set, falling back to `monitor`.
 

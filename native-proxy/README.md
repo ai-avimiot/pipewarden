@@ -32,8 +32,9 @@ jobs:
         if: always()
         id: nfw
         uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
-        # Generates the report AND uploads it as the `network-report` artifact.
-        # Disable with `upload-artifact: false`, or rename via `artifact-name:`.
+        # Generates the report AND uploads it as the `network-report-<job id>`
+        # artifact. Disable with `upload-artifact: false`, or rename via
+        # `artifact-name:`.
 ```
 
 > The `if: always()` on teardown is important — it ensures reports are generated (and uploaded) even if your build fails.

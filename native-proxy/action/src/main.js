@@ -71,6 +71,7 @@ async function main() {
     // Dashed input names map to dashed env keys (e.g. INPUT_FAIL-FAST).
     INPUT_FAIL_FAST: process.env["INPUT_FAIL-FAST"] || "false",
     INPUT_GITHUB_TOKEN: process.env["INPUT_GITHUB-TOKEN"] || "",
+    INPUT_CANARY: process.env.INPUT_CANARY || "true",
     INPUT_ACTION_PATH: nativeProxyDir,
     INPUT_MITMPROXY_VERSION: MITMPROXY_VERSION,
     PIP_CACHE_DIR,
@@ -92,7 +93,11 @@ async function main() {
     // Note: GitHub maps dashed input names to dashed env keys (e.g. artifact-name
     // -> INPUT_ARTIFACT-NAME), not underscores — same as INPUT_PROXY-PORT above.
     const uploadArtifact = process.env["INPUT_UPLOAD-ARTIFACT"] || "true";
-    const artifactName = process.env["INPUT_ARTIFACT-NAME"] || "network-report";
+    // Per-job default so two instrumented jobs in one workflow don't collide
+    // on artifact upload (upload-artifact hard-fails on duplicate names).
+    const artifactName =
+      process.env["INPUT_ARTIFACT-NAME"] ||
+      `network-report-${process.env.GITHUB_JOB || "job"}`;
     appendState([`NFW_UPLOAD_ARTIFACT=${uploadArtifact}`, `NFW_ARTIFACT_NAME=${artifactName}`]);
   } catch (e) {
     console.log(`::warning::PipeWarden could not persist artifact settings: ${e.message}`);
