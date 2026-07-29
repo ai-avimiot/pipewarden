@@ -75,6 +75,12 @@ jobs:
               read -r status conclusion < <(gh run view "${rid}" --repo "${DEMO_REPO}" --json status,conclusion -q '"\(.status) \(.conclusion)"' 2>/dev/null || echo "unknown ")
               if [ "${status}" = "completed" ]; then
                 RESULT[$wf]="${conclusion}"
+              elif [ "${status}" = "waiting" ] || [ "${status}" = "action_required" ] || [ "${conclusion}" = "action_required" ]; then
+                # GitHub is holding this run pending manual approval. Approval
+                # requires an authenticated web session, so DEMO_SMOKE_TOKEN can
+                # never clear it — polling to the deadline would just waste 25
+                # minutes and report a misleading "timeout". Stop watching now.
+                RESULT[$wf]="awaiting-approval"
               else
                 still="${still} ${wf}"
               fi
@@ -89,17 +95,37 @@ jobs:
           echo "| Demo workflow | Result | Run |" >> "${GITHUB_STEP_SUMMARY}"
           echo "|---|---|---|" >> "${GITHUB_STEP_SUMMARY}"
           fail=0
+          held=0
           for wf in ${WORKFLOWS}; do
             res="${RESULT[$wf]:-timeout}"
             rid="${RUN_ID[$wf]:-}"
             url="https://github.com/${DEMO_REPO}/actions/runs/${rid}"
             echo "| \`${wf}\` | ${res} | [run](${url}) |" >> "${GITHUB_STEP_SUMMARY}"
             echo "${wf}: ${res} (${url})"
-            case "${res}" in success) ;; *) fail=1 ;; esac
+            case "${res}" in
+              success) ;;
+              awaiting-approval) held=1 ;;
+              *) fail=1 ;;
+            esac
           done
+
+          if [ "${held}" -ne 0 ]; then
+            {
+              echo ""
+              echo "> One or more demo runs are **held for approval** by GitHub Actions."
+              echo "> A collaborator with write access on \`${DEMO_REPO}\` must approve them from the"
+              echo "> web UI — this cannot be done with a token. Re-run this workflow afterwards"
+              echo "> to complete the smoke test."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::warning title=Post-release smoke::Demo run(s) held for approval — approve them in ${DEMO_REPO}, then re-run this workflow."
+          fi
 
           if [ "${fail}" -ne 0 ]; then
             echo "::error title=Post-release smoke::One or more demo workflows did not succeed against the published release."
             exit 1
+          fi
+          if [ "${held}" -ne 0 ]; then
+            echo "Smoke test incomplete: run(s) awaiting manual approval. Not treated as a failure."
+            exit 0
           fi
           echo "All demo workflows passed against the published release."
