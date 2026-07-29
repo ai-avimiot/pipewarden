@@ -1,3 +1,22 @@
+# Runtime dependencies for the PipeWarden proxy image (proxy/Dockerfile).
+#
+# This file is the single source of truth: scripts/update-lock-files.sh compiles
+# it into proxy/requirements-lock.txt, and the Dockerfile installs from that lock
+# with --require-hashes.
+#
+# The base image is mitmproxy/mitmproxy:12.2.3, which already ships all of these.
+# They are declared explicitly anyway so the lock pins and hash-verifies them
+# rather than silently inheriting whatever the base image happens to carry.
+#
+# IMPORTANT: the upper bounds mirror mitmproxy 12.2.3's own declared ranges
+# (cryptography <=48.1, pyOpenSSL <=27.0.0). Exceeding them installs a version
+# mitmproxy itself cannot use and breaks the proxy at runtime. Raise these only
+# when the base image's mitmproxy version is bumped.
+
 pyyaml>=6.0.3
-cryptography>=49.0.0
-pyOpenSSL>=26.0.0
+
+# Used by proxy/addon.py for server-certificate verification
+# (see _get_trust_store, _cert_dns_names, verify_server_cert).
+cryptography>=42.0,<49
+pyOpenSSL>=24.3,<=27.0.0
+certifi>=2019.9.11
