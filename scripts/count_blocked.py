@@ -6,9 +6,17 @@ import sys
 
 
 def count_blocked(report_path: str) -> int:
-    """Read report.json and return the blocked connection count."""
+    """Read report.json and return the total number of blocked actions.
+
+    Counts both blocked non-DNS connections and DNS-layer blocks (NXDOMAIN),
+    since a disallowed domain in the default enforce+DNS mode is stopped at the
+    DNS leg. Falls back to ``blocked_connections`` for reports produced before
+    ``total_blocked`` existed.
+    """
     with open(report_path, "r") as f:
         report = json.load(f)
+    if "total_blocked" in report:
+        return report["total_blocked"]
     return report.get("blocked_connections", 0)
 
 

@@ -1,0 +1,131 @@
+name: "PipeWarden Demo: Enforce (stop on block)"
+
+# Proves the enforcement contract end-to-end on a real runner:
+#   1. enforce mode fails the job when a connection is blocked (default)
+#   2. fail-on-block: false blocks the traffic but lets the job continue
+#   3. the single-step action passes a clean enforce run (no false positive)
+# Jobs 1-2 deliberately call a disallowed host (example.com) and assert the
+# outcome; job 3 makes only allowed calls and must stay green. The single-step
+# FAIL-on-block path is covered by the `npm test` decision unit test in CI
+# (a post-step failure can't be asserted from a green workflow). Runs in
+# env-var proxy mode so only the explicit curls are policed — the runner's own
+# infrastructure is never intercepted, keeping the demo deterministic.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'native-proxy/**'
+      - 'proxy/**'
+      - 'policy/**'
+      - 'scripts/**'
+      - '.github/workflows/demo-pipewarden-enforce.yml'
+      - '.github/pipewarden/demo-pipewarden-enforce.network-policy.yml'
+  pull_request:
+    paths:
+      - 'native-proxy/**'
+      - 'proxy/**'
+      - 'policy/**'
+      - 'scripts/**'
+      - '.github/workflows/demo-pipewarden-enforce.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: demo-enforce-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  POLICY: .github/pipewarden/demo-pipewarden-enforce.network-policy.yml
+
+jobs:
+  # 1. Default: a blocked connection must fail the job. The teardown step is
+  #    marked continue-on-error so the workflow stays green while we assert it
+  #    reported failure and counted the block.
+  two-step-stops:
+    name: "Two-step: enforce stops the pipeline"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden setup (enforce)"
+        uses: ./native-proxy/action-setup
+        with:
+          policy-file: .github/pipewarden/demo-pipewarden-enforce.network-policy.yml
+          mode: enforce
+          transparent: 'false'   # env-var proxy: only the explicit curls below are policed, so the runner's own infra is never touched
+          dns: 'false'
+      - name: "Make a disallowed request (blocked; tolerate the failure)"
+        run: curl -sS --max-time 15 https://example.com/ || echo "example.com blocked as expected (curl failed)"
+      - name: "PipeWarden teardown (expected to fail)"
+        id: teardown
+        continue-on-error: true
+        uses: ./native-proxy/action-teardown
+      - name: "Assert the block stopped the pipeline"
+        env:
+          OUTCOME: ${{ steps.teardown.outcome }}
+          BLOCKED: ${{ steps.teardown.outputs.blocked-count }}
+        run: |
+          echo "teardown outcome=$OUTCOME blocked-count=$BLOCKED"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::enforce mode did NOT fail the job on a blocked connection"; exit 1
+          fi
+          if [ -z "$BLOCKED" ] || [ "$BLOCKED" -lt 1 ]; then
+            echo "::error::expected blocked-count >= 1, got '$BLOCKED'"; exit 1
+          fi
+          echo "OK: enforce stopped the pipeline (teardown failed, blocked=$BLOCKED)"
+
+  # 2. fail-on-block: false — block the traffic but keep going.
+  two-step-continues:
+    name: "Two-step: fail-on-block false continues"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden setup (enforce, fail-on-block false)"
+        uses: ./native-proxy/action-setup
+        with:
+          policy-file: .github/pipewarden/demo-pipewarden-enforce.network-policy.yml
+          mode: enforce
+          fail-on-block: 'false'
+          transparent: 'false'
+          dns: 'false'
+      - name: "Make a disallowed request (blocked; job continues)"
+        run: curl -sS --max-time 15 https://example.com/ || echo "example.com blocked; continuing"
+      - name: "PipeWarden teardown (should pass)"
+        id: teardown
+        uses: ./native-proxy/action-teardown
+      - name: "Assert blocked but not failed"
+        env:
+          BLOCKED: ${{ steps.teardown.outputs.blocked-count }}
+        run: |
+          echo "blocked-count=$BLOCKED"
+          if [ -z "$BLOCKED" ] || [ "$BLOCKED" -lt 1 ]; then
+            echo "::error::expected blocked-count >= 1 with fail-on-block:false, got '$BLOCKED'"; exit 1
+          fi
+          echo "OK: traffic blocked but the job continued (blocked=$BLOCKED)"
+
+  # 3. Single-step action, enforce, no violation: the job must pass (no false
+  #    positive). The single-step FAIL-on-block path can't be asserted from a
+  #    green workflow — a post-step failure fails the job, and job-level
+  #    continue-on-error would still fail the overall run while reporting the
+  #    result as 'success' — so it is covered instead by the `npm test`
+  #    decision unit test in CI and by the two-step teardown proof above (which
+  #    exercises the same count + fail logic).
+  single-step-clean-passes:
+    name: "Single-step: enforce passes when nothing is blocked"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden (single-step, enforce)"
+        uses: ./native-proxy/action
+        with:
+          policy-file: .github/pipewarden/demo-pipewarden-enforce.network-policy.yml
+          mode: enforce
+          transparent: 'false'
+          dns: 'false'
+      - name: "Make only allowed requests"
+        run: curl -sS --max-time 15 https://api.github.com/ -o /dev/null || echo "request finished (exit tolerated; the teardown block count is what matters)"
+        # No disallowed host: the post-step teardown must find zero blocks and
+        # pass the job. If enforce mode false-failed on allowed traffic, this
+        # job (and the workflow) would go red.

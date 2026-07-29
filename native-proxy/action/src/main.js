@@ -65,6 +65,8 @@ async function main() {
     ...process.env,
     INPUT_POLICY_FILE: process.env.INPUT_POLICY_FILE || "",
     INPUT_MODE: process.env.INPUT_MODE || "monitor",
+    // Dashed input names arrive as dashed env keys (INPUT_FAIL-ON-BLOCK).
+    INPUT_FAIL_ON_BLOCK: process.env["INPUT_FAIL-ON-BLOCK"] || "true",
     INPUT_PROXY_PORT: process.env["INPUT_PROXY-PORT"] || "8080",
     INPUT_DNS: process.env.INPUT_DNS || "true",
     INPUT_TRANSPARENT: process.env.INPUT_TRANSPARENT || "true",

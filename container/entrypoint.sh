@@ -20,6 +20,7 @@ PIPELINE_CMD="${INPUT_PIPELINE_CMD:-}"
 WORKFLOW_FILE="${INPUT_WORKFLOW_FILE:-}"
 POLICY_FILE="${INPUT_POLICY_FILE:-network-policy.yml}"
 MODE="${INPUT_MODE:-enforce}"
+FAIL_ON_BLOCK="${INPUT_FAIL_ON_BLOCK:-true}"
 
 # Discovery mode: if policy file is absent, monitor all traffic and block nothing.
 # The proxy addon handles a missing /policy.yml gracefully (empty rules, monitor mode).
@@ -295,8 +296,14 @@ if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$(dirname "${GITHUB_OUTPUT}")" ]; then
     fi
 fi
 
-# Exit code: enforce mode fails on blocked traffic, monitor mode passes through pipeline exit
+# Exit code: enforce mode fails on blocked traffic (unless fail-on-block is
+# opted out), monitor mode passes through the pipeline exit.
 if [ "${MODE}" = "enforce" ] && [ "${BLOCKED_COUNT}" -gt 0 ]; then
-    exit 1
+    if [ "${FAIL_ON_BLOCK}" = "false" ]; then
+        echo "::warning::PipeWarden: blocked ${BLOCKED_COUNT} connection(s) in enforce mode; fail-on-block is false, so the pipeline exit code is preserved. The traffic was still blocked."
+    else
+        echo "::error::PipeWarden: blocked ${BLOCKED_COUNT} connection(s) in enforce mode — stopping the pipeline. Set fail-on-block: false to block the traffic but let the job continue, or use monitor mode to only observe."
+        exit 1
+    fi
 fi
 exit "${PIPELINE_EXIT}"

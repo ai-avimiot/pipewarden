@@ -10,6 +10,10 @@ inputs:
     description: "monitor (log only) or enforce (block unauthorized traffic)"
     required: false
     default: "enforce"
+  fail-on-block:
+    description: "Enforce mode: fail the job (non-zero exit) when any connection was blocked. Default 'true' stops the pipeline on a policy violation; set 'false' to block the traffic but let the job continue. Ignored in monitor mode."
+    required: false
+    default: "true"
   proxy-port:
     description: "Port for mitmproxy to listen on"
     required: false
@@ -48,6 +52,7 @@ runs:
       env:
         INPUT_POLICY_FILE: ${{ inputs.policy-file }}
         INPUT_MODE: ${{ inputs.mode }}
+        INPUT_FAIL_ON_BLOCK: ${{ inputs.fail-on-block }}
         INPUT_PROXY_PORT: ${{ inputs.proxy-port }}
         INPUT_DNS: ${{ inputs.dns }}
         INPUT_TRANSPARENT: ${{ inputs.transparent }}

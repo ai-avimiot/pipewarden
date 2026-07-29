@@ -1,0 +1,16 @@
+# Policy for the enforce demo (.github/workflows/demo-pipewarden-enforce.yml).
+# Allows only what the startup canary and setup need (api.github.com); every
+# other destination — notably example.com, which the demo deliberately calls —
+# is blocked so the demo can prove that enforce mode stops the pipeline.
+version: "1"
+mode: enforce
+
+rules:
+  - name: "GitHub (canary + Actions infra)"
+    allow:
+      domains:
+        - "api.github.com"
+        - "github.com"
+        - "*.githubusercontent.com"
+      ports: [443]
+      protocols: [https]

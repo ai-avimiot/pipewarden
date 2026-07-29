@@ -31,6 +31,7 @@ jobs:
         working-directory: native-proxy/action
         run: |
           npm ci
+          npm test
           npm run build
 
       - name: Fail if dist/ is out of date
