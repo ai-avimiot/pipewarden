@@ -2,7 +2,7 @@
 # update-lock-files.sh
 #
 # Regenerate hash-pinned requirements lock files from the source files.
-# Run this whenever you update requirements/requirements.txt or proxy/requirements.in.
+# Run this whenever you update requirements/requirements.txt or proxy/requirements.txt.
 #
 # Uses `uv pip compile --universal` so the locks resolve for every platform and
 # for the whole supported Python range (>=3.12), not just the machine you run
@@ -21,6 +21,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Run from the repo root and pass relative paths: uv records the exact command
+# line in each lock file's header, so absolute paths would leak the generating
+# machine's home directory into the committed lock and churn the diff for every
+# contributor.
+cd "${REPO_ROOT}"
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "error: 'uv' is required but not installed. Install with: pip install uv" >&2
   exit 1
@@ -35,16 +41,16 @@ uv pip compile \
   --universal \
   --generate-hashes \
   --python-version "${PYTHON_VERSION}" \
-  --output-file "${REPO_ROOT}/proxy/requirements-lock.txt" \
-  "${REPO_ROOT}/proxy/requirements.in"
+  --output-file "proxy/requirements-lock.txt" \
+  "proxy/requirements.txt"
 
 echo "==> Compiling requirements/requirements-lock.txt..."
 uv pip compile \
   --universal \
   --generate-hashes \
   --python-version "${PYTHON_VERSION}" \
-  --output-file "${REPO_ROOT}/requirements/requirements-lock.txt" \
-  "${REPO_ROOT}/requirements/requirements.txt"
+  --output-file "requirements/requirements-lock.txt" \
+  "requirements/requirements.txt"
 
 echo ""
 echo "Done. Review the generated files and commit them:"
