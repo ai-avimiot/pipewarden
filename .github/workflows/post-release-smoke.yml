@@ -9,7 +9,9 @@ name: Post-release smoke (demo)
 # Requires a token with `actions: write` (and `contents: read`) on
 # ai-avimiot/pipewarden-demo, stored as the secret DEMO_SMOKE_TOKEN
 # (the default GITHUB_TOKEN cannot dispatch workflows in another repo).
-# If the secret is absent the job logs a warning and succeeds (no-op).
+# If the secret is absent the job FAILS loudly rather than skipping: a green run
+# here means "the release was verified", so a silent no-op would be misread as a
+# pass. See the DEMO_SMOKE_TOKEN guard below.
 
 on:
   release:
@@ -36,8 +38,28 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning title=Post-release smoke::DEMO_SMOKE_TOKEN not set — skipping cross-repo demo smoke. Add a token with actions:write on ${DEMO_REPO}."
-            exit 0
+            # Fail rather than skip. A green run here is read as "the release was
+            # smoke-tested"; exiting 0 without dispatching anything makes a
+            # no-op indistinguishable from a real pass, which is worse than no
+            # check at all.
+            {
+              echo "## Post-release smoke — NOT RUN"
+              echo ""
+              echo "\`DEMO_SMOKE_TOKEN\` is not set, so the published release was **not** verified against \`${DEMO_REPO}\`."
+              echo ""
+              echo "Fix: create a token with \`actions: write\` (and \`contents: read\`) on \`${DEMO_REPO}\`"
+              echo "and add it as the \`DEMO_SMOKE_TOKEN\` secret on this repository, then re-run this workflow."
+              echo ""
+              echo "To verify by hand in the meantime:"
+              echo ""
+              echo '```bash'
+              for wf in ${WORKFLOWS}; do
+                echo "gh workflow run ${wf} --repo ${DEMO_REPO} --ref main"
+              done
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::error title=Post-release smoke::DEMO_SMOKE_TOKEN not set — the release was NOT smoke-tested. Add a token with actions:write on ${DEMO_REPO}."
+            exit 1
           fi
 
           # Mark the cutoff so we can find the runs we just triggered.
