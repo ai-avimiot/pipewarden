@@ -79,6 +79,8 @@ jobs:
           labels: ${{ steps.meta-pipewarden.outputs.labels }}
           provenance: mode=max
           sbom: true
+          cache-from: type=gha,scope=pipewarden
+          cache-to: type=gha,scope=pipewarden,mode=max
 
       - name: Attest build provenance — pipewarden
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -126,6 +128,8 @@ jobs:
           labels: ${{ steps.meta-pipewarden-proxy.outputs.labels }}
           provenance: mode=max
           sbom: true
+          cache-from: type=gha,scope=pipewarden-proxy
+          cache-to: type=gha,scope=pipewarden-proxy,mode=max
 
       - name: Attest build provenance — pipewarden-proxy
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -172,6 +176,8 @@ jobs:
           labels: ${{ steps.meta-pipewarden-runner.outputs.labels }}
           provenance: mode=max
           sbom: true
+          cache-from: type=gha,scope=pipewarden-runner
+          cache-to: type=gha,scope=pipewarden-runner,mode=max
 
       - name: Attest build provenance — pipewarden-runner
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1

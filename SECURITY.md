@@ -60,6 +60,26 @@ cosign verify-attestation --type https://spdx.dev/Document/v2.3 \
   | jq -r '.payload | @base64d | fromjson | .predicate'
 ```
 
+## Enforcement boundary (what "enforce" actually covers)
+
+`enforce` mode inspects and blocks at the application layer via mitmproxy, which is reached by redirecting **TCP ports 80 and 443, IPv4, in the host network namespace** into the proxy. Understand the edges before relying on it:
+
+**Blocked / inspected**
+- TCP HTTP on 80 and HTTPS on 443 (IPv4, host netns) — TLS-terminated, matched against policy, blocked when disallowed. This is the primary path and covers the overwhelming majority of CI egress.
+- QUIC / HTTP-3 (UDP 443) and DNS-over-TLS/QUIC (853) — **rejected** in enforce mode so clients fall back to the interceptable TCP path (they are not proxy-inspected themselves).
+- IPv6 HTTP/HTTPS/DoT — **rejected** in enforce mode (the proxy is IPv4-only, so uninspected IPv6 egress is failed closed rather than allowed through).
+
+**Logged but NOT blocked or TLS-inspected** (visible as IP/port metadata in the report; each raises a `::warning::` and a `health.json` flag so it is never silent)
+- Traffic on non-standard TCP ports (e.g. 8443, git-over-SSH on 22, git:9418). It appears in the report but is not policy-enforced.
+- Egress from **Docker containers a job launches** — it traverses the `FORWARD` chain, not `OUTPUT`, so it is logged as IP metadata but not TLS-inspected. Full container interception is tracked in `docs/container-visibility-plan.md`.
+- IPv6 egress on a runner that has it (logged via `ip6tables`; inspected on neither mode, rejected in enforce).
+
+**Not covered**
+- Any code able to run as the `pipewardenuser` UID (e.g. `sudo -u pipewardenuser`, which passwordless-sudo runners allow) is exempt from the redirect by design and can reach 443 directly.
+- Full IPv6 and in-container TLS interception are roadmap items, not current guarantees.
+
+If you run in `enforce` on a job holding live credentials, treat the metadata-only report and these boundaries as the contract. The report itself is metadata-only by construction: connection host/port/path/method/bytes/SNI/cert-chain, with **URL query strings redacted** before logging, and request/response headers and bodies never captured.
+
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues.**

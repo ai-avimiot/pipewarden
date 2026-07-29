@@ -218,7 +218,7 @@ PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions 
 
 ## Report output
 
-**The report is metadata-only by design.** A connection entry carries host, port, path, method, byte counts, TLS SNI and certificate-chain details — never request headers, bodies, cookies, or credentials. Even though the proxy terminates TLS, nothing it decrypts is persisted, which is what makes it safe to run in jobs holding live cloud credentials (see [Deploy and credentialed jobs](#deploy-and-credentialed-jobs)).
+**The report is metadata-only by design.** A connection entry carries host, port, method, byte counts, TLS SNI and certificate-chain details — never request headers, bodies, or cookies. The URL path is recorded with its **query string redacted** (`/download?<redacted>`), because even though the proxy terminates TLS, query strings routinely carry credentials (presigned-URL signatures, `?access_token=`, API keys) and those must not land in an uploaded artifact. This is what makes it safe to run in jobs holding live cloud credentials (see [Deploy and credentialed jobs](#deploy-and-credentialed-jobs)). For exactly what `enforce` mode does and does not block, see the [enforcement boundary](SECURITY.md#enforcement-boundary-what-enforce-actually-covers) in SECURITY.md.
 
 Every report also includes an **intercept health** section (`health.json` + a block in the Job Summary): whether the proxy and DNS server were still alive at teardown and how many entries each interception leg recorded. A broken intercept is reported as broken — it can no longer masquerade as a clean run with zero connections.
 
@@ -321,7 +321,7 @@ PipeWarden is designed to be safe in jobs that hold live credentials (cloud depl
 
 - **TLS interception does not break signed traffic.** The proxy terminates TLS and re-encrypts upstream; request contents — including AWS SigV4 signatures, which sign headers and payload, not the TLS session — pass through unmodified. GitHub OIDC exchanges, `aws-actions/configure-aws-credentials`, and full `cdk deploy` runs work through the intercept with no changes.
 - **Clients trust the intercept via the standard CA env vars.** Setup exports `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `NPM_CONFIG_CAFILE`, etc., and installs the ephemeral CA into the system trust store, so npm, pip, the AWS SDKs and curl all verify normally.
-- **Nothing decrypted is persisted.** The report records connection metadata only (host/port/path/method/bytes/SNI/cert chain) — never headers, bodies, or credentials. See [Report output](#report-output).
+- **Nothing decrypted is persisted.** The report records connection metadata only (host/port/path/method/bytes/SNI/cert chain) — never headers, bodies, or cookies, and URL query strings are redacted before logging so signed-URL and token params don't leak. See [Report output](#report-output).
 - **A broken intercept fails loudly, not silently.** The startup canary fails setup (rolling back all DNS and iptables changes so the runner keeps working) if the intercept records nothing, and the teardown health section flags a proxy or DNS server that died mid-job. For a deploy job where you'd rather proceed unmonitored than block the deploy, use `canary: warn`.
 
 ## Configuration reference

@@ -2,6 +2,7 @@ name: "PipeWarden Demo: Native Mode"
 
 on:
   push:
+    branches: [main]
     paths:
       - 'demo-nodejs/**'
       - 'native-proxy/**'
@@ -18,6 +19,12 @@ on:
 permissions:
   contents: read
 
+# A commit and its release tag are pushed together; without this the demo runs
+# twice for the same SHA. Cancel superseded runs on the same ref.
+concurrency:
+  group: demo-native-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native-transparent:
     name: "Native proxy (transparent + DNS)"
@@ -29,11 +36,8 @@ jobs:
         with:
           node-version: 'lts/*'
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pip
-          key: pipewarden-pip-${{ runner.os }}-mitmproxy
-
+      # (The action caches its own mitmproxy install internally; a separate
+      # ~/.cache/pip cache here never populated and only misled copiers.)
       - name: "PipeWarden: Start network monitoring"
         uses: ./native-proxy/action
         with:

@@ -17,20 +17,28 @@ def generate_ca(out_dir: str) -> tuple[str, str]:
     cert_path = os.path.join(out_dir, "ca.pem")
     key_path = os.path.join(out_dir, "ca-key.pem")
 
-    subprocess.run(
-        [
-            "openssl", "req", "-x509", "-new", "-nodes",
-            "-newkey", "rsa:2048",
-            "-keyout", key_path,
-            "-out", cert_path,
-            "-days", "365",
-            "-subj", "/CN=CI\\/CD Network Monitor CA/O=pipewarden",
-            "-addext", "basicConstraints=critical,CA:TRUE",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",
-        ],
-        check=True,
-        capture_output=True,
-    )
+    # Tighten the umask so openssl writes the unencrypted private key as 0600
+    # from the moment it is created. The caller also chmods it, but that leaves
+    # a brief window where the key could be group/world-readable depending on
+    # the ambient umask; closing that window here removes the race entirely.
+    old_umask = os.umask(0o077)
+    try:
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-new", "-nodes",
+                "-newkey", "rsa:2048",
+                "-keyout", key_path,
+                "-out", cert_path,
+                "-days", "365",
+                "-subj", "/CN=CI\\/CD Network Monitor CA/O=pipewarden",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    finally:
+        os.umask(old_umask)
 
     return cert_path, key_path
 

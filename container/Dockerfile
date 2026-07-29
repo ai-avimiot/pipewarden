@@ -20,7 +20,7 @@ FROM docker:29-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e5
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 # To refresh manually: docker buildx imagetools inspect ubuntu:<tag>
 FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb AS act-download
-ARG ACT_VERSION="0.2.84"
+ARG ACT_VERSION="0.2.89"
 RUN apt-get update -qq && apt-get install -y -qq curl git \
     && curl -fsSL "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz" \
        | tar -xz -C /usr/local/bin act \
