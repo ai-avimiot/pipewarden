@@ -25,6 +25,9 @@ ACTION_PATH="${INPUT_ACTION_PATH:-.}"
 ENABLE_TRANSPARENT="${INPUT_TRANSPARENT:-true}"
 FAIL_FAST="${INPUT_FAIL_FAST:-false}"
 GH_TOKEN_INPUT="${INPUT_GITHUB_TOKEN:-}"
+# Startup canary: true (fail setup if the intercept records nothing),
+# warn (log a warning and continue), false (skip the canary).
+CANARY="${INPUT_CANARY:-true}"
 
 CA_DIR="/tmp/nfw-ca"
 LOG_DIR="/tmp/monitor-logs"
@@ -32,6 +35,38 @@ PID_FILE="/tmp/nfw-proxy.pid"
 
 ACTION_PATH="$(realpath "${ACTION_PATH}")"
 PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
+
+# ---------------------------------------------------------------------------
+# Rollback on failure
+# ---------------------------------------------------------------------------
+# A partial setup must never leave the runner broken: stopping systemd-resolved
+# without a replacement DNS server (or leaving iptables rules pointing at a
+# dead proxy) wedges every subsequent step of the job. Any non-zero exit rolls
+# back the network changes made so far.
+RESOLVED_STOPPED="false"
+IPTABLES_INSTALLED="false"
+RESOLV_CONF_BACKUP="/tmp/nfw-resolv.conf.bak"
+
+rollback_on_failure() {
+    local rc=$?
+    [ "${rc}" -eq 0 ] && return 0
+    echo "::error::PipeWarden setup failed (exit ${rc}) — rolling back network changes"
+    if [ "${IPTABLES_INSTALLED}" = "true" ]; then
+        sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 443 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || true
+        sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || true
+        sudo iptables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null || true
+    fi
+    sudo pkill -f "proxy/dns_server.py" 2>/dev/null || true
+    sudo pkill -f "mitmdump" 2>/dev/null || true
+    if [ "${RESOLVED_STOPPED}" = "true" ]; then
+        if [ -f "${RESOLV_CONF_BACKUP}" ]; then
+            sudo cp "${RESOLV_CONF_BACKUP}" /etc/resolv.conf 2>/dev/null || true
+        fi
+        sudo systemctl start systemd-resolved 2>/dev/null || true
+    fi
+    echo "Rollback complete — runner DNS and firewall restored"
+}
+trap rollback_on_failure EXIT
 
 # ---------------------------------------------------------------------------
 # 0. Resolve effective policy
@@ -137,12 +172,10 @@ if [ "${ENABLE_DNS}" = "true" ]; then
         UPSTREAM_DNS="8.8.8.8,1.1.1.1"
     fi
     UPSTREAM_DNS="${UPSTREAM_DNS%,}"
-
-    # Stop systemd-resolved to free port 53
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        echo "Stopping systemd-resolved..."
-        sudo systemctl stop systemd-resolved
-    fi
+    # systemd-resolved is stopped later, in step 8, immediately before the
+    # replacement DNS server starts — never before the proxy is confirmed up.
+    # Stopping it here turned a failed proxy start into a runner with no
+    # resolver at all (job wedged until GitHub cancelled it).
 fi
 
 # ---------------------------------------------------------------------------
@@ -170,8 +203,12 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
         | sudo tee /home/pipewardenuser/.mitmproxy/mitmproxy-ca.pem > /dev/null
     sudo chown -R pipewardenuser:pipewardenuser /home/pipewardenuser/.mitmproxy
 
-    # Ensure addon.py and policy are readable
+    # Ensure addon.py and the policy package it imports are readable.
+    # addon.py does `from policy.matcher import ...` — if policy/ is not
+    # readable by pipewardenuser the addon fails to load and mitmproxy
+    # records nothing.
     sudo chmod -R o+rX "${PROJECT_ROOT}/proxy" 2>/dev/null || true
+    sudo chmod -R o+rX "${PROJECT_ROOT}/policy" 2>/dev/null || true
     sudo chmod o+r "$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" 2>/dev/null || true
     CURRENT_DIR="${PROJECT_ROOT}"
     while [ "${CURRENT_DIR}" != "/" ]; do
@@ -216,25 +253,58 @@ PROXY_PID=$!
 echo "${PROXY_PID}" > "${PID_FILE}"
 echo "Proxy started with PID ${PROXY_PID}"
 
-# Readiness check
+# Readiness check.
+# Liveness uses ps, not `kill -0`: in transparent mode the tracked PID is a
+# root-owned sudo wrapper, and `kill -0` from the runner user races sudo's
+# uid switch — for the first few milliseconds the process is signalable,
+# then EPERM, which reads as "process died" while mitmdump is fine. The
+# sleep also comes before the liveness verdict so the proxy gets at least
+# one second of grace before being declared dead.
+dump_proxy_log() {
+    if [ -s "${LOG_DIR}/proxy.log" ]; then
+        cat "${LOG_DIR}/proxy.log"
+    else
+        echo "(proxy.log is empty)"
+    fi
+}
+
 echo "Waiting for proxy to be ready..."
-for i in $(seq 1 15); do
+PROXY_READY="false"
+for _ in $(seq 1 20); do
     if nc -z 127.0.0.1 "${PROXY_PORT}" 2>/dev/null; then
         echo "Proxy is ready (port ${PROXY_PORT} open)"
+        PROXY_READY="true"
         break
     fi
-    if ! kill -0 "${PROXY_PID}" 2>/dev/null; then
-        echo "ERROR: Proxy process died. Log output:"
-        cat "${LOG_DIR}/proxy.log" 2>/dev/null || true
-        exit 1
-    fi
-    if [ "$i" -eq 15 ]; then
-        echo "ERROR: Proxy failed to start after 15s. Log output:"
-        cat "${LOG_DIR}/proxy.log" 2>/dev/null || true
-        exit 1
-    fi
     sleep 1
+    if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
+        PROXY_EXIT=0
+        wait "${PROXY_PID}" 2>/dev/null || PROXY_EXIT=$?
+        echo "ERROR: Proxy process exited during startup (exit code ${PROXY_EXIT}). Log output:"
+        dump_proxy_log
+        exit 1
+    fi
 done
+if [ "${PROXY_READY}" != "true" ]; then
+    echo "ERROR: Proxy failed to open port ${PROXY_PORT} after 20s. Log output:"
+    dump_proxy_log
+    exit 1
+fi
+
+# The port check alone is not proof of life: mitmproxy briefly opens the
+# port and then exits when the addon script fails to load. A proxy without
+# the addon would record and enforce nothing, so treat both cases as fatal.
+sleep 1
+if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
+    echo "ERROR: Proxy exited right after opening its port (usually an addon load failure). Log output:"
+    dump_proxy_log
+    exit 1
+fi
+if grep -qiE "error in script|ScriptError" "${LOG_DIR}/proxy.log" 2>/dev/null; then
+    echo "ERROR: Proxy engine reported an addon script error — connections would not be logged or enforced. Log output:"
+    dump_proxy_log
+    exit 1
+fi
 echo "::endgroup::"
 
 # ---------------------------------------------------------------------------
@@ -245,6 +315,7 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     sudo iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 443 -j REDIRECT --to-port "${PROXY_PORT}"
     sudo iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}"
     sudo iptables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
+    IPTABLES_INSTALLED="true"
     echo "iptables rules configured"
     echo "::endgroup::"
 fi
@@ -255,6 +326,17 @@ fi
 DNS_PID=""
 if [ "${ENABLE_DNS}" = "true" ]; then
     echo "::group::PipeWarden: Start DNS server"
+
+    # DNS takeover happens only now, with the proxy confirmed up, and as one
+    # transactional unit: back up resolv.conf, stop systemd-resolved, start
+    # the replacement server. Any failure from here on rolls back via the
+    # EXIT trap so the runner is never left without a resolver.
+    sudo cp -L /etc/resolv.conf "${RESOLV_CONF_BACKUP}" 2>/dev/null || true
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        echo "Stopping systemd-resolved..."
+        sudo systemctl stop systemd-resolved
+        RESOLVED_STOPPED="true"
+    fi
 
     # Start Python DNS server as root (port 53 requires root)
     nohup sudo \
@@ -271,18 +353,85 @@ if [ "${ENABLE_DNS}" = "true" ]; then
 
     echo "nameserver 127.0.0.53" | sudo tee /etc/resolv.conf > /dev/null
 
-    # Readiness check for DNS
+    # Readiness check for DNS. Fatal on failure: a runner whose only
+    # resolver is a dead DNS server cannot finish the job anyway, so fail
+    # here while the EXIT trap can still restore systemd-resolved.
     sleep 0.5
-    for i in $(seq 1 5); do
+    DNS_READY="false"
+    for _ in $(seq 1 10); do
         if nslookup example.com 127.0.0.53 &>/dev/null; then
             echo "DNS server is ready"
+            DNS_READY="true"
             break
-        fi
-        if [ "$i" -eq 5 ]; then
-            echo "WARNING: DNS server may not be ready"
         fi
         sleep 0.5
     done
+    if [ "${DNS_READY}" != "true" ]; then
+        echo "ERROR: DNS server did not become ready. Log output:"
+        cat "${LOG_DIR}/dns.log" 2>/dev/null || true
+        exit 1
+    fi
+    echo "::endgroup::"
+fi
+
+# ---------------------------------------------------------------------------
+# 8a. Startup canary — prove the intercept actually records traffic
+# ---------------------------------------------------------------------------
+# A proxy that is up but not capturing (addon failure, iptables rules not
+# matching, dead DNS) renders a report identical to a clean run. Make one
+# real request and require it to appear in the connection log before
+# declaring setup healthy. Runs before the fail-fast watcher on purpose: a
+# canary blocked by an enforce policy still proves logging works, and must
+# not cancel the run.
+if [ "${CANARY}" != "false" ]; then
+    echo "::group::PipeWarden: Startup canary"
+    CANARY_HOST="api.github.com"
+    if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
+        # Resolve the canary IP against the upstream resolver directly and pin
+        # it with --resolve: an enforce policy may NXDOMAIN the canary host at
+        # the DNS leg, and the point here is to exercise the proxy leg. The
+        # SNI still carries the hostname, so the proxy logs (and may block)
+        # it either way — a blocked canary entry passes the check too.
+        CANARY_IP=""
+        if [ -n "${UPSTREAM_DNS}" ] && command -v dig &>/dev/null; then
+            CANARY_IP="$(dig +short +time=3 +tries=1 @"${UPSTREAM_DNS%%,*}" A "${CANARY_HOST}" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+        fi
+        if [ -n "${CANARY_IP}" ]; then
+            curl --silent --show-error --max-time 15 --output /dev/null \
+                --resolve "${CANARY_HOST}:443:${CANARY_IP}" "https://${CANARY_HOST}/" \
+                || echo "Canary request failed (not fatal by itself — checking the connection log)"
+        else
+            curl --silent --show-error --max-time 15 --output /dev/null "https://${CANARY_HOST}/" \
+                || echo "Canary request failed (not fatal by itself — checking the connection log)"
+        fi
+    else
+        curl --silent --show-error --max-time 15 --output /dev/null \
+            --proxy "http://127.0.0.1:${PROXY_PORT}" "https://${CANARY_HOST}/" \
+            || echo "Canary request failed (not fatal by itself — checking the connection log)"
+    fi
+    sleep 1
+    if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q '"protocol": "https"'; then
+        echo "Canary OK — ${CANARY_HOST} was recorded by the proxy leg"
+        # Drop startup noise (including the canary itself) so the report and
+        # enforce-mode blocked counts reflect only the job's own traffic.
+        # Truncation (not re-creation) keeps ownership and permissions.
+        : > "${LOG_DIR}/connections.jsonl"
+    else
+        echo "Canary request to ${CANARY_HOST} was NOT recorded by the proxy leg."
+        echo "The intercept is not capturing traffic — the job would run unmonitored."
+        echo "Proxy log tail:"
+        tail -n 50 "${LOG_DIR}/proxy.log" 2>/dev/null || true
+        if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
+            echo "iptables nat OUTPUT counters (packets column shows whether the REDIRECT matched):"
+            sudo iptables -t nat -L OUTPUT -v -n 2>/dev/null || true
+        fi
+        if [ "${CANARY}" = "warn" ]; then
+            echo "::warning::PipeWarden startup canary failed — the proxy leg is not recording traffic (canary: warn, continuing)."
+        else
+            echo "::error::PipeWarden startup canary failed — the proxy leg is not recording traffic. Set canary: warn to continue without this guarantee."
+            exit 1
+        fi
+    fi
     echo "::endgroup::"
 fi
 
@@ -362,3 +511,6 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
 else
     echo "::warning::PipeWarden: HTTP/HTTPS routed via proxy env vars. DNS: ${ENABLE_DNS}. Mode: ${MODE}."
 fi
+
+# Setup finished — disarm the failure rollback.
+trap - EXIT

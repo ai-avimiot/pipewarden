@@ -24,7 +24,24 @@ PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
 REPORT_DIR="/tmp/report"
 
 # ---------------------------------------------------------------------------
-# 0. Stop fail-fast watcher (if running)
+# 0. Capture intercept health while the processes are still (maybe) alive
+# ---------------------------------------------------------------------------
+# Recorded before anything is stopped so the report can distinguish "clean
+# run with no traffic" from "the intercept died and monitored nothing".
+PROXY_ALIVE_AT_TEARDOWN="no"
+if pgrep -f "mitmdump" > /dev/null 2>&1; then
+    PROXY_ALIVE_AT_TEARDOWN="yes"
+fi
+DNS_ALIVE_AT_TEARDOWN="disabled"
+if [ "${DNS_ENABLED}" = "true" ]; then
+    DNS_ALIVE_AT_TEARDOWN="no"
+    if pgrep -f "dns_server.py" > /dev/null 2>&1; then
+        DNS_ALIVE_AT_TEARDOWN="yes"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 0.5. Stop fail-fast watcher (if running)
 # ---------------------------------------------------------------------------
 if [ -n "${NFW_FAILFAST_PID:-}" ] && kill -0 "${NFW_FAILFAST_PID}" 2>/dev/null; then
     kill -TERM "${NFW_FAILFAST_PID}" 2>/dev/null || true
@@ -34,23 +51,37 @@ fi
 # 1. Stop proxy process
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Stop proxy"
-if [ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null; then
+# In transparent mode the tracked PID is a root-owned sudo wrapper: liveness
+# must use ps (kill -0 gets EPERM and reads as "already exited") and the
+# signal must be sent with sudo (an unprivileged kill fails silently).
+proxy_kill() {
+    if [ "${TRANSPARENT}" = "true" ]; then
+        sudo kill "$@" 2>/dev/null
+    else
+        kill "$@" 2>/dev/null
+    fi
+}
+if [ -n "${PROXY_PID}" ] && ps -p "${PROXY_PID}" > /dev/null 2>&1; then
     echo "Stopping proxy (PID ${PROXY_PID})..."
-    kill -TERM "${PROXY_PID}" 2>/dev/null || true
+    proxy_kill -TERM "${PROXY_PID}" || true
 
     for i in $(seq 1 10); do
-        if ! kill -0 "${PROXY_PID}" 2>/dev/null; then
+        if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
             echo "Proxy stopped gracefully"
             break
         fi
         if [ "$i" -eq 10 ]; then
             echo "Proxy did not stop gracefully, sending SIGKILL"
-            kill -9 "${PROXY_PID}" 2>/dev/null || true
+            proxy_kill -9 "${PROXY_PID}" || true
         fi
         sleep 0.5
     done
 else
     echo "Warning: Proxy PID not found or already exited"
+fi
+# The sudo wrapper's mitmdump child can outlive the wrapper.
+if [ "${TRANSPARENT}" = "true" ]; then
+    sudo pkill -f "mitmdump" 2>/dev/null || true
 fi
 echo "::endgroup::"
 
@@ -168,6 +199,113 @@ fi
 python3 "${PROJECT_ROOT}/scripts/generate_report.py" ${REPORT_ARGS} || {
     echo "Warning: Report generation failed"
 }
+echo "::endgroup::"
+
+# ---------------------------------------------------------------------------
+# 4.5. Intercept health — make silent breakage distinguishable from a clean run
+# ---------------------------------------------------------------------------
+# "Total connections: 0" must never read the same for "nothing happened" and
+# "the intercept was broken". Writes health.json into the report artifact and
+# appends a health section to summary.md (which step 5 puts in the Job
+# Summary), plus ::warning:: annotations for anything unhealthy.
+echo "::group::PipeWarden: Intercept health"
+mkdir -p "${REPORT_DIR}"
+PW_PROXY_ALIVE="${PROXY_ALIVE_AT_TEARDOWN}" \
+PW_DNS_ALIVE="${DNS_ALIVE_AT_TEARDOWN}" \
+PW_TRANSPARENT="${TRANSPARENT}" \
+PW_CONN_LOG="${CONN_LOG}" \
+PW_REPORT_DIR="${REPORT_DIR}" \
+python3 - <<'PYEOF' || echo "Warning: health check failed"
+import json
+import os
+
+proxy_leg = ipt = dns = 0
+try:
+    with open(os.environ["PW_CONN_LOG"]) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("method") == "iptables-log":
+                ipt += 1
+            elif e.get("protocol") == "dns":
+                dns += 1
+            elif e.get("protocol") in ("http", "https", "tcp"):
+                proxy_leg += 1
+except OSError:
+    pass
+
+proxy_alive = os.environ.get("PW_PROXY_ALIVE", "unknown")
+dns_alive = os.environ.get("PW_DNS_ALIVE", "unknown")
+transparent = os.environ.get("PW_TRANSPARENT", "") == "true"
+
+warnings = []
+if proxy_alive == "no":
+    warnings.append(
+        "the proxy process was not running at teardown — part of the job may "
+        "have gone unmonitored"
+    )
+if transparent and proxy_leg == 0 and (ipt > 0 or dns > 0):
+    warnings.append(
+        "the transparent proxy leg recorded ZERO flows while other legs saw "
+        "traffic — HTTP/HTTPS content metadata was NOT captured; this report "
+        "is DNS/iptables metadata only"
+    )
+if dns_alive == "no":
+    warnings.append("the PipeWarden DNS server was not running at teardown")
+
+health = {
+    "proxy_alive_at_teardown": proxy_alive,
+    "dns_server_alive_at_teardown": dns_alive,
+    "proxy_leg_entries": proxy_leg,
+    "dns_entries": dns,
+    "iptables_only_entries": ipt,
+    "warnings": warnings,
+}
+with open(os.path.join(os.environ["PW_REPORT_DIR"], "health.json"), "w") as fh:
+    json.dump(health, fh, indent=2)
+
+lines = ["", "### Intercept health", ""]
+if warnings:
+    for w in warnings:
+        lines.append(f"> ⚠️ **{w}**")
+        lines.append(">")
+else:
+    lines.append("✅ All intercept legs healthy.")
+lines += [
+    "",
+    "| Check | Value |",
+    "| --- | --- |",
+    f"| Proxy process alive at teardown | {proxy_alive} |",
+    f"| DNS server alive at teardown | {dns_alive} |",
+    f"| Proxy-leg entries (HTTP/HTTPS/TCP) | {proxy_leg} |",
+    f"| DNS entries | {dns} |",
+    f"| iptables-only entries | {ipt} |",
+    "",
+]
+summary_md = os.path.join(os.environ["PW_REPORT_DIR"], "summary.md")
+try:
+    with open(summary_md, "a") as fh:
+        fh.write("\n".join(lines))
+except OSError:
+    pass
+
+for w in warnings:
+    print(f"::warning title=PipeWarden health::{w}")
+print(
+    f"Health: proxy_leg={proxy_leg} dns={dns} iptables={ipt} "
+    f"proxy_alive={proxy_alive} dns_alive={dns_alive}"
+)
+PYEOF
+if [ "${TRANSPARENT}" = "true" ] && [ -f "${REPORT_DIR}/health.json" ] \
+    && grep -q '"proxy_leg_entries": 0' "${REPORT_DIR}/health.json"; then
+    echo "Proxy log tail (for diagnosing the zero-flow proxy leg):"
+    tail -n 40 "${LOG_DIR}/proxy.log" 2>/dev/null || echo "(no proxy.log)"
+fi
 echo "::endgroup::"
 
 # ---------------------------------------------------------------------------

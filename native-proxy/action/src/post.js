@@ -134,7 +134,10 @@ async function uploadReport() {
     console.log("PipeWarden: no Actions artifact backend available, skipping upload");
     return;
   }
-  const name = process.env.NFW_ARTIFACT_NAME || process.env["INPUT_ARTIFACT-NAME"] || "network-report";
+  const name =
+    process.env.NFW_ARTIFACT_NAME ||
+    process.env["INPUT_ARTIFACT-NAME"] ||
+    `network-report-${process.env.GITHUB_JOB || "job"}`;
   try {
     const { DefaultArtifactClient } = await import("@actions/artifact");
     const client = new DefaultArtifactClient();

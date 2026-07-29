@@ -103,9 +103,10 @@ This is exactly the multi-job / matrix case the `appears` field exists for.
 
 ## 3. Matrix jobs: give each leg a unique artifact name
 
-The report artifact defaults to `network-report`. In a matrix (or any time more
-than one job uploads), every leg would try to upload under the same name and
-collide. Make the name unique per leg:
+The report artifact defaults to `network-report-<job id>`, so distinct jobs in
+one workflow never collide. Matrix legs of the *same* job share a job id,
+though, so every leg would still try to upload under the same name and collide.
+Make the name unique per leg:
 
 ```yaml
   test:
@@ -125,8 +126,8 @@ collide. Make the name unique per leg:
       - run: npm ci && npm test
 ```
 
-Use `${{ github.job }}` for distinct (non-matrix) jobs, or the matrix value(s) for
-matrix legs. Set `upload-artifact: false` on jobs whose report you don't need.
+Distinct (non-matrix) jobs need nothing — the per-job default already keeps
+them apart. Set `upload-artifact: false` on jobs whose report you don't need.
 
 ## 4. Consolidate the reports (optional)
 
@@ -167,6 +168,6 @@ waits for the others, downloads every report artifact, and merges them:
 | One policy for all jobs | Leave `policy-file` unset — resolves per workflow file |
 | Tighter per-job policy | Set `policy-file:` explicitly on that job |
 | Quiet "unused" reports | Mark cross-job/conditional rules `appears: sometimes` |
-| Matrix without collisions | Unique `artifact-name:` per leg |
+| Matrix without collisions | Unique `artifact-name:` per leg (distinct jobs are covered by the `network-report-<job id>` default) |
 | One combined report | Aggregation job: `needs:` all, download `network-report-*`, merge |
 | Live shared state across jobs | Not possible — separate runners; use artifacts after the fact |
