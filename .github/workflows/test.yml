@@ -10,6 +10,45 @@ permissions:
   contents: read
 
 jobs:
+  # native-proxy/action is a node24 action: GitHub executes dist/ straight from
+  # the repo, with no build step. A stale dist therefore ships old code to every
+  # consumer while package.json looks up to date — which is exactly what happened
+  # when Dependabot bumped @actions/cache and nobody rebuilt the bundle.
+  check-dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: native-proxy/action/package-lock.json
+
+      - name: Rebuild the action bundle
+        working-directory: native-proxy/action
+        run: |
+          npm ci
+          npm run build
+
+      - name: Fail if dist/ is out of date
+        run: |
+          if ! git diff --quiet -- native-proxy/action/dist; then
+            echo "::error title=Stale dist::native-proxy/action/dist does not match src/ + package.json. Run 'npm ci && npm run build' in native-proxy/action and commit the result."
+            git --no-pager diff --stat -- native-proxy/action/dist
+            exit 1
+          fi
+          echo "dist/ is in sync with src/."
+
+      - name: Upload rebuilt dist on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: expected-dist
+          path: native-proxy/action/dist
+
   lint:
     runs-on: ubuntu-latest
 
