@@ -45,6 +45,10 @@ PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
 # back the network changes made so far.
 RESOLVED_STOPPED="false"
 IPTABLES_INSTALLED="false"
+FORWARD_LOG_INSTALLED="false"
+IP6TABLES_INSTALLED="false"
+BLINDSPOT_IPV6="false"
+BLINDSPOT_DOCKER="false"
 RESOLV_CONF_BACKUP="/tmp/nfw-resolv.conf.bak"
 
 rollback_on_failure() {
@@ -55,6 +59,18 @@ rollback_on_failure() {
         sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 443 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || true
         sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || true
         sudo iptables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null || true
+        # Enforce-mode protocol blocks (no-ops if they were never added).
+        sudo iptables -D OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+        sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset 2>/dev/null || true
+        sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    fi
+    if [ "${FORWARD_LOG_INSTALLED}" = "true" ]; then
+        sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || true
+    fi
+    if [ "${IP6TABLES_INSTALLED}" = "true" ]; then
+        sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
     fi
     sudo pkill -f "proxy/dns_server.py" 2>/dev/null || true
     sudo pkill -f "mitmdump" 2>/dev/null || true
@@ -270,13 +286,15 @@ dump_proxy_log() {
 
 echo "Waiting for proxy to be ready..."
 PROXY_READY="false"
-for _ in $(seq 1 20); do
+# Poll the port at 0.2s so startup latency (typically ~1s) isn't rounded up
+# to a whole second; still bounded to ~20s (100 * 0.2s). Liveness is checked
+# each iteration so a dead proxy fails fast rather than waiting out the budget.
+for _ in $(seq 1 100); do
     if nc -z 127.0.0.1 "${PROXY_PORT}" 2>/dev/null; then
         echo "Proxy is ready (port ${PROXY_PORT} open)"
         PROXY_READY="true"
         break
     fi
-    sleep 1
     if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
         PROXY_EXIT=0
         wait "${PROXY_PID}" 2>/dev/null || PROXY_EXIT=$?
@@ -284,6 +302,7 @@ for _ in $(seq 1 20); do
         dump_proxy_log
         exit 1
     fi
+    sleep 0.2
 done
 if [ "${PROXY_READY}" != "true" ]; then
     echo "ERROR: Proxy failed to open port ${PROXY_PORT} after 20s. Log output:"
@@ -294,17 +313,24 @@ fi
 # The port check alone is not proof of life: mitmproxy briefly opens the
 # port and then exits when the addon script fails to load. A proxy without
 # the addon would record and enforce nothing, so treat both cases as fatal.
-sleep 1
-if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
-    echo "ERROR: Proxy exited right after opening its port (usually an addon load failure). Log output:"
-    dump_proxy_log
-    exit 1
-fi
-if grep -qiE "error in script|ScriptError" "${LOG_DIR}/proxy.log" 2>/dev/null; then
-    echo "ERROR: Proxy engine reported an addon script error — connections would not be logged or enforced. Log output:"
-    dump_proxy_log
-    exit 1
-fi
+# Poll for up to ~1.5s: fail the instant an addon error surfaces, otherwise
+# accept once the process has stayed up a few polls (no fixed full-second wait).
+STABLE_POLLS=0
+for _ in $(seq 1 15); do
+    if grep -qiE "error in script|ScriptError" "${LOG_DIR}/proxy.log" 2>/dev/null; then
+        echo "ERROR: Proxy engine reported an addon script error — connections would not be logged or enforced. Log output:"
+        dump_proxy_log
+        exit 1
+    fi
+    if ! ps -p "${PROXY_PID}" > /dev/null 2>&1; then
+        echo "ERROR: Proxy exited right after opening its port (usually an addon load failure). Log output:"
+        dump_proxy_log
+        exit 1
+    fi
+    STABLE_POLLS=$((STABLE_POLLS + 1))
+    [ "${STABLE_POLLS}" -ge 3 ] && break
+    sleep 0.1
+done
 echo "::endgroup::"
 
 # ---------------------------------------------------------------------------
@@ -316,8 +342,70 @@ if [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     sudo iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}"
     sudo iptables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
     IPTABLES_INSTALLED="true"
+
+    # Enforce mode: close the protocol-level bypasses of the TCP 80/443 proxy.
+    # These are NOT redirected into the proxy (it speaks TCP HTTP/HTTPS), so
+    # the only safe enforce action is to reject them, which also forces clients
+    # to fall back to the interceptable TCP path:
+    #   - QUIC / HTTP-3 over UDP 443 (browsers, google/cloudflare SDKs, and
+    #     increasingly package managers negotiate this automatically whenever
+    #     UDP 443 is open, sailing straight past a TCP-only proxy)
+    #   - DNS-over-TLS / DNS-over-QUIC on 853 (bypasses the DNS interceptor)
+    # Monitor mode leaves them alone (nothing is ever blocked in monitor).
+    if [ "${MODE}" = "enforce" ]; then
+        sudo iptables -A OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable
+        sudo iptables -A OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset
+        sudo iptables -A OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable
+        echo "Enforce: blocked QUIC (udp/443) and DoT/DoQ (853) to force interceptable TCP"
+    fi
+
+    # Visibility for the known interception blind spots. Log-only (never
+    # blocks), so it is safe to add unconditionally where the tooling exists:
+    #   - FORWARD: egress from Docker containers a job launches traverses
+    #     FORWARD, not OUTPUT, so it is otherwise invisible. Logging it means
+    #     container traffic at least shows up as IP metadata in the report.
+    #   - ip6tables: IPv6 egress bypasses the IPv4-only rules entirely. A LOG
+    #     rule makes it visible; enforce mode additionally rejects uninspected
+    #     IPv6 web/DoT below (fail-closed) since the proxy is IPv4-only.
+    sudo iptables -A FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null \
+        && FORWARD_LOG_INSTALLED="true" || echo "Note: could not add FORWARD log rule (container egress will be invisible)"
+
+    if command -v ip6tables &>/dev/null; then
+        if sudo ip6tables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null; then
+            IP6TABLES_INSTALLED="true"
+            if [ "${MODE}" = "enforce" ]; then
+                # Proxy is IPv4-only, so uninspected IPv6 web/DoT is fail-closed.
+                sudo ip6tables -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+                sudo ip6tables -A OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+                echo "Enforce: rejected uninspected IPv6 web/DoT (proxy is IPv4-only)"
+            fi
+        fi
+    fi
+
     echo "iptables rules configured"
     echo "::endgroup::"
+
+    # ---------------------------------------------------------------------
+    # 7a. Interception blind-spot detection — make the gaps loud, not silent
+    # ---------------------------------------------------------------------
+    # These are recorded to GITHUB_ENV so teardown surfaces them in health.json
+    # and the job summary. IPv6 and container egress are only partially covered
+    # (logged, and rejected in enforce), and a user relying on enforce should
+    # know that up front rather than discover it in an incident.
+    BLINDSPOT_IPV6="false"
+    BLINDSPOT_DOCKER="false"
+    if ip -6 route show default 2>/dev/null | grep -q .; then
+        BLINDSPOT_IPV6="true"
+        if [ "${MODE}" = "enforce" ]; then
+            echo "::warning::PipeWarden: this runner has IPv6 egress. The proxy is IPv4-only; IPv6 HTTP/HTTPS/DoT is logged and rejected in enforce mode, but never TLS-inspected."
+        else
+            echo "::warning::PipeWarden: this runner has IPv6 egress. The proxy is IPv4-only; IPv6 HTTP/HTTPS is logged but NOT inspected (monitor mode blocks nothing)."
+        fi
+    fi
+    if ip -o link show type bridge 2>/dev/null | grep -qiE 'docker0|br-'; then
+        BLINDSPOT_DOCKER="true"
+        echo "::warning::PipeWarden: a Docker bridge is present. Egress from containers a job launches traverses FORWARD, not OUTPUT — it is logged as IP metadata but NOT TLS-inspected or policy-enforced."
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -356,15 +444,14 @@ if [ "${ENABLE_DNS}" = "true" ]; then
     # Readiness check for DNS. Fatal on failure: a runner whose only
     # resolver is a dead DNS server cannot finish the job anyway, so fail
     # here while the EXIT trap can still restore systemd-resolved.
-    sleep 0.5
     DNS_READY="false"
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 25); do
         if nslookup example.com 127.0.0.53 &>/dev/null; then
             echo "DNS server is ready"
             DNS_READY="true"
             break
         fi
-        sleep 0.5
+        sleep 0.2
     done
     if [ "${DNS_READY}" != "true" ]; then
         echo "ERROR: DNS server did not become ready. Log output:"
@@ -409,8 +496,17 @@ if [ "${CANARY}" != "false" ]; then
             --proxy "http://127.0.0.1:${PROXY_PORT}" "https://${CANARY_HOST}/" \
             || echo "Canary request failed (not fatal by itself — checking the connection log)"
     fi
-    sleep 1
-    if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q '"protocol": "https"'; then
+    # Poll for the canary entry (the proxy writes it a beat after the request
+    # returns) instead of a flat 1s wait — break as soon as it lands.
+    CANARY_SEEN="false"
+    for _ in $(seq 1 10); do
+        if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q '"protocol": "https"'; then
+            CANARY_SEEN="true"
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "${CANARY_SEEN}" = "true" ]; then
         echo "Canary OK — ${CANARY_HOST} was recorded by the proxy leg"
         # Drop startup noise (including the canary itself) so the report and
         # enforce-mode blocked counts reflect only the job's own traffic.
@@ -499,6 +595,13 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     if [ -n "${DNS_PID}" ]; then
         echo "NFW_DNS_PID=${DNS_PID}" >> "${GITHUB_ENV}"
     fi
+    # Which hardening rules were installed (so teardown removes exactly those)
+    # and which interception blind spots this runner exposes (so teardown
+    # surfaces them in health.json).
+    echo "NFW_FORWARD_LOG=${FORWARD_LOG_INSTALLED}" >> "${GITHUB_ENV}"
+    echo "NFW_IP6TABLES=${IP6TABLES_INSTALLED}" >> "${GITHUB_ENV}"
+    echo "NFW_BLINDSPOT_IPV6=${BLINDSPOT_IPV6}" >> "${GITHUB_ENV}"
+    echo "NFW_BLINDSPOT_DOCKER=${BLINDSPOT_DOCKER}" >> "${GITHUB_ENV}"
 fi
 
 echo "::endgroup::"

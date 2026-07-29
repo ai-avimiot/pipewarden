@@ -260,9 +260,10 @@ if [ "${POST_COMMENT}" = "true" ] && [ -f "${REPORT_DIR}/summary.md" ]; then
         echo "Warning: GITHUB_REPOSITORY not set; skipping comment."
     else
         RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}"
-        python3 scripts/post_github_comment.py \
+        # Pass the token via the environment, not argv — a token on the command
+        # line is readable in the process table by any other process.
+        GH_TOKEN="${GH_TOKEN}" python3 scripts/post_github_comment.py \
             --report "${REPORT_DIR}/summary.md" \
-            --token "${GH_TOKEN}" \
             --repo "${GITHUB_REPOSITORY}" \
             --event-path "${GITHUB_EVENT_PATH:-}" \
             --run-url "${RUN_URL}" \

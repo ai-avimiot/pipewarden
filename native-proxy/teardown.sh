@@ -18,6 +18,11 @@ MODE="${NFW_MODE:-monitor}"
 POLICY_FILE="${NFW_POLICY_FILE:-}"
 ACTION_PATH="${NFW_ACTION_PATH:-${INPUT_ACTION_PATH:-.}}"
 TRANSPARENT="${NFW_TRANSPARENT:-false}"
+PROXY_PORT="${NFW_PROXY_PORT:-8080}"
+FORWARD_LOG="${NFW_FORWARD_LOG:-false}"
+IP6TABLES="${NFW_IP6TABLES:-false}"
+BLINDSPOT_IPV6="${NFW_BLINDSPOT_IPV6:-false}"
+BLINDSPOT_DOCKER="${NFW_BLINDSPOT_DOCKER:-false}"
 
 # The project root is one level up from native-proxy/
 PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
@@ -96,6 +101,18 @@ if [ "${TRANSPARENT}" = "true" ]; then
     sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || \
     sudo iptables -t nat -D OUTPUT -p tcp -m owner ! --uid-owner mitmproxyuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}" 2>/dev/null || echo "Warning: Failed to delete NAT rule for port 80"
     sudo iptables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null || echo "Warning: Failed to delete LOG rule"
+    # Enforce-mode protocol blocks (no-ops if they were never added).
+    sudo iptables -D OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset 2>/dev/null || true
+    sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    if [ "${FORWARD_LOG}" = "true" ]; then
+        sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || echo "Warning: Failed to delete FORWARD LOG rule"
+    fi
+    if [ "${IP6TABLES}" = "true" ] && command -v ip6tables &>/dev/null; then
+        sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+    fi
     echo "iptables rules removed"
     echo "::endgroup::"
 fi
@@ -113,8 +130,13 @@ if [ "${DNS_ENABLED}" = "true" ]; then
     if command -v systemctl &>/dev/null; then
         echo "Restoring systemd-resolved..."
         sudo systemctl start systemd-resolved 2>/dev/null || true
-        # Wait for it to be ready
-        sleep 0.5
+        # Poll for resolution to come back rather than a flat wait; this is the
+        # last teardown step so failing to shave it off is harmless, but the
+        # common case returns in well under 0.5s.
+        for _ in $(seq 1 10); do
+            if nslookup example.com &>/dev/null; then break; fi
+            sleep 0.1
+        done
     fi
 
     echo "DNS server stopped, system DNS restored"
@@ -201,6 +223,15 @@ python3 "${PROJECT_ROOT}/scripts/generate_report.py" ${REPORT_ARGS} || {
 }
 echo "::endgroup::"
 
+# Re-detect a Docker bridge at teardown: a job may have started containers
+# after setup ran, so the setup-time flag can miss them. IPv6 egress is stable
+# from boot, so its setup-time detection is authoritative.
+if [ "${TRANSPARENT}" = "true" ] && [ "${BLINDSPOT_DOCKER}" != "true" ]; then
+    if ip -o link show type bridge 2>/dev/null | grep -qiE 'docker0|br-'; then
+        BLINDSPOT_DOCKER="true"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # 4.5. Intercept health — make silent breakage distinguishable from a clean run
 # ---------------------------------------------------------------------------
@@ -215,6 +246,8 @@ PW_DNS_ALIVE="${DNS_ALIVE_AT_TEARDOWN}" \
 PW_TRANSPARENT="${TRANSPARENT}" \
 PW_CONN_LOG="${CONN_LOG}" \
 PW_REPORT_DIR="${REPORT_DIR}" \
+PW_BLINDSPOT_IPV6="${BLINDSPOT_IPV6}" \
+PW_BLINDSPOT_DOCKER="${BLINDSPOT_DOCKER}" \
 python3 - <<'PYEOF' || echo "Warning: health check failed"
 import json
 import os
@@ -242,6 +275,8 @@ except OSError:
 proxy_alive = os.environ.get("PW_PROXY_ALIVE", "unknown")
 dns_alive = os.environ.get("PW_DNS_ALIVE", "unknown")
 transparent = os.environ.get("PW_TRANSPARENT", "") == "true"
+blindspot_ipv6 = os.environ.get("PW_BLINDSPOT_IPV6", "") == "true"
+blindspot_docker = os.environ.get("PW_BLINDSPOT_DOCKER", "") == "true"
 
 warnings = []
 if proxy_alive == "no":
@@ -257,6 +292,17 @@ if transparent and proxy_leg == 0 and (ipt > 0 or dns > 0):
     )
 if dns_alive == "no":
     warnings.append("the PipeWarden DNS server was not running at teardown")
+if blindspot_ipv6:
+    warnings.append(
+        "this runner has IPv6 egress; the proxy is IPv4-only, so IPv6 traffic "
+        "was logged but not TLS-inspected (rejected in enforce mode)"
+    )
+if blindspot_docker:
+    warnings.append(
+        "a Docker bridge was present; egress from containers the job launched "
+        "traversed FORWARD and was logged as IP metadata but not TLS-inspected "
+        "or policy-enforced"
+    )
 
 health = {
     "proxy_alive_at_teardown": proxy_alive,
@@ -264,6 +310,8 @@ health = {
     "proxy_leg_entries": proxy_leg,
     "dns_entries": dns,
     "iptables_only_entries": ipt,
+    "blindspot_ipv6_egress": blindspot_ipv6,
+    "blindspot_docker_bridge": blindspot_docker,
     "warnings": warnings,
 }
 with open(os.path.join(os.environ["PW_REPORT_DIR"], "health.json"), "w") as fh:
@@ -285,6 +333,8 @@ lines += [
     f"| Proxy-leg entries (HTTP/HTTPS/TCP) | {proxy_leg} |",
     f"| DNS entries | {dns} |",
     f"| iptables-only entries | {ipt} |",
+    f"| IPv6 egress present (not TLS-inspected) | {'yes' if blindspot_ipv6 else 'no'} |",
+    f"| Docker bridge present (container egress not inspected) | {'yes' if blindspot_docker else 'no'} |",
     "",
 ]
 summary_md = os.path.join(os.environ["PW_REPORT_DIR"], "summary.md")

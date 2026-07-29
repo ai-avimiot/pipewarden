@@ -2,6 +2,7 @@ name: "PipeWarden Demo: Container Mode"
 
 on:
   push:
+    branches: [main]
     paths:
       - 'demo-nodejs/**'
       - 'container/**'
@@ -11,6 +12,12 @@ on:
     paths:
       - 'demo-nodejs/**'
   workflow_dispatch:
+
+# A commit and its release tag are pushed together; without this the demo runs
+# twice for the same SHA. Cancel superseded runs on the same ref.
+concurrency:
+  group: demo-container-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   PIPEWARDEN_IMAGE: ghcr.io/${{ github.repository_owner }}/pipewarden:latest

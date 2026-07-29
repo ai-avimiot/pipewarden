@@ -162,6 +162,34 @@ class TestHTTPRequestInterception:
 # TCP connection logging tests
 # ------------------------------------------------------------------
 
+class TestQueryStringRedaction:
+    """The query string must never reach the log (it can carry credentials)."""
+
+    def test_helper_strips_query_keeps_path(self):
+        from proxy.addon import _redact_path
+        assert _redact_path("/download?X-Amz-Signature=abc&e=1") == "/download?<redacted>"
+        assert _redact_path("/api/v1") == "/api/v1"
+        assert _redact_path("/p?a=1#frag") == "/p?<redacted>"
+        assert _redact_path("/p#frag") == "/p"
+        assert _redact_path("") == ""
+
+    def test_https_request_query_is_redacted(self, sample_policy_file, log_file):
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        secret = "/objects?X-Amz-Signature=DEADBEEF&X-Amz-Credential=AKIA"
+        flow = MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path=secret, method="GET",
+        ))
+
+        addon.request(flow)
+
+        entries = _read_log_entries(log_file)
+        assert entries[0]["path"] == "/objects?<redacted>"
+        # The secret must appear nowhere in the serialized log line.
+        raw = open(log_file, encoding="utf-8").read()
+        assert "DEADBEEF" not in raw
+        assert "AKIA" not in raw
+
+
 class TestTCPConnectionLogging:
     """Tests for the tcp_message() handler."""
 

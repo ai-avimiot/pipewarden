@@ -370,7 +370,7 @@ class NetworkMonitorAddon:
             protocol="https" if is_https else "http",
             host=host,
             port=req.port,
-            path=req.path,
+            path=_redact_path(req.path),
             method=req.method,
             tls_sni=sni if is_https else "",
         )
@@ -453,7 +453,7 @@ class NetworkMonitorAddon:
                 protocol="https" if is_https else "http",
                 host=host,
                 port=req.port,
-                path=req.path,
+                path=_redact_path(req.path),
                 method=req.method,
                 status="data",
                 bytes_transferred=total,
@@ -574,6 +574,23 @@ def _looks_like_ip(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _redact_path(path: str) -> str:
+    """Strip the query string from a request path before it is logged.
+
+    mitmproxy decrypts HTTPS, so ``req.path`` carries the full query string —
+    which routinely holds credentials (presigned-URL signatures like
+    ``?X-Amz-Signature=``, ``?access_token=``, ``?api_key=``, SAS tokens). Those
+    would otherwise land verbatim in report.json, which is uploaded as a build
+    artifact, contradicting the metadata-only guarantee. The path itself is kept
+    (policy path-matching runs on it) with a marker so a stripped query is still
+    visible as a fact. Fragments never reach the server, but are dropped too.
+    """
+    if not path:
+        return path
+    base = path.split("?", 1)[0].split("#", 1)[0]
+    return base + "?<redacted>" if "?" in path else base
 
 
 class _BlockedResponse:

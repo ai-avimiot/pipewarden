@@ -10,6 +10,7 @@ within GitHub's limit, with a notice appended at the end.
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -80,11 +81,27 @@ def main() -> None:
         description="Post the network monitor report as a GitHub comment."
     )
     parser.add_argument("--report", required=True, help="Path to summary.md")
-    parser.add_argument("--token", required=True, help="GitHub token")
+    parser.add_argument(
+        "--token",
+        default="",
+        help="GitHub token. Prefer the GH_TOKEN env var; a token on the command "
+        "line is visible in the process table to other processes.",
+    )
     parser.add_argument("--repo", required=True, help="owner/repo")
     parser.add_argument("--event-path", default="", help="Path to GITHUB_EVENT_PATH JSON")
     parser.add_argument("--run-url", default="", help="URL to the current Actions run")
     args = parser.parse_args()
+
+    # Read the token from the environment by default so it never appears in the
+    # process table (/proc/<pid>/cmdline, `ps`). --token stays as a fallback for
+    # backwards compatibility but is deprecated.
+    token = os.environ.get("GH_TOKEN") or args.token
+    if not token:
+        print(
+            "[post-comment] No GitHub token (set GH_TOKEN); skipping comment.",
+            file=sys.stderr,
+        )
+        sys.exit(0)
 
     issue_number = _get_issue_number(args.event_path)
     if issue_number is None:
@@ -96,7 +113,7 @@ def main() -> None:
         sys.exit(0)
 
     body = _build_comment_body(args.report, args.run_url)
-    post_comment(args.token, args.repo, issue_number, body)
+    post_comment(token, args.repo, issue_number, body)
 
 
 if __name__ == "__main__":
