@@ -12,6 +12,9 @@ set -euo pipefail
 # Raw policy-file input. Empty ("") means auto-resolve (common + per-pipeline).
 POLICY_FILE_INPUT="${INPUT_POLICY_FILE:-}"
 MODE="${INPUT_MODE:-enforce}"
+# Enforce mode: fail the job when a connection was blocked (default), unless the
+# caller opts out to block-but-continue. Consumed by teardown.
+FAIL_ON_BLOCK="${INPUT_FAIL_ON_BLOCK:-true}"
 PROXY_PORT="${INPUT_PROXY_PORT:-8080}"
 
 # Validate proxy-port
@@ -584,6 +587,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "NFW_PROXY_PID=${PROXY_PID}" >> "${GITHUB_ENV}"
     echo "NFW_ACTION_PATH=${ACTION_PATH}" >> "${GITHUB_ENV}"
     echo "NFW_MODE=${MODE}" >> "${GITHUB_ENV}"
+    echo "NFW_FAIL_ON_BLOCK=${FAIL_ON_BLOCK}" >> "${GITHUB_ENV}"
     echo "NFW_POLICY_FILE=$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" >> "${GITHUB_ENV}"
     echo "NFW_PIPELINE_POLICY=${PIPELINE_POLICY_PATH}" >> "${GITHUB_ENV}"
     echo "NFW_PROXY_PORT=${PROXY_PORT}" >> "${GITHUB_ENV}"

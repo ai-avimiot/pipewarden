@@ -5,7 +5,8 @@
   "description": "PipeWarden native-proxy GitHub Action — setup, automatic teardown, and report artifact upload.",
   "license": "MIT",
   "scripts": {
-    "build": "ncc build src/main.js -o dist/setup --minify && ncc build src/post.js -o dist/teardown --minify"
+    "build": "ncc build src/main.js -o dist/setup --minify && ncc build src/post.js -o dist/teardown --minify",
+    "test": "node src/decide.test.js"
   },
   "dependencies": {
     "@actions/artifact": "^5.0.3",

@@ -59,15 +59,29 @@ def build_report(connections: list[dict]) -> dict:
     non_dns = [c for c in connections if c.get("protocol") != "dns"]
     dns_queries = [c for c in connections if c.get("protocol") == "dns"]
 
+    blocked_connections = sum(
+        1 for c in non_dns
+        if c.get("status") in ("blocked", "would_block")
+    )
+    # DNS-layer blocks (NXDOMAIN in enforce mode) are the primary enforcement
+    # action for a disallowed domain — the client can't even resolve it. They
+    # must count toward "was anything blocked?", otherwise enforce mode fails to
+    # stop the pipeline for exactly the case it's meant to catch.
+    blocked_dns_queries = sum(
+        1 for c in dns_queries
+        if c.get("status") in ("blocked", "would_block")
+    )
+
     return {
         "total_connections": len(non_dns),
         "allowed_connections": sum(
             1 for c in non_dns if c.get("status") == "allowed"
         ),
-        "blocked_connections": sum(
-            1 for c in non_dns
-            if c.get("status") in ("blocked", "would_block")
-        ),
+        "blocked_connections": blocked_connections,
+        "blocked_dns_queries": blocked_dns_queries,
+        # Total enforcement actions across both legs; this is what the
+        # fail-on-block decision is made on.
+        "total_blocked": blocked_connections + blocked_dns_queries,
         "dns_queries": len(dns_queries),
         "access_summary": _build_access_summary(non_dns),
         "dns_summary": _build_dns_summary(dns_queries),

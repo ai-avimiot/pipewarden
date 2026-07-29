@@ -3,6 +3,7 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const { decideEnforceExit } = require("./decide");
 // @actions/artifact v6 is ESM-only (its exports map has no "require" entry),
 // so it must be loaded with dynamic import() — see uploadReport().
 
@@ -31,33 +32,58 @@ try {
   console.log(`::warning::NFW teardown exited with code ${teardownExitCode}`);
 }
 
-// Read outputs from teardown and ensure they're set as action outputs
+// Read outputs from teardown and decide whether the blocked traffic should
+// fail the job. This is the single-step action's enforcement point: the
+// teardown runs in this post-step, so the block decision has to be made and
+// acted on here. Exiting non-zero at the end of a post-step fails the job.
 const reportDir = "/tmp/report";
 const githubOutput = process.env.GITHUB_OUTPUT;
 
-if (githubOutput && fs.existsSync(reportDir)) {
-  try {
-    const reportJson = path.join(reportDir, "report.json");
-    if (fs.existsSync(reportJson)) {
-      const report = JSON.parse(fs.readFileSync(reportJson, "utf8"));
-      const blockedCount = report.blocked_connections || 0;
-      const mode = process.env.NFW_MODE || "monitor";
-      const status = (mode === "enforce" && blockedCount > 0) ? "fail" : "pass";
-      
-      // Append outputs (teardown.sh may have already written them, but ensure they're there)
+// Set when enforce mode blocked at least one connection and fail-on-block is
+// not disabled — propagated to a non-zero process exit at the very end (after
+// best-effort artifact upload and cache save).
+let enforceViolation = false;
+
+try {
+  const reportJson = path.join(reportDir, "report.json");
+  if (fs.existsSync(reportJson)) {
+    const report = JSON.parse(fs.readFileSync(reportJson, "utf8"));
+    // total_blocked includes DNS-layer blocks (NXDOMAIN); fall back to
+    // blocked_connections for reports produced before that field existed.
+    const blockedCount =
+      report.total_blocked != null ? report.total_blocked : (report.blocked_connections || 0);
+    const mode = process.env.NFW_MODE || "monitor";
+    // setup.sh persists NFW_FAIL_ON_BLOCK to GITHUB_ENV, so the post-step sees it.
+    const decision = decideEnforceExit({
+      blockedCount,
+      mode,
+      failOnBlock: process.env.NFW_FAIL_ON_BLOCK,
+    });
+
+    if (githubOutput) {
       const outputLines = [
         `report-path=${reportDir}`,
         `blocked-count=${blockedCount}`,
-        `status=${status}`
+        `status=${decision.status}`,
       ];
-      
       fs.appendFileSync(githubOutput, outputLines.join("\n") + "\n");
-      
-      console.log(`NFW outputs: status=${status}, blocked=${blockedCount}, report=${reportDir}`);
     }
-  } catch (e) {
-    console.log(`::warning::Could not read report outputs: ${e.message}`);
+    console.log(`NFW outputs: status=${decision.status}, blocked=${blockedCount}, report=${reportDir}`);
+
+    if (decision.shouldFail) {
+      enforceViolation = true;
+      console.log(
+        `::error::PipeWarden: blocked ${blockedCount} connection(s) in enforce mode — stopping the pipeline. ` +
+        "Set fail-on-block: false to block the traffic but let the job continue, or use monitor mode to only observe."
+      );
+    } else if (decision.blockedInEnforce) {
+      console.log(
+        `::warning::PipeWarden: blocked ${blockedCount} connection(s) in enforce mode; fail-on-block is false, so the job continues. The traffic was still blocked.`
+      );
+    }
   }
+} catch (e) {
+  console.log(`::warning::Could not read report outputs: ${e.message}`);
 }
 
 // Display monitoring results
@@ -179,6 +205,11 @@ async function savePipCache() {
 savePipCache()
   .then(() => uploadReport())
   .finally(() => {
-    // Exit 0 so the post-action never fails the job; teardown exit code is informational.
-    process.exit(0);
+    // Cache save and artifact upload are best-effort and must never fail the
+    // job on their own — so they run first and their errors are swallowed.
+    // The ONLY thing that fails the job here is an enforce-mode policy
+    // violation (blocked connection with fail-on-block enabled); that is the
+    // whole point of enforce mode. Incidental teardown errors stay
+    // informational (they do not set enforceViolation).
+    process.exit(enforceViolation ? 1 : 0);
   });

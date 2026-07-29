@@ -64,6 +64,8 @@ cosign verify-attestation --type https://spdx.dev/Document/v2.3 \
 
 `enforce` mode inspects and blocks at the application layer via mitmproxy, which is reached by redirecting **TCP ports 80 and 443, IPv4, in the host network namespace** into the proxy. Understand the edges before relying on it:
 
+A blocked connection fails the job by default (the pipeline stops); `fail-on-block: false` blocks the traffic but lets the job continue, and `monitor` mode only observes. See the README's Enforce section.
+
 **Blocked / inspected**
 - TCP HTTP on 80 and HTTPS on 443 (IPv4, host netns) — TLS-terminated, matched against policy, blocked when disallowed. This is the primary path and covers the overwhelming majority of CI egress.
 - QUIC / HTTP-3 (UDP 443) and DNS-over-TLS/QUIC (853) — **rejected** in enforce mode so clients fall back to the interceptable TCP path (they are not proxy-inspected themselves).

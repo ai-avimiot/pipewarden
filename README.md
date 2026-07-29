@@ -296,7 +296,26 @@ Logs all connections. Traffic outside the allowlist is flagged as `would_block` 
 
 ### Enforce
 
-Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`. By default the workflow fails at **teardown** if any connections were blocked.
+Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`.
+
+**Stopping the pipeline (default).** A blocked connection is a policy violation, so by default **the job fails** — the pipeline stops. This holds even when the build step that made the connection swallowed the error and kept going: the block is detected at teardown and the job is failed there (`::error::` in the log, exit code 1). This is true for all three entry points — the single-step action, the two-step `setup`/`teardown` actions, and container mode.
+
+**Block but continue (`fail-on-block: false`).** If you want the traffic blocked at the network level but the job to keep running — e.g. a deploy where you'd rather ship than stop, while still recording every violation in the report — set `fail-on-block: false`. The connection is still blocked; the job logs a `::warning::` and continues.
+
+```yaml
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+        with:
+          mode: enforce
+          fail-on-block: false   # block the traffic, but don't fail the job
+```
+
+**Just observe (audit).** To neither block nor fail — pure observation — use `mode: monitor` (the discovery mode above). Nothing is ever blocked; out-of-policy traffic is flagged `would_block` in the report.
+
+| Goal | Setting |
+| --- | --- |
+| Block a violation **and stop the pipeline** (default) | `mode: enforce` |
+| Block a violation but **let the job continue** | `mode: enforce` + `fail-on-block: false` |
+| **Only observe** — never block, never fail | `mode: monitor` |
 
 **Fail fast.** A blocked request usually breaks the command that made it, but some tools swallow the error and keep going. Set `fail-fast: true` (enforce only) to **cancel the whole run the moment the first blocked connection is seen**, instead of waiting for teardown. It needs a token with `actions: write`:
 
@@ -332,6 +351,7 @@ PipeWarden is designed to be safe in jobs that hold live credentials (cloud depl
 |-------|---------|-------------|
 | `policy-file` | `""` (auto) | Path to a network policy YAML; empty auto-resolves `.github/pipewarden/` (see [above](#where-policies-live-auto-resolution)) |
 | `mode` | `enforce` | `enforce` (block + fail) or `monitor` (log only) |
+| `fail-on-block` | `true` | Enforce only: fail the job when any connection was blocked (stops the pipeline). Set `false` to block the traffic but let the job continue. Ignored in monitor mode |
 | `proxy-port` | `8080` | Port for the proxy to listen on |
 | `dns` | `true` | Enable DNS interception |
 | `transparent` | `true` | Enable iptables transparent proxy |

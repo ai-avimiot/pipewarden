@@ -18,6 +18,7 @@ MODE="${NFW_MODE:-monitor}"
 POLICY_FILE="${NFW_POLICY_FILE:-}"
 ACTION_PATH="${NFW_ACTION_PATH:-${INPUT_ACTION_PATH:-.}}"
 TRANSPARENT="${NFW_TRANSPARENT:-false}"
+FAIL_ON_BLOCK="${NFW_FAIL_ON_BLOCK:-true}"
 PROXY_PORT="${NFW_PROXY_PORT:-8080}"
 FORWARD_LOG="${NFW_FORWARD_LOG:-false}"
 IP6TABLES="${NFW_IP6TABLES:-false}"
@@ -438,6 +439,10 @@ fi
 # 8. Exit code
 # ---------------------------------------------------------------------------
 if [ "${MODE}" = "enforce" ] && [ "${BLOCKED_COUNT}" -gt 0 ]; then
-    echo "PipeWarden: Blocked ${BLOCKED_COUNT} connections in enforce mode — failing workflow"
-    exit 1
+    if [ "${FAIL_ON_BLOCK}" = "false" ]; then
+        echo "::warning::PipeWarden: blocked ${BLOCKED_COUNT} connection(s) in enforce mode; fail-on-block is false, so the job continues. The traffic was still blocked."
+    else
+        echo "::error::PipeWarden: blocked ${BLOCKED_COUNT} connection(s) in enforce mode — stopping the pipeline. Set fail-on-block: false to block the traffic but let the job continue, or use monitor mode to only observe."
+        exit 1
+    fi
 fi

@@ -138,6 +138,33 @@ class TestBuildReport:
         assert report["allowed_connections"] == 2
         assert report["blocked_connections"] == 2
 
+    def test_dns_blocks_count_toward_total_blocked(self):
+        # A disallowed domain in enforce+DNS mode is stopped at the DNS leg
+        # (NXDOMAIN). That block must count, or enforce mode fails to stop the
+        # pipeline for the case it exists to catch.
+        connections = [
+            {"protocol": "https", "status": "allowed", "host": "ok.com"},
+            {"protocol": "dns", "status": "blocked", "host": "bad.com"},
+            {"protocol": "dns", "status": "blocked", "host": "evil.com"},
+            {"protocol": "dns", "status": "allowed", "host": "ok.com"},
+        ]
+        report = build_report(connections)
+        # blocked_connections stays non-DNS only (display semantics)...
+        assert report["blocked_connections"] == 0
+        assert report["blocked_dns_queries"] == 2
+        # ...but total_blocked — what the fail decision uses — includes them.
+        assert report["total_blocked"] == 2
+
+    def test_total_blocked_sums_both_legs(self):
+        connections = [
+            {"protocol": "https", "status": "blocked", "host": "a.com"},
+            {"protocol": "dns", "status": "blocked", "host": "b.com"},
+        ]
+        report = build_report(connections)
+        assert report["blocked_connections"] == 1
+        assert report["blocked_dns_queries"] == 1
+        assert report["total_blocked"] == 2
+
     def test_connections_preserved(self):
         connections = [{"status": "allowed", "host": "x.com"}]
         report = build_report(connections)
@@ -529,6 +556,13 @@ class TestCountBlocked:
         p = tmp_path / "report.json"
         p.write_text(json.dumps(report))
         assert count_blocked(str(p)) == 0
+
+    def test_prefers_total_blocked_over_blocked_connections(self, tmp_path):
+        # total_blocked (non-DNS + DNS) is what the fail decision must use.
+        report = {"blocked_connections": 1, "total_blocked": 4}
+        p = tmp_path / "report.json"
+        p.write_text(json.dumps(report))
+        assert count_blocked(str(p)) == 4
 
 
 # ---------------------------------------------------------------------------
