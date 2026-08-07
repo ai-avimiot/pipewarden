@@ -168,3 +168,80 @@ class TestRememberIp:
         # 10.0.0.1 was the oldest after the refresh and should be evicted.
         assert "10.0.0.1" not in dns_server.ip_to_domain
         assert "10.0.0.0" in dns_server.ip_to_domain
+
+
+class _FakeSock:
+    """Captures sendto() instead of touching the network."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, data, addr):
+        self.sent.append((data, addr))
+
+
+class _RecordingEngine:
+    def __init__(self, verdict="blocked"):
+        self.verdict = verdict
+        self.calls = []
+
+    def evaluate(self, entry):
+        self.calls.append(entry)
+        return self.verdict
+
+
+class TestReadinessProbe:
+    """The readiness probe is PipeWarden's own health check, not user traffic.
+
+    It has to be answered ahead of policy evaluation and stay out of the
+    connection log: otherwise enforce mode NXDOMAINs it (setup then declares
+    the DNS server dead) and the blocked entry fails the run via fail-on-block.
+    """
+
+    def test_answered_without_consulting_policy_or_logging(self, monkeypatch):
+        logged = []
+        monkeypatch.setattr(dns_server, "log_dns_query",
+                            lambda *a, **k: logged.append(a))
+        engine = _RecordingEngine("blocked")
+        sock = _FakeSock()
+
+        dns_server.handle_query(
+            _build_dns_query(dns_server.READINESS_PROBE_NAME),
+            ("127.0.0.1", 5300), sock, engine,
+        )
+
+        assert engine.calls == [], "probe must not be policy-evaluated"
+        assert logged == [], "probe must not appear in the connection log"
+        assert len(sock.sent) == 1
+        assert sock.sent[0][0][3] & 0x0F == 3, "expected RCODE=3 (NXDOMAIN)"
+
+    def test_answered_case_insensitively(self, monkeypatch):
+        monkeypatch.setattr(dns_server, "log_dns_query", lambda *a, **k: None)
+        engine = _RecordingEngine("blocked")
+        sock = _FakeSock()
+
+        dns_server.handle_query(
+            _build_dns_query(dns_server.READINESS_PROBE_NAME.upper()),
+            ("127.0.0.1", 5300), sock, engine,
+        )
+
+        assert engine.calls == []
+        assert len(sock.sent) == 1
+
+    def test_matched_exactly_never_as_a_suffix(self, monkeypatch):
+        """A suffix match would turn <stolen-data>.<probe> into an unlogged
+        exfiltration channel that bypasses both policy and the report."""
+        logged = []
+        monkeypatch.setattr(dns_server, "log_dns_query",
+                            lambda *a, **k: logged.append(a))
+        engine = _RecordingEngine("blocked")
+        sock = _FakeSock()
+        smuggled = f"stolen-secret.{dns_server.READINESS_PROBE_NAME}"
+
+        dns_server.handle_query(
+            _build_dns_query(smuggled), ("127.0.0.1", 5300), sock, engine,
+        )
+
+        assert len(engine.calls) == 1, "must be evaluated like any other name"
+        assert engine.calls[0].host == smuggled
+        assert logged and logged[0][0] == smuggled, "must be logged as blocked"

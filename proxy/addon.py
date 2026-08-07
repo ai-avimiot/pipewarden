@@ -257,7 +257,10 @@ class NetworkMonitorAddon:
         mode: str | None = None,
         log_path: str | None = None,
     ):
-        policy_file = policy_file or os.environ.get("POLICY_FILE", "network-policy.yml")
+        # setup.sh exports POLICY_FILE="" in discovery mode, so the key exists
+        # and a two-arg os.environ.get returns "" rather than the default —
+        # and Path("") is Path("."), which read_text()s as IsADirectoryError.
+        policy_file = policy_file or os.environ.get("POLICY_FILE") or "network-policy.yml"
         env_mode = os.environ.get("MODE", "")
         self.log_path = log_path or os.environ.get("LOG_PATH", DEFAULT_LOG_PATH)
 
@@ -272,9 +275,13 @@ class NetworkMonitorAddon:
                 policy_file,
             )
             rules = []
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             # Fail closed: an empty allowlist blocks everything in enforce
             # mode, and running() shuts the proxy down so the error surfaces.
+            # OSError covers a path that resolves but cannot be read (a
+            # directory, bad permissions). That is not the same as "no policy
+            # committed" — the caller asked for a policy, so degrading to
+            # discovery here would silently drop enforcement.
             self.init_error = f"invalid policy file {policy_file!r}: {exc}"
             logger.critical("%s", self.init_error)
             rules = []

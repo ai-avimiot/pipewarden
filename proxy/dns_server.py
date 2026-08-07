@@ -39,6 +39,15 @@ MAX_WORKERS = int(os.environ.get("DNS_MAX_WORKERS", "32"))
 # Minimum seconds between ip→domain map writes (see _map_flusher).
 MAP_FLUSH_INTERVAL = float(os.environ.get("DNS_MAP_FLUSH_INTERVAL", "0.5"))
 
+# PipeWarden's own DNS readiness probe (see native-proxy/setup.sh). Answered
+# directly, ahead of policy evaluation and logging: it is the tool's health
+# check rather than pipeline traffic, so requiring users to allowlist it would
+# be nonsense, and counting it as a violation would fail every enforce run
+# through fail-on-block. Under .invalid (RFC 2606) so it can never collide
+# with a real name. Matched exactly, never as a suffix — suffix matching would
+# make "<stolen-data>.readiness.pipewarden.invalid" an unlogged exfil channel.
+READINESS_PROBE_NAME = "readiness.pipewarden.invalid"
+
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
 
@@ -259,6 +268,12 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
     """
     _, qname, qtype = parse_dns_query(data)
     if not qname:
+        return
+
+    if qname.strip(".").lower() == READINESS_PROBE_NAME:
+        # NXDOMAIN is the right answer and a sufficient one: the probe only
+        # needs to prove the server is answering, not that anything resolves.
+        sock.sendto(_make_nxdomain(data), addr)
         return
 
     # Evaluate against policy
