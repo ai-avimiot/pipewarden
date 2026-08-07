@@ -806,3 +806,46 @@ class TestCertVerifyCache:
             addon._check_server_cert(conn, "api.github.com", entry)
 
         assert calls["n"] == 2
+
+
+class TestPolicyFileResolution:
+    """Discovery mode used to kill the addon before it recorded anything.
+
+    setup.sh exports POLICY_FILE="" when no policy is committed. A two-arg
+    os.environ.get returns "" for a set-but-empty key rather than the default,
+    and Path("") is Path("."), so the parser read_text()'d a directory and
+    raised IsADirectoryError past the FileNotFoundError guard.
+    """
+
+    def test_empty_policy_file_env_falls_back_to_discovery(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        monkeypatch.setenv("POLICY_FILE", "")
+        monkeypatch.delenv("MODE", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        addon = NetworkMonitorAddon(log_path=log_file)
+
+        assert addon.init_error is None, "discovery mode is not an error"
+        assert addon.mode == "monitor"
+
+    def test_unset_policy_file_env_falls_back_to_discovery(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        monkeypatch.delenv("POLICY_FILE", raising=False)
+        monkeypatch.delenv("MODE", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        addon = NetworkMonitorAddon(log_path=log_file)
+
+        assert addon.init_error is None
+        assert addon.mode == "monitor"
+
+    def test_directory_as_policy_path_fails_closed(self, tmp_path, log_file):
+        """A path that resolves but cannot be read is not "no policy" — the
+        caller asked for one, so degrading to discovery would drop enforcement.
+        """
+        addon = _make_addon(str(tmp_path), log_path=log_file)
+
+        assert addon.init_error is not None
+        assert addon.engine.rules == []

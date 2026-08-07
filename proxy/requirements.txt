@@ -18,5 +18,16 @@ pyyaml>=6.0.3
 # Used by proxy/addon.py for server-certificate verification
 # (see _get_trust_store, _cert_dns_names, verify_server_cert).
 cryptography>=42.0,<49
-pyOpenSSL>=26.3.0,<=27.0.0
+# <26.3 is the binding cap, tighter than mitmproxy's own <=27.0.0: pyOpenSSL
+# 26.3.0 requires cryptography>=49, which the line above forbids. Stating it
+# here makes the pair unsatisfiable at compile time instead of letting a lock
+# pin two versions that cannot be installed together.
+pyOpenSSL>=24.3,<26.3
 certifi>=2019.9.11
+
+# Pulled in transitively, capped here for the same reason: mitmproxy is absent
+# from this file (it comes from the base image), so the resolver cannot see its
+# ranges and floats transitives past them. mitmproxy 12.2.3 declares
+# typing-extensions<=4.14 on python<3.13; without this the image installed
+# 4.16.0 over the very mitmproxy that forbids it.
+typing-extensions<=4.14; python_version < "3.13"

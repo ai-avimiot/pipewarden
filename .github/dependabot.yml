@@ -105,6 +105,17 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    # Same mitmproxy 12.2.3 ceilings as /requirements above: the proxy image is
+    # built FROM mitmproxy/mitmproxy:12.2.3, so a cryptography or pyopenssl
+    # past what that mitmproxy declares cannot be installed alongside it.
+    # pyopenssl 26.3+ requires cryptography>=49, so it is capped transitively.
+    # Without these, /proxy generates the same dead PRs /requirements already
+    # suppresses (#107 cryptography 49.0.0, #112 cryptography 50.0.0).
+    ignore:
+      - dependency-name: "cryptography"
+        versions: [">=49"]
+      - dependency-name: "pyopenssl"
+        versions: [">=26.3"]
 
   - package-ecosystem: "npm"
     directory: "/native-proxy/action"

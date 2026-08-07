@@ -447,12 +447,34 @@ if [ "${ENABLE_DNS}" = "true" ]; then
     # Readiness check for DNS. Fatal on failure: a runner whose only
     # resolver is a dead DNS server cannot finish the job anyway, so fail
     # here while the EXIT trap can still restore systemd-resolved.
+    #
+    # "Ready" means the server answered, not that it said yes. dns_server.py
+    # short-circuits this name (READINESS_PROBE_NAME) ahead of policy
+    # evaluation and returns NXDOMAIN, so the check reports on the server
+    # rather than on the user's allowlist. Probing a real domain instead
+    # conflated the two: under enforce, the policy NXDOMAINs it and setup
+    # died claiming the DNS server never started.
+    DNS_PROBE_NAME="readiness.pipewarden.invalid"
     DNS_READY="false"
     for _ in $(seq 1 25); do
-        if nslookup example.com 127.0.0.53 &>/dev/null; then
-            echo "DNS server is ready"
-            DNS_READY="true"
-            break
+        # dig exits 0 whenever it got a reply — NXDOMAIN included — and 9 when
+        # the server did not answer, which is exactly the distinction needed.
+        if command -v dig &>/dev/null; then
+            if dig +time=2 +tries=1 @127.0.0.53 "${DNS_PROBE_NAME}" &>/dev/null; then
+                echo "DNS server is ready"
+                DNS_READY="true"
+                break
+            fi
+        else
+            # nslookup returns non-zero for NXDOMAIN too, so its exit code
+            # cannot be used; separate "answered" from "unreachable" by output.
+            NS_OUT="$(nslookup "${DNS_PROBE_NAME}" 127.0.0.53 2>&1 || true)"
+            if ! printf '%s' "${NS_OUT}" | grep -qiE \
+                'connection refused|no servers could be reached|timed out|no response'; then
+                echo "DNS server is ready"
+                DNS_READY="true"
+                break
+            fi
         fi
         sleep 0.2
     done
