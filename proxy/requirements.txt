@@ -28,6 +28,6 @@ certifi>=2019.9.11
 # Pulled in transitively, capped here for the same reason: mitmproxy is absent
 # from this file (it comes from the base image), so the resolver cannot see its
 # ranges and floats transitives past them. mitmproxy 12.2.3 declares
-# typing-extensions<=4.14 on python<3.13; without this the image installed
+# typing-extensions<=4.16.0 on python<3.13; without this the image installed
 # 4.16.0 over the very mitmproxy that forbids it.
-typing-extensions<=4.14; python_version < "3.13"
+typing-extensions<=4.16.0; python_version < "3.13"
