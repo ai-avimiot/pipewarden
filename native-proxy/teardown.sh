@@ -113,6 +113,10 @@ if [ "${TRANSPARENT}" = "true" ]; then
     sudo iptables -D OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
     sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset 2>/dev/null || true
     sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    # A DNS reject left installed would break resolution for every later step
+    # and every later job sharing the runner, not just PipeWarden's own traffic.
+    sudo iptables -D OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
     if [ "${FORWARD_LOG}" = "true" ]; then
         sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || echo "Warning: Failed to delete FORWARD LOG rule"
     fi
