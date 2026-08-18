@@ -382,6 +382,36 @@ class TestGenerateReport:
             saved = json.load(f)
         assert saved["total_connections"] == 1
 
+    def test_records_the_attribution_mode_that_was_in_effect(self, tmp_path):
+        """"Nothing attributed" has three causes and they are not equivalent.
+
+        Attribution off, attribution on and genuinely nothing to name, or
+        process mode downgraded to client because the helper would not start —
+        all render identically without the mode, and the third is the one worth
+        acting on.
+        """
+        log_path = tmp_path / "conn.jsonl"
+        _write_jsonl(str(log_path), [
+            {"timestamp": "t1", "protocol": "https", "host": "a.com", "port": 443,
+             "status": "allowed", "bytes_transferred": 1},
+        ])
+        out_dir = str(tmp_path / "output")
+        report = generate_report(str(log_path), out_dir, attribution_mode="client")
+        assert report["attribution"]["mode"] == "client"
+
+        with open(os.path.join(out_dir, "summary.txt")) as f:
+            assert "attribution: process" in f.read()
+
+    def test_attribution_mode_is_absent_when_not_supplied(self, tmp_path):
+        """Callers that do not know the mode must not imply one."""
+        log_path = tmp_path / "conn.jsonl"
+        _write_jsonl(str(log_path), [
+            {"timestamp": "t1", "protocol": "https", "host": "a.com", "port": 443,
+             "status": "allowed", "bytes_transferred": 1},
+        ])
+        report = generate_report(str(log_path), str(tmp_path / "out2"))
+        assert "mode" not in report["attribution"]
+
     def test_creates_summary_txt(self, tmp_path):
         log_path = tmp_path / "conn.jsonl"
         _write_jsonl(str(log_path), [
@@ -670,3 +700,101 @@ class TestMarkdownSanitization:
         md = format_markdown_summary(report)
         assert "<script>" not in md
         assert "[x](http://evil)" not in md
+
+
+class TestExfilSummary:
+    """Findings must surface, not sit nested in raw connection entries.
+
+    In warn mode the connection stays "allowed", so without an aggregate the
+    documented rollout advice — run warn first and read the report — pointed
+    at information the report never showed."""
+
+    CONN = {
+        "timestamp": "2026-08-13T10:00:00+00:00",
+        "protocol": "https",
+        "host": "allowed.example.com",
+        "port": 443,
+        "status": "allowed",
+        "exfil_findings": [
+            {"detector": "env-secrets", "label": "MY_TOKEN",
+             "count": 1, "fingerprint": "abc123"},
+        ],
+    }
+
+    def test_report_aggregates_findings(self):
+        report = build_report([dict(self.CONN)])
+        exfil = report["exfiltration"]
+        assert exfil["connections_with_findings"] == 1
+        dest = exfil["destinations"][0]
+        assert dest["host"] == "allowed.example.com"
+        assert dest["labels"] == ["env-secrets:MY_TOKEN"]
+        assert dest["blocked"] is False
+
+    def test_text_summary_shows_warn_mode_findings(self):
+        report = build_report([dict(self.CONN)])
+        text = format_summary(report)
+        assert "SECRET MATERIAL DETECTED" in text
+        assert "MY_TOKEN" in text
+        assert "NOT blocked (warn mode)" in text
+
+    def test_markdown_summary_shows_findings_above_the_fold(self):
+        report = build_report([dict(self.CONN)])
+        md = format_markdown_summary(report)
+        assert "Secret material detected" in md
+        assert "MY_TOKEN" in md
+        # Never tucked inside a <details> fold.
+        assert md.index("Secret material detected") < md.index("<details>")
+
+    def test_blocked_findings_render_as_blocked(self):
+        conn = dict(self.CONN, status="blocked")
+        report = build_report([conn])
+        assert report["exfiltration"]["destinations"][0]["blocked"] is True
+        assert "not blocked" not in format_markdown_summary(report).lower().split("secret material")[1][:400]
+
+    def test_clean_run_shows_nothing(self):
+        conn = {k: v for k, v in self.CONN.items() if k != "exfil_findings"}
+        report = build_report([conn])
+        assert report["exfiltration"]["connections_with_findings"] == 0
+        assert "SECRET MATERIAL" not in format_summary(report)
+        assert "Secret material" not in format_markdown_summary(report)
+
+
+class TestPinningSummary:
+    """A pinned client fails inside the user's own build step with no hint
+    PipeWarden caused it. The report must name the hosts and the escape hatches."""
+
+    CONN = {
+        "timestamp": "2026-08-14T10:00:00+00:00",
+        "protocol": "https",
+        "host": "pinned.example.com",
+        "port": 443,
+        "status": "tls_pinned",
+        "tls_sni": "pinned.example.com",
+    }
+
+    def test_report_collects_pinned_hosts(self):
+        report = build_report([dict(self.CONN)])
+        assert report["tls_pinned"]["count"] == 1
+        assert report["tls_pinned"]["hosts"] == ["pinned.example.com"]
+
+    def test_deduplicates_hosts(self):
+        report = build_report([dict(self.CONN), dict(self.CONN)])
+        assert report["tls_pinned"]["count"] == 1
+
+    def test_text_summary_hints_the_two_escape_hatches(self):
+        text = format_summary(build_report([dict(self.CONN)]))
+        assert "CERTIFICATE PINNING" in text
+        assert "tls-passthrough" in text
+        assert "tls-intercept: false" in text
+
+    def test_markdown_summary_names_the_host(self):
+        md = format_markdown_summary(build_report([dict(self.CONN)]))
+        assert "Certificate pinning detected" in md
+        assert "pinned.example.com" in md
+
+    def test_clean_run_shows_no_pinning_section(self):
+        conn = dict(self.CONN, status="allowed")
+        report = build_report([conn])
+        assert report["tls_pinned"]["count"] == 0
+        assert "CERTIFICATE PINNING" not in format_summary(report)
+        assert "Certificate pinning" not in format_markdown_summary(report)

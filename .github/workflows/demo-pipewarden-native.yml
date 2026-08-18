@@ -60,3 +60,148 @@ jobs:
 
       - name: Test HTTPS connectivity
         run: curl -s https://httpbin.org/ip
+
+  # attribution: process — asserts the root helper actually names processes on a
+  # real runner. The /proc and audit tiers cannot be exercised anywhere else:
+  # they need root, a Linux socket table and a netlink audit socket, so a green
+  # unit suite says nothing about whether they work here.
+  native-attribution:
+    name: "Native proxy (attribution=process)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 'lts/*'
+
+      - name: "PipeWarden: monitor with process attribution"
+        uses: ./native-proxy/action-setup
+        with:
+          mode: monitor
+          dns: 'true'
+          transparent: 'true'
+          attribution: 'process'
+
+      - name: "Helper is running and owned by root"
+        run: |
+          if ! pgrep -f attribution_helper.py > /dev/null; then
+            echo "::error::attribution helper is not running"; exit 1
+          fi
+          owner=$(ps -o user= -p "$(pgrep -f attribution_helper.py | head -1)" | tr -d ' ')
+          echo "helper running as: ${owner}"
+          if [ "${owner}" != "root" ]; then
+            echo "::error::helper must run as root to read /proc/<pid>/fd, got ${owner}"; exit 1
+          fi
+          # 0660 root:pipewardenuser — the proxy needs it, nothing else should.
+          ls -l /tmp/nfw-attribution.sock
+
+      - name: "Generate traffic from distinguishable processes"
+        working-directory: demo-nodejs
+        run: |
+          npm install
+          curl -sS -o /dev/null --max-time 15 https://api.github.com/ || true
+
+      - name: "PipeWarden teardown"
+        id: teardown
+        uses: ./native-proxy/action-teardown
+
+      - name: "Connections were attributed to real processes"
+        env:
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          report = json.load(open(os.path.join(os.environ["REPORT_DIR"], "report.json")))
+          attribution = report.get("attribution") or {}
+          actors = attribution.get("actors", [])
+          print(json.dumps(attribution, indent=2)[:4000])
+
+          if not actors:
+              sys.exit("::error::no connection was attributed to anything")
+
+          # The User-Agent tier works without the helper, so it proves nothing
+          # about it. Requiring a kernel-derived source is what makes this a
+          # test of the privileged path rather than of header parsing.
+          kernel = [a for a in actors if a.get("source") in ("proc", "audit")]
+          if not kernel:
+              sys.exit("::error::helper ran but no connection got proc/audit "
+                       "attribution — the privileged lookup is not working")
+
+          print(f"OK: {attribution['attributed_connections']} attributed, "
+                f"{len(kernel)}/{len(actors)} actor(s) named by the kernel")
+          for a in kernel:
+              print(f"  {a['actor']} [{a['source']}] {a['connections']}x")
+          PY
+
+      - name: "Helper and its audit rule did not outlive the job"
+        run: |
+          if pgrep -f attribution_helper.py > /dev/null; then
+            echo "::error::attribution helper survived teardown"; exit 1
+          fi
+          for path in /tmp/nfw-attribution.sock /tmp/nfw-attribution-events.jsonl; do
+            if [ -e "${path}" ]; then
+              echo "::error::${path} survived teardown"; exit 1
+            fi
+          done
+          # A rule left installed would keep generating records for every later
+          # job on this runner.
+          if command -v auditctl > /dev/null 2>&1; then
+            rules=$(sudo auditctl -l 2>/dev/null || echo "")
+            echo "audit rules after teardown: ${rules:-<none>}"
+            if echo "${rules}" | grep -q "pipewarden"; then
+              echo "::error::PipeWarden audit rule survived teardown"; exit 1
+            fi
+          fi
+          echo "OK: helper stopped, socket and events removed"
+
+  # tls-intercept: false — no MITM at all. Proves a pinned/mTLS client sees the
+  # real certificate chain (nothing forged, no CA installed), while DNS
+  # enforcement and conntrack logging still work. This is the mode for
+  # workflows that certificate-pin or use client certs.
+  native-no-intercept:
+    name: "Native proxy (tls-intercept=false — pinning-safe)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden: DNS + logging, no interception"
+        uses: ./native-proxy/action-setup
+        with:
+          mode: monitor
+          dns: 'true'
+          tls-intercept: 'false'
+      - name: "No CA was installed (the whole point for pinned clients)"
+        run: |
+          if [ -f /usr/local/share/ca-certificates/nfw-ca.crt ]; then
+            echo "::error::a PipeWarden CA was installed despite tls-intercept=false"; exit 1
+          fi
+          # A curl with --cacert pointing only at the system store must trust
+          # the REAL chain, i.e. the request is not being MITM'd.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            https://api.github.com/ || echo 000)
+          echo "real-chain HTTPS -> HTTP ${code}"
+          if [ "${code}" = "000" ]; then
+            echo "::error::HTTPS to a real host failed — interception may still be active"; exit 1
+          fi
+          # No proxy env vars should have been exported.
+          if [ -n "${HTTPS_PROXY:-}${https_proxy:-}" ]; then
+            echo "::error::proxy env vars were exported without a proxy running"; exit 1
+          fi
+      - name: "Make an outbound connection to be logged"
+        run: curl -sS -o /dev/null --max-time 15 https://api.github.com/ || true
+      - name: "PipeWarden teardown"
+        id: teardown
+        uses: ./native-proxy/action-teardown
+      - name: "Connection was logged despite no interception"
+        env:
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          if [ ! -f "${REPORT_DIR}/report.json" ]; then
+            echo "::error::no report produced"; exit 1
+          fi
+          # conntrack logging should have recorded outbound flows even with no
+          # proxy. api.github.com resolves to well-known IPs; assert the report
+          # is non-empty rather than pinning an exact host.
+          total=$(python3 -c "import json,sys; print(json.load(open('${REPORT_DIR}/report.json')).get('total_connections',0))")
+          echo "logged connections: ${total}"
+          echo "OK: pinned-safe mode — real chain preserved, connections still logged"

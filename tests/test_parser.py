@@ -7,7 +7,12 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from policy.models import PolicyRule
-from policy.parser import parse_policy_file, parse_policy_string
+from policy.parser import (
+    parse_policy,
+    parse_policy_file,
+    parse_policy_file_full,
+    parse_policy_string,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,9 +91,14 @@ class TestParsePolicyString:
         with pytest.raises(ValueError, match="Missing required field: 'version'"):
             parse_policy_string("mode: monitor\nrules: []\n")
 
+    def test_version_2_is_accepted(self):
+        mode, rules = parse_policy_string('version: "2"\nmode: monitor\nrules: []\n')
+        assert mode == "monitor"
+        assert rules == []
+
     def test_unsupported_version(self):
         with pytest.raises(ValueError, match="Unsupported policy version"):
-            parse_policy_string('version: "2"\nmode: monitor\nrules: []\n')
+            parse_policy_string('version: "3"\nmode: monitor\nrules: []\n')
 
     def test_missing_mode(self):
         with pytest.raises(ValueError, match="Missing required field: 'mode'"):
@@ -309,3 +319,155 @@ rules:
     with pytest.raises(ValueError, match="appears"):
         parse_policy_string(yaml_str)
 
+
+
+# ---------------------------------------------------------------------------
+# Policy schema v2 — exfiltration block and per-rule allow_request_body
+# ---------------------------------------------------------------------------
+
+
+V2_POLICY = """
+version: "2"
+mode: enforce
+exfiltration:
+  mode: block
+  detectors: [env-secrets, patterns]
+  max_scan_bytes: 4096
+  watch_env: [GITHUB_TOKEN, NPM_TOKEN]
+rules:
+  - name: "Secrets manager"
+    allow_request_body: true
+    allow:
+      domains: ["vault.example.com"]
+      ports: [443]
+      protocols: [https]
+"""
+
+
+class TestPolicyV2:
+    def test_parses_exfiltration_block(self):
+        policy = parse_policy(V2_POLICY)
+        assert policy.mode == "enforce"
+        assert policy.exfil.mode == "block"
+        assert policy.exfil.watch_env == ["GITHUB_TOKEN", "NPM_TOKEN"]
+        assert policy.exfil.max_scan_bytes == 4096
+        assert policy.exfil.enabled() is True
+
+    def test_parses_per_rule_opt_out(self):
+        policy = parse_policy(V2_POLICY)
+        assert policy.rules[0].allow_request_body is True
+
+    def test_v1_policy_still_parses_with_scanning_off(self):
+        """v1 files are committed in users' repos; a major release is not a
+        licence to break files that still say what their author meant."""
+        policy = parse_policy(
+            'version: "1"\nmode: monitor\nrules: []\n'
+        )
+        assert policy.mode == "monitor"
+        assert policy.exfil.mode == "off"
+        assert policy.exfil.enabled() is False
+
+    def test_exfiltration_in_v1_is_refused_not_ignored(self):
+        """Silently ignoring it would leave the author believing they had a
+        control they do not have."""
+        with pytest.raises(ValueError, match="requires policy version 2"):
+            parse_policy(
+                'version: "1"\nmode: monitor\nexfiltration:\n  mode: block\nrules: []\n'
+            )
+
+    def test_allow_request_body_in_v1_is_refused(self):
+        yaml_str = """
+version: "1"
+mode: monitor
+rules:
+  - name: "x"
+    allow_request_body: true
+    allow:
+      domains: ["example.com"]
+      ports: [443]
+      protocols: [https]
+"""
+        with pytest.raises(ValueError, match="requires policy version 2"):
+            parse_policy_string(yaml_str)
+
+    def test_defaults_when_block_absent(self):
+        policy = parse_policy('version: "2"\nmode: monitor\nrules: []\n')
+        assert policy.exfil.mode == "off"
+        assert policy.exfil.detectors == ["env-secrets", "patterns"]
+
+    @pytest.mark.parametrize(
+        ("block", "match"),
+        [
+            ("exfiltration:\n  mode: nope\n", "Invalid exfiltration mode"),
+            ("exfiltration:\n  detectors: [bogus]\n", "Invalid exfiltration detector"),
+            ("exfiltration:\n  detectors: notalist\n", "must be a list"),
+            ("exfiltration:\n  max_scan_bytes: -1\n", "positive integer"),
+            ("exfiltration:\n  max_scan_bytes: 0\n", "positive integer"),
+            ("exfiltration:\n  scan_headers: 3\n", "must be a boolean"),
+            ("exfiltration:\n  watch_env: 'X'\n", "must be a list"),
+            ("exfiltration:\n  min_secret_length: 0\n", "positive integer"),
+            ("exfiltration: notamapping\n", "must be a mapping"),
+        ],
+    )
+    def test_rejects_malformed_exfiltration(self, block, match):
+        with pytest.raises(ValueError, match=match):
+            parse_policy(f'version: "2"\nmode: monitor\n{block}rules: []\n')
+
+    def test_parse_policy_file_full_round_trip(self, tmp_path):
+        path = tmp_path / "policy.yml"
+        path.write_text(V2_POLICY, encoding="utf-8")
+        policy = parse_policy_file_full(str(path))
+        assert policy.exfil.mode == "block"
+        assert policy.rules[0].allow_request_body is True
+
+    def test_parse_policy_file_full_missing_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            parse_policy_file_full(str(tmp_path / "nope.yml"))
+
+    @pytest.mark.parametrize("literal", ["off", '"off"', "'off'"])
+    def test_bare_off_is_not_a_yaml_boolean(self, literal):
+        """YAML 1.1 resolves bare `off` to False, so the value the docs tell
+        people to write would otherwise be rejected."""
+        policy = parse_policy(
+            f'version: "2"\nmode: monitor\nexfiltration:\n  mode: {literal}\nrules: []\n'
+        )
+        assert policy.exfil.mode == "off"
+        assert policy.exfil.enabled() is False
+
+    def test_yaml_true_is_still_an_invalid_mode(self):
+        with pytest.raises(ValueError, match="Invalid exfiltration mode: 'on'"):
+            parse_policy(
+                'version: "2"\nmode: monitor\nexfiltration:\n  mode: on\nrules: []\n'
+            )
+
+    def test_exfiltration_in_v1_refused_on_the_gating_path(self):
+        """parse_policy_string is what the addon, DNS server and report
+        generator call. When the refusal lived only in parse_policy, a v1
+        file with the block ran green with scanning silently off — the exact
+        outcome the refusal exists to prevent."""
+        with pytest.raises(ValueError, match="requires policy version 2"):
+            parse_policy_string(
+                'version: "1"\nmode: monitor\nexfiltration:\n  mode: block\nrules: []\n'
+            )
+
+    def test_malformed_exfiltration_fails_the_gating_path(self):
+        """The proxy fails closed on a ValueError from parse_policy_string,
+        which is the correct response to a policy whose scanning intent
+        cannot be read."""
+        with pytest.raises(ValueError, match="Invalid exfiltration mode"):
+            parse_policy_string(
+                'version: "2"\nmode: monitor\nexfiltration:\n  mode: nope\nrules: []\n'
+            )
+
+    def test_scan_headers_parses(self):
+        policy = parse_policy(
+            'version: "2"\nmode: monitor\n'
+            "exfiltration:\n  mode: warn\n  scan_headers: true\nrules: []\n"
+        )
+        assert policy.exfil.scan_headers is True
+
+    def test_scan_headers_defaults_off(self):
+        policy = parse_policy(
+            'version: "2"\nmode: monitor\nexfiltration:\n  mode: warn\nrules: []\n'
+        )
+        assert policy.exfil.scan_headers is False

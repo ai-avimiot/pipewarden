@@ -65,6 +65,25 @@ class PolicyEngine:
             return "would_block"
         return "blocked"
 
+    def allows_request_body(self, connection: ConnectionEntry) -> bool:
+        """True if *any* rule matching *connection* opts it out of payload
+        scanning.
+
+        Any-match, not first-match, on purpose. Policies routinely put a broad
+        wildcard rule (``*.example.com``) ahead of the specific one carrying
+        ``allow_request_body: true``; taking the first match made the opt-out
+        silently inert in exactly that ordinary layout. Rule order must not
+        change what a rule's own settings mean. DNS is excluded because
+        ``_allows_dns`` matches on qname alone and no single rule owns the
+        verdict.
+        """
+        if connection.protocol == "dns":
+            return False
+        return any(
+            rule.allow_request_body and self._matches(rule, connection)
+            for rule in self.rules
+        )
+
     def _matches(self, rule: PolicyRule, conn: ConnectionEntry) -> bool:
         """Check if a single rule matches a connection."""
         return (

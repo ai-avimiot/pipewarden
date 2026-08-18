@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Plain HTTPS resolved via DNS",
+    "host": "api.github.com",
+    "expect": "observed",
+    "note": "Control case. If this is missing, nothing else in the run is trustworthy."
+  },
+  {
+    "name": "HTTPS straight to an IP, no DNS lookup",
+    "port": 443,
+    "protocol": "https",
+    "host_is_ip": true,
+    "expect": "observed",
+    "note": "iptables redirects on port, not on having resolved a name, so skipping DNS does not skip the proxy. host_is_ip discriminates this from the hostname control case — without it, the control satisfied this case and the suite could not fail even if direct-to-IP interception broke. Also covers DNS-over-HTTPS, which is indistinguishable from any other HTTPS request to a resolver's IP."
+  },
+  {
+    "name": "DNS-over-TLS on port 853",
+    "port": 853,
+    "expect": "observed",
+    "note": "Logged via conntrack in monitor mode; rejected outright by the enforce-mode rules."
+  },
+  {
+    "name": "QUIC / UDP on port 443",
+    "port": 443,
+    "protocol": "udp",
+    "expect": "observed",
+    "note": "HTTP/3 bypasses a TCP-only proxy, so UDP 443 is logged in monitor mode and rejected in enforce. Regression-guards the transport-aware dedup fix — this was silently dropped as a duplicate of TCP 443 to the same host."
+  },
+  {
+    "name": "Raw TCP on a non-standard port",
+    "port": 9999,
+    "expect": "observed",
+    "note": "Outside the 80/443 redirect, so visibility comes from conntrack logging rather than the proxy."
+  },
+  {
+    "name": "DNS query",
+    "protocol": "dns",
+    "expect": "observed",
+    "note": "The DNS interceptor is the only leg that sees a name before anything connects."
+  },
+  {
+    "name": "Egress from a process running as the proxy user",
+    "host": "proxyuser-blindspot.invalid",
+    "expect": "gap",
+    "note": "KNOWN GAP. The redirect carries `! --uid-owner pipewardenuser` so the proxy does not intercept itself, which exempts anything able to run as that user. Requires sudo, which a compromised build step on a GitHub-hosted runner already has."
+  }
+]

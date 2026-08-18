@@ -2,6 +2,8 @@
 
 from dataclasses import asdict, dataclass, field
 
+from policy.exfil import ExfilConfig
+
 
 @dataclass
 class ConnectionEntry:
@@ -21,6 +23,14 @@ class ConnectionEntry:
     tls_cert_valid: bool = True  # False if cert is untrusted / private CA
     tls_cert_error: str = ""  # Description of cert validation failure
     server_ip: str = ""  # Resolved IP address of the server
+    # Payload-scan results (see policy/exfil.py). Each item is a serialized
+    # exfil.Finding: detector, label, count, salted fingerprint — never the
+    # matched value, because this log becomes an uploaded build artifact.
+    exfil_findings: list[dict] = field(default_factory=list)
+    # Who made the connection (see policy/attribution.py). A serialized
+    # attribution.Attribution: the self-reported client, and — when the
+    # privileged helper is running — the process behind it.
+    attribution: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary, omitting empty TLS fields."""
@@ -31,6 +41,10 @@ class ConnectionEntry:
                 del d[key]
         if d.get("tls_cert_valid") is True:
             del d["tls_cert_valid"]
+        if not d.get("exfil_findings"):
+            del d["exfil_findings"]
+        if not d.get("attribution"):
+            del d["attribution"]
         return d
 
     @classmethod
@@ -50,6 +64,8 @@ class ConnectionEntry:
             tls_cert_valid=data.get("tls_cert_valid", True),
             tls_cert_error=data.get("tls_cert_error", ""),
             server_ip=data.get("server_ip", ""),
+            exfil_findings=data.get("exfil_findings", []),
+            attribution=data.get("attribution", {}),
         )
 
 
@@ -67,6 +83,12 @@ class PolicyRule:
     # are NOT flagged as unused when not seen in a run. Report-only — does not
     # change what traffic is allowed.
     appears: str = "always"
+    # Opt this destination out of payload scanning. For endpoints whose whole
+    # purpose is to receive credentials — a secrets manager, an artifact store
+    # you deliberately push tokens to — where a finding would be correct but
+    # unhelpful. Scoped per rule so exempting one destination does not disable
+    # detection everywhere.
+    allow_request_body: bool = False
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary."""
@@ -82,4 +104,20 @@ class PolicyRule:
             protocols=data.get("protocols", []),
             paths=data.get("paths", []),
             appears=data.get("appears", "always"),
+            allow_request_body=data.get("allow_request_body", False),
         )
+
+
+@dataclass
+class Policy:
+    """A parsed policy file in full.
+
+    ``parse_policy_string``/``parse_policy_file`` return ``(mode, rules)`` and
+    are kept that way — the proxy, the DNS server and a large body of tests all
+    unpack that tuple. This carries the settings those two values cannot
+    express, for callers that need them.
+    """
+
+    mode: str
+    rules: list[PolicyRule] = field(default_factory=list)
+    exfil: ExfilConfig = field(default_factory=ExfilConfig)

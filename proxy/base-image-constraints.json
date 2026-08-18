@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "Dependency ceilings declared by the mitmproxy release that proxy/Dockerfile builds FROM.",
+    "",
+    "proxy/requirements.txt deliberately does not list mitmproxy — it ships in the base",
+    "image — so the resolver cannot see these ranges and will float transitives straight",
+    "past them. Every cap in that file exists to restate a bound from this table, and is",
+    "therefore NOT inferable from what the package has published. Dependabot has twice",
+    "proposed changes that contradict it (#108 pyOpenSSL, #115 typing-extensions).",
+    "",
+    "tests/test_lock_consistency.py enforces this table in two directions: locked pins must",
+    "satisfy these constraints, and proxy/requirements.txt must not permit anything in",
+    "must_reject. Update this file only when proxy/Dockerfile's base image tag changes;",
+    "verify against PyPI metadata for the new mitmproxy version.",
+    "",
+    "Verified against PyPI metadata for mitmproxy 12.2.3 on 2026-08-07."
+  ],
+  "base_image": "mitmproxy/mitmproxy:12.2.3",
+  "verified_on": "2026-08-07",
+  "constraints": {
+    "cryptography": {
+      "declared": ">=42.0,<=48.1",
+      "note": "No 48.1.x was ever published, so 48.0.1 is the effective ceiling.",
+      "must_reject": ["49.0.0", "50.0.0"]
+    },
+    "pyopenssl": {
+      "declared": ">=24.3,<=27.0.0",
+      "note": "Binding cap is tighter than declared: pyOpenSSL 26.3.0+ requires cryptography>=49, which the cryptography ceiling forbids.",
+      "must_reject": ["26.3.0", "26.4.0", "27.0.0"]
+    },
+    "typing-extensions": {
+      "declared": ">=4.13.2,<=4.14",
+      "note": "Applies on python<3.13 only; the base image currently runs 3.14, where mitmproxy does not require it at all.",
+      "must_reject": ["4.15.0", "4.16.0", "5.0.0"]
+    },
+    "certifi": {
+      "declared": ">=2019.9.11",
+      "note": "No upper bound declared by mitmproxy.",
+      "must_reject": []
+    }
+  }
+}

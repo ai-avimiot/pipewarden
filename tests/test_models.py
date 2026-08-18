@@ -135,6 +135,7 @@ class TestPolicyRule:
             "protocols": ["https"],
             "paths": [],
             "appears": "always",
+            "allow_request_body": False,
         }
 
     def test_from_dict(self):

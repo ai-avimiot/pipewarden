@@ -32,14 +32,33 @@ _parent = os.path.dirname(_project_root)
 if _parent not in sys.path:
     sys.path.insert(0, _parent)
 
+from policy.attribution import (  # noqa: E402
+    Attribution,
+    AttributionConfig,
+    attribution_from_user_agent,
+    better,
+)
+from policy.exfil import (  # noqa: E402
+    ExfilConfig,
+    WatchedSecret,
+    blocking_findings,
+    build_watchlist,
+    load_watch_values,
+    scan,
+)
 from policy.matcher import PolicyEngine  # noqa: E402
 from policy.models import ConnectionEntry  # noqa: E402
-from policy.parser import parse_policy_file  # noqa: E402
+from policy.parser import parse_policy_file, parse_policy_file_full  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOG_PATH = "/var/log/connections.jsonl"
 DNS_IP_MAP_PATH = "/var/log/dns_ip_map.json"
+
+# One entry per client TCP connection, not per request: keep-alive means a
+# single npm install is dozens of requests over a handful of sockets, and the
+# helper lookup walks /proc.
+_ATTRIBUTION_CACHE_SIZE = 512
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +285,12 @@ class NetworkMonitorAddon:
 
         self.init_error: str | None = None
         parsed_mode = ""
+        # Salt for exfil finding fingerprints. Random per run and never
+        # written anywhere, so fingerprints collapse repeats inside one report
+        # while remaining useless to whoever reads the uploaded artifact.
+        self._exfil_salt = os.urandom(32)
+        self.exfil_cfg = ExfilConfig()
+        self.exfil_watchlist: list[WatchedSecret] = []
         try:
             parsed_mode, rules = parse_policy_file(policy_file)
         except FileNotFoundError:
@@ -287,6 +312,73 @@ class NetworkMonitorAddon:
             rules = []
         self.mode = mode or env_mode or parsed_mode or "monitor"
         self.engine = PolicyEngine(rules, mode=self.mode)
+
+        # Payload scanning is configured by the same policy file, but read
+        # separately: parse_policy_file returns (mode, rules) and a large body
+        # of callers unpack exactly that. A failure here must not take the
+        # proxy down — losing egress control because a detector could not be
+        # configured would be a strictly worse outcome than losing the
+        # detector, so this degrades to "scanning off" and says so loudly.
+        try:
+            self.exfil_cfg = parse_policy_file_full(policy_file).exfil
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            if self.init_error is None:
+                logger.warning(
+                    "Payload scanning disabled — could not read exfiltration "
+                    "config from %r: %s",
+                    policy_file,
+                    exc,
+                )
+        if self.exfil_cfg.enabled():
+            # In transparent mode the proxy is launched via `sudo -u
+            # pipewardenuser env POLICY_FILE=... MODE=... LOG_PATH=...`, so
+            # os.environ holds those three and nothing else — none of the
+            # job's secrets. setup.sh materialises them into a 0600 file for
+            # exactly this reason; os.environ is the fallback for the
+            # non-transparent path, where the proxy inherits the job's env.
+            secrets_file = os.environ.get("EXFIL_SECRETS_FILE", "")
+            values: dict[str, str] | os._Environ[str] = (
+                load_watch_values(secrets_file) if secrets_file else os.environ
+            )
+            self.exfil_watchlist = build_watchlist(
+                values,
+                self.exfil_cfg.watch_env,
+                self.exfil_cfg.min_secret_length,
+            )
+            logger.info(
+                "Payload scanning: mode=%s detectors=%s watching %d/%d secrets",
+                self.exfil_cfg.mode,
+                ",".join(self.exfil_cfg.detectors),
+                len(self.exfil_watchlist),
+                len(self.exfil_cfg.watch_env),
+            )
+            missing = len(self.exfil_cfg.watch_env) - len(self.exfil_watchlist)
+            if missing > 0:
+                # Naming which ones would be unhelpful noise for secrets this
+                # job legitimately lacks, but a silent count of zero would hide
+                # a policy that watches nothing at all.
+                logger.warning(
+                    "%d watched secret(s) were absent from the environment or "
+                    "shorter than min_secret_length and will not be detected.",
+                    missing,
+                )
+
+        # Attribution. Configured from the environment rather than from the
+        # policy file: it decides whether a privileged helper runs on the
+        # runner, not what traffic is permitted — the same class of decision as
+        # dns: or tls-intercept:, both of which are action inputs too.
+        self.attribution_cfg = AttributionConfig(
+            mode=os.environ.get("ATTRIBUTION_MODE", "client") or "client",
+        )
+        self._attribution_socket = os.environ.get("ATTRIBUTION_SOCKET", "")
+        self._attribution_cache: dict[int, dict] = {}
+        self._attribution_failures = 0
+        if self.attribution_cfg.wants_process() and not self._attribution_socket:
+            logger.warning(
+                "Process attribution was requested but no helper socket was "
+                "provided — recording the self-reported client only."
+            )
+            self.attribution_cfg.mode = "client"
 
         # Pre-build the trust store once for cert verification
         self._trust_ctx = _build_trust_store()
@@ -392,6 +484,8 @@ class NetworkMonitorAddon:
             if addr:
                 entry.server_ip = addr[0] if isinstance(addr, tuple) else str(addr)
 
+        entry.attribution = self._attribute(flow, req, entry)
+
         status = self.engine.evaluate(entry)
 
         # Certificate-based enforcement: in enforce mode, a connection the
@@ -413,6 +507,21 @@ class NetworkMonitorAddon:
                 host, req.port, reason,
             )
 
+        # Payload scanning. Runs even when the destination is allowed — that is
+        # the entire point: a token POSTed to an allowlisted host is an
+        # ordinary POST to the policy, and the destination check has already
+        # said yes. Skipped for connections already blocked, where the request
+        # never reaches the network anyway.
+        if status != "blocked" and self.exfil_cfg.enabled():
+            findings = self._scan_request(req, entry)
+            if findings and self.exfil_cfg.mode == "block" and self.mode == "enforce":
+                status = "blocked"
+                labels = ", ".join(sorted({f.label for f in findings}))
+                logger.warning(
+                    "Blocking %s:%s — request carries secret material (%s)",
+                    host, req.port, labels,
+                )
+
         entry.status = status
 
         if status == "blocked":
@@ -426,6 +535,112 @@ class NetworkMonitorAddon:
                 flow.response = _make_blocked_response()
 
         self._write_log(entry)
+
+    def _attribute(self, flow, req, entry: ConnectionEntry) -> dict:
+        """Work out who sent this request.
+
+        The ``User-Agent`` costs nothing and is only readable because the TLS
+        session terminates here — a tool that watches packets cannot see it.
+        It identifies tools rather than adversaries, since a client that lies is
+        believed, so ``process`` mode additionally asks the root helper which
+        process owns the client socket. Both are best-effort: attribution is
+        reporting, and a failed lookup must never affect whether traffic flows.
+        """
+        if not self.attribution_cfg.enabled():
+            return {}
+
+        result = Attribution()
+        try:
+            headers = getattr(req, "headers", None)
+            if headers is not None:
+                result = attribution_from_user_agent(headers.get("user-agent", "") or "")
+        except Exception:  # noqa: BLE001 - header containers vary across versions
+            pass
+
+        if self.attribution_cfg.wants_process():
+            src_port = _client_port(flow)
+            cached = self._attribution_cache.get(src_port) if src_port else None
+            if cached is None:
+                cached = self._ask_helper(src_port, entry)
+                if src_port:
+                    if len(self._attribution_cache) >= _ATTRIBUTION_CACHE_SIZE:
+                        self._attribution_cache.clear()
+                    self._attribution_cache[src_port] = cached
+            if cached:
+                result = better(result, Attribution.from_dict(cached))
+
+        return result.to_dict()
+
+    def _ask_helper(self, src_port: int, entry: ConnectionEntry) -> dict:
+        """Query the privileged helper, giving up quietly once it stops answering.
+
+        A helper that died mid-job would otherwise cost a connect attempt on
+        every request for the rest of the run. Attribution is worth a socket
+        round trip; it is not worth slowing the pipeline down indefinitely.
+        """
+        if self._attribution_failures >= 5:
+            return {}
+        try:
+            from scripts.attribution_helper import query
+        except ImportError:
+            self._attribution_failures = 99
+            return {}
+        answer = query(
+            self._attribution_socket,
+            {
+                "src_port": src_port,
+                "dst_ip": entry.server_ip or entry.host,
+                "dst_port": entry.port,
+            },
+        )
+        # None is "could not reach the helper"; {} is "the helper does not
+        # know", which is routine for a client that exited before the lookup
+        # and must not count against it.
+        if answer is None:
+            self._attribution_failures += 1
+            if self._attribution_failures == 5:
+                logger.warning(
+                    "Attribution helper stopped answering — recording the "
+                    "self-reported client only for the rest of this run."
+                )
+            return {}
+        self._attribution_failures = 0
+        return answer
+
+    def _scan_request(self, req, entry) -> list:
+        """Scan a request for secret material and record findings on *entry*.
+
+        Returns the findings that justify blocking (see
+        ``exfil.blocking_findings``); advisory ones are still recorded on the
+        entry so they reach the report.
+        """
+        if self.engine.allows_request_body(entry):
+            return []
+
+        try:
+            payload = _request_payload(
+                req, self.exfil_cfg.max_scan_bytes, self.exfil_cfg.scan_headers
+            )
+        except Exception as exc:  # noqa: BLE001 - never break a request to scan it
+            logger.debug("Skipping payload scan for %s: %s", entry.host, exc)
+            return []
+
+        findings = scan(
+            payload, self.exfil_watchlist, self.exfil_cfg, self._exfil_salt
+        )
+        if not findings:
+            return []
+
+        entry.exfil_findings = [
+            {
+                "detector": f.detector,
+                "label": f.label,
+                "count": f.count,
+                "fingerprint": f.fingerprint,
+            }
+            for f in findings
+        ]
+        return blocking_findings(findings)
 
     # ------------------------------------------------------------------
     # HTTP / HTTPS response — capture transfer size
@@ -466,6 +681,9 @@ class NetworkMonitorAddon:
                 bytes_transferred=total,
                 tls_sni=sni if is_https else "",
             )
+            # Cheap: the client socket is the same one request() already
+            # resolved, so this reads the cache rather than walking /proc again.
+            entry.attribution = self._attribute(flow, req, entry)
             self._write_log(entry)
 
     # ------------------------------------------------------------------
@@ -549,6 +767,11 @@ class NetworkMonitorAddon:
             server_ip=server_addr[0] if host != server_addr[0] else "",
         )
 
+        # No User-Agent on a raw TCP stream, so this is process-mode only —
+        # and it is where process attribution earns its keep, since nothing
+        # else in the entry says what made the connection.
+        entry.attribution = self._attribute(flow, None, entry)
+
         status = self.engine.evaluate(entry)
         entry.status = status
         self._write_log(entry)
@@ -556,6 +779,49 @@ class NetworkMonitorAddon:
     # ------------------------------------------------------------------
     # JSONL logging
     # ------------------------------------------------------------------
+
+    def tls_failed_client(self, data) -> None:
+        """A client refused the certificate PipeWarden presented for a host.
+
+        This is the signature of certificate pinning: the client validates the
+        real site's key and rejects our per-job forged leaf, exactly as pinning
+        is designed to. It fires at the TLS layer, before any HTTP request or
+        status exists, so it is the earliest and clearest place to recognise
+        "this client cannot be intercepted" — and to tell the user what to do
+        about it rather than leaving them with an opaque handshake error in
+        their own build step.
+
+        Recorded as a distinct status so teardown can surface a hint. Never
+        fatal here: whether a pinned connection should fail the job is a policy
+        question for enforce mode, not something to decide at the TLS callback.
+        """
+        try:
+            sni = ""
+            conn = getattr(data, "conn", None) or getattr(data, "client", None)
+            if conn is not None:
+                sni = getattr(conn, "sni", "") or ""
+            context = getattr(data, "context", None)
+            server = getattr(context, "server", None) if context else None
+            host = sni or (getattr(server, "address", ("", 0))[0] if server else "")
+            if not host:
+                return
+            entry = ConnectionEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                protocol="https",
+                host=host,
+                port=443,
+                status="tls_pinned",
+                tls_sni=sni,
+            )
+            self._write_log(entry)
+            logger.warning(
+                "TLS handshake refused by client for %s — looks like certificate "
+                "pinning. That client cannot be MITM-intercepted; exclude it with "
+                "tls-passthrough, or run the action with tls-intercept: false.",
+                host,
+            )
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must never crash the proxy
+            logger.debug("tls_failed_client handler error: %s", exc)
 
     def _write_log(self, entry: ConnectionEntry) -> None:
         """Append a connection entry as a JSON line to the log file."""
@@ -574,6 +840,23 @@ class NetworkMonitorAddon:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _client_port(flow) -> int:
+    """The client's source port, which is the join key for a /proc lookup.
+
+    In transparent mode the redirect happens below the socket layer, so the
+    client's socket still carries its own ephemeral source port and the
+    original destination — meaning the kernel's socket table can be searched
+    for it directly.
+    """
+    try:
+        peer = getattr(flow.client_conn, "peername", None)
+        if isinstance(peer, tuple) and len(peer) >= 2:
+            return int(peer[1])
+    except Exception:  # noqa: BLE001 - connection shapes vary across versions
+        pass
+    return 0
+
+
 def _looks_like_ip(host: str) -> bool:
     """Return True if host looks like an IP address rather than a domain."""
     try:
@@ -581,6 +864,48 @@ def _looks_like_ip(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _request_payload(req, max_bytes: int, scan_headers: bool = False) -> bytes:
+    """Assemble the bytes worth scanning from a request.
+
+    Query string and body by default; headers only when *scan_headers* is set.
+    Headers are where legitimate authentication lives — an ``Authorization:
+    Bearer`` to the very host the credential belongs to is not exfiltration,
+    and scanning headers by default 403'd every authenticated request to an
+    allowlisted host. The query string is different: ``_redact_path`` strips it
+    before logging, so this is the only place it can still be examined.
+
+    Ordering matters: headers go last so that, when enabled, a large cookie
+    jar cannot push the body past the scan window — the scanner truncates the
+    joined payload to ``max_bytes``, and the body is the carrier that matters.
+
+    ``req.content`` is bounded here rather than in the caller because reading
+    it is what materialises the body; slicing afterwards would already have
+    paid the cost.
+    """
+    parts: list[bytes] = []
+
+    path = getattr(req, "path", "") or ""
+    if "?" in path:
+        parts.append(path.split("?", 1)[1].encode("utf-8", errors="ignore"))
+
+    # A streamed request has no materialised content; mitmproxy raises rather
+    # than block, and a scan is not worth stalling the flow for.
+    content = getattr(req, "content", None)
+    if content:
+        parts.append(content[:max_bytes])
+
+    if scan_headers:
+        headers = getattr(req, "headers", None)
+        if headers is not None:
+            try:
+                for name, value in headers.items():
+                    parts.append(f"{name}: {value}".encode(errors="ignore"))
+            except Exception:  # noqa: BLE001 - header containers vary across versions
+                pass
+
+    return b"\n".join(p for p in parts if p)
 
 
 def _redact_path(path: str) -> str:

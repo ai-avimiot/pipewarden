@@ -12,7 +12,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "native-proxy")
 
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from log_parser import merge_iptables_entries, parse_nfw_log_file, parse_nfw_log_line
+from log_parser import (
+    _transport_of,
+    merge_iptables_entries,
+    parse_nfw_log_file,
+    parse_nfw_log_line,
+)
 
 # ------------------------------------------------------------------
 # Generators
@@ -212,16 +217,23 @@ def test_p5_merge_deduplication(ipt_entries, existing):
     """
     result = merge_iptables_entries(ipt_entries, existing)
 
-    # Build the set of existing keys for dedup checking
+    # Build the set of existing keys for dedup checking.
+    #
+    # Keyed on transport as well as (ip, port): a UDP entry is not a duplicate
+    # of a TCP one to the same destination. _transport_of is reused rather than
+    # reimplemented so the two definitions cannot drift — this property has
+    # already been wrong once, silently, because it mirrored a key the
+    # implementation had moved on from.
     existing_keys = set()
     for entry in existing:
         host = entry.get("host")
         port = entry.get("port")
         server_ip = entry.get("server_ip")
+        transport = _transport_of(entry.get("protocol"))
         if host is not None and port is not None:
-            existing_keys.add((host, int(port)))
+            existing_keys.add((host, int(port), transport))
         if server_ip is not None and port is not None:
-            existing_keys.add((server_ip, int(port)))
+            existing_keys.add((server_ip, int(port), transport))
 
     # (c) All existing entries are preserved at the start
     assert result[:len(existing)] == existing, "Existing entries must be preserved"
@@ -229,7 +241,11 @@ def test_p5_merge_deduplication(ipt_entries, existing):
     # Partition iptables entries into duplicates and non-duplicates
     non_dup = []
     for entry in ipt_entries:
-        key = (entry["dst_ip"], int(entry["dst_port"]))
+        key = (
+            entry["dst_ip"],
+            int(entry["dst_port"]),
+            _transport_of(entry.get("protocol")),
+        )
         if key not in existing_keys:
             non_dup.append(entry)
 
@@ -349,3 +365,68 @@ class TestMergeIptablesEntries:
         ]
         result = merge_iptables_entries([], existing)
         assert result == existing
+
+
+# ---------------------------------------------------------------------------
+# Transport-aware deduplication (found by the bypass suite)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeDedupesPerTransport:
+    """Deduplication keyed on (ip, port) alone hid all QUIC.
+
+    An HTTP/3 client contacts a host over TCP/443 first, so every subsequent
+    UDP/443 datagram to that host looked like a repeat of the TCP entry and was
+    dropped. The bypass suite asserted UDP 443 was visible; it was not.
+    """
+
+    def _existing(self, protocol="https", port=443, host="1.1.1.1"):
+        return {"host": host, "port": port, "protocol": protocol, "status": "allowed"}
+
+    def _iptables(self, protocol="UDP", port=443, ip="1.1.1.1"):
+        return {
+            "dst_ip": ip,
+            "dst_port": port,
+            "protocol": protocol,
+            "uid": 1001,
+            "timestamp": "2026-08-10T10:00:00+00:00",
+        }
+
+    def test_udp_survives_a_tcp_entry_to_the_same_destination(self):
+        merged = merge_iptables_entries([self._iptables()], [self._existing()])
+        assert len(merged) == 2, "UDP 443 must not be folded into TCP 443"
+
+    def test_tcp_is_still_deduped_against_the_proxy_entry(self):
+        merged = merge_iptables_entries(
+            [self._iptables(protocol="TCP")], [self._existing()]
+        )
+        assert len(merged) == 1, "a TCP entry the proxy already logged is a duplicate"
+
+    def test_dedupes_against_server_ip_too(self):
+        existing = {
+            "host": "example.com", "server_ip": "1.1.1.1",
+            "port": 443, "protocol": "https",
+        }
+        merged = merge_iptables_entries(
+            [self._iptables(protocol="TCP")], [existing]
+        )
+        assert len(merged) == 1
+
+    def test_different_ports_are_never_conflated(self):
+        merged = merge_iptables_entries(
+            [self._iptables(protocol="TCP", port=9999)], [self._existing()]
+        )
+        assert len(merged) == 2
+
+    def test_dns_entries_count_as_udp(self):
+        existing = self._existing(protocol="dns", port=53)
+        merged = merge_iptables_entries(
+            [self._iptables(protocol="UDP", port=53)], [existing]
+        )
+        assert len(merged) == 1
+
+    def test_existing_entries_are_always_preserved(self):
+        existing = [self._existing(), self._existing(port=80, protocol="http")]
+        merged = merge_iptables_entries([self._iptables()], existing)
+        for entry in existing:
+            assert entry in merged

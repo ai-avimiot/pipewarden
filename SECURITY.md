@@ -64,6 +64,8 @@ cosign verify-attestation --type https://spdx.dev/Document/v2.3 \
 
 `enforce` mode inspects and blocks at the application layer via mitmproxy, which is reached by redirecting **TCP ports 80 and 443, IPv4, in the host network namespace** into the proxy. Understand the edges before relying on it:
 
+> **With `tls-intercept: false` this whole section does not apply.** No proxy runs and no CA is installed, so nothing below about TLS-terminated inspection holds. Enforcement is then DNS-layer only (a disallowed domain gets NXDOMAIN and never resolves), with connections logged as IP/port metadata via conntrack. Use it when the workflow certificate-pins or uses mutual TLS — see [Certificate pinning and mTLS](README.md#certificate-pinning-and-mtls).
+
 A blocked connection fails the job by default (the pipeline stops); `fail-on-block: false` blocks the traffic but lets the job continue, and `monitor` mode only observes. See the README's Enforce section.
 
 **Blocked / inspected**
@@ -80,7 +82,48 @@ A blocked connection fails the job by default (the pipeline stops); `fail-on-blo
 - Any code able to run as the `pipewardenuser` UID (e.g. `sudo -u pipewardenuser`, which passwordless-sudo runners allow) is exempt from the redirect by design and can reach 443 directly.
 - Full IPv6 and in-container TLS interception are roadmap items, not current guarantees.
 
-If you run in `enforce` on a job holding live credentials, treat the metadata-only report and these boundaries as the contract. The report itself is metadata-only by construction: connection host/port/path/method/bytes/SNI/cert-chain, with **URL query strings redacted** before logging, and request/response headers and bodies never captured.
+If you run in `enforce` on a job holding live credentials, treat the metadata-only report and these boundaries as the contract. The report itself is metadata-only by construction: connection host/port/path/method/bytes/SNI/cert-chain, with **URL query strings redacted** before logging, and request/response headers and bodies never written to it.
+
+## Payload scanning
+
+Policy `version: "2"` adds opt-in [exfiltration detection](README.md#exfiltration-detection), which inspects request bodies and query strings — and, only with `scan_headers: true`, headers — for secret material. Headers are excluded by default because they are where legitimate authentication lives: an `Authorization:` credential sent to the host it belongs to is not exfiltration, and scanning it would block ordinary authenticated traffic to allowlisted destinations. It is **off unless you enable it**. If you do, understand what changes.
+
+**The proxy holds your secret values in memory.** To recognise `GITHUB_TOKEN` leaving the runner, the proxy must know what `GITHUB_TOKEN` is. Values named in `watch_env` are read from the job environment at setup and handed to the proxy process, which keeps them in memory for the life of the job to compare against outbound traffic.
+
+This makes the proxy a higher-value target than it was. Mitigations, in order of importance:
+
+- **Values are never written to any artifact.** Findings record the env var *name* (or the pattern class), a count, and a fingerprint keyed with a random per-run salt. The salt is never persisted, so a fingerprint cannot be reversed by whoever reads `report.json`. A property test over arbitrary secret shapes asserts no watched value reaches a finding, and an end-to-end test asserts `connections.jsonl` contains the variable's name but never its value.
+- **The handover is not on the command line.** Values reach the proxy through a file created with mode `0600` *before* any content is written and owned by `pipewardenuser` — not via `argv`, which is world-readable through `/proc/<pid>/cmdline` and would expose the secrets to every process on the runner in order to detect them leaving it.
+- **The file does not outlive the job.** It is removed by the setup rollback trap on failure and by teardown on success, so later steps sharing the runner cannot read it.
+- **Bodies are read, never retained.** Scanning happens in memory during the request; no request or response content is stored anywhere.
+
+**What is scanned.** Up to `max_scan_bytes` (default 1 MiB) of each request. A secret placed past that offset inside a larger body is not seen — a real limit, stated rather than hidden. Rules carrying `allow_request_body: true` are skipped entirely.
+
+**Detector confidence.** `env-secrets` and `patterns` can block; `entropy` never does, because it fires on checksums, cache keys and minified assets and enforcing on it would break ordinary builds.
+
+If holding secret values in the proxy is not acceptable for your threat model, leave `exfiltration.mode` at `off` (the default) and PipeWarden behaves exactly as it did before — destination-based enforcement only, with no secret material anywhere in the process.
+
+## Process attribution
+
+[`attribution: process`](README.md#who-made-the-connection) runs a root-owned helper on the runner for the life of the job. The default, `attribution: client`, does not — it reads the `User-Agent` out of a request the proxy has already decrypted and needs no privileges at all.
+
+**Why it needs root.** `/proc/<pid>/fd` is readable only by the process owner or root. Build steps run as the runner user, the proxy runs as `pipewardenuser`, and neither can enumerate the other's sockets. Rather than grant mitmproxy that privilege, the privilege lives in a separate process that does one thing: answer "which process owns this socket".
+
+What that process can do, and what constrains it:
+
+- **It answers, it never acts.** The helper serves one request type over a unix socket — a source port or destination in, a process description out. It cannot change policy, block traffic, or affect whether a connection is allowed.
+- **The socket is not world-reachable.** Created `root:<proxy group>` mode `0660`, falling back to `0600` if the group cannot be resolved, so an arbitrary process on the runner cannot interrogate it.
+- **No external dependencies.** The audit tier speaks the netlink audit protocol directly. Nothing is installed from outside your allowlist — no `auditd`, no `libaudit` — because a tool whose thesis is allowlisting should not need to fetch anything to work.
+- **The audit rule does not outlive the job.** The helper deletes it on SIGTERM, and both the setup rollback trap and teardown stop the helper — a rule left installed would keep generating records for every later job on that runner. Teardown also kills any helper whose pid file was lost. If the helper had to switch the audit subsystem on, it switches it back off again: the machine-wide setting is part of what must not outlive the job, not just the rule.
+- **An existing audit consumer is left alone.** Only one process at a time receives audit records, so claiming delivery would take it from whoever already holds it — `auditd`, on a self-hosted runner — and handing it back at teardown would silence that consumer for good. The helper checks first and declines the audit tier rather than displace a live owner, falling back to `/proc` lookups. A stale owner whose process is gone does not block the tier, because the kernel does not clear the setting when that process dies.
+- **Its output is bounded.** Process names, binary paths and parent names are truncated and reduced to a conservative character set before being recorded, because an `argv[0]` is whatever the caller chose and it ends up in `report.json` and in Markdown posted to the job summary.
+- **Explicit-proxy mode runs without the audit tier.** There the proxy runs as the runner user rather than `pipewardenuser`, so its own outbound connections are indistinguishable from the build's and cannot be filtered out by uid. Socket lookups still name processes; only the tier that catches short-lived ones is off. The mode actually in effect is recorded in `report.json`, so "nothing attributed" can be told apart from "attribution was not running".
+
+**`attribution-cmdline` is the part to think about.** It is off by default. A command line is a place credentials genuinely appear — `curl -H "Authorization: Bearer ..."`, `npm publish --//registry:_authToken=...` — and `/proc/<pid>/cmdline` is world-readable, so those values are already exposed to every process on the runner. Recording them puts them in an uploaded artifact, which is a different and worse exposure.
+
+What protects them: the string is scrubbed against your watched secret values *and* the same credential patterns the payload scanner uses, so a token nobody thought to add to `watch_env` is still removed. If the watched-secrets file could not be written, setup declines to record command lines at all rather than recording them with a weaker redactor. What does not protect them: a redactor cannot recognise a bespoke internal credential format. If your pipeline passes credentials in a shape no generic pattern matches, and you have not listed them in `watch_env`, leave this off.
+
+**Failure is degradation, not enforcement loss.** A helper that cannot start downgrades attribution to `client` with a warning; the proxy stops querying one that stops answering. Attribution is reporting, and losing it never changes whether traffic flows.
 
 ## Reporting a Vulnerability
 
