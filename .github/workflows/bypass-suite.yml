@@ -1,0 +1,133 @@
+name: "Bypass suite (what PipeWarden does and does not see)"
+
+# Actively tries to evade the intercept and asserts the outcome of each attempt
+# against .github/bypass-cases.json.
+#
+# The point is not that every attempt fails. One case is a documented blind spot
+# asserted to STAY missing — and the suite fails if it starts being caught,
+# because the docs telling users about that gap would then be wrong. A tool that
+# silently misses something is worse than one that names what it misses; a tool
+# that silently stops missing it has stale docs pointing people at a workaround
+# they no longer need.
+#
+# Every destination is a GitHub endpoint the workflow already depends on. An
+# egress test obviously has to connect somewhere, but it must not import a new
+# outage: a suite that pulls a registry image or leans on a third-party resolver
+# goes red when someone else has a bad day, which is how the container demo
+# inherited httpbin's downtime.
+#
+# Runs in MONITOR mode with the real transparent + DNS interception. Monitor
+# because the question is visibility, and because enforce would block the
+# runner's own infrastructure and make the results a story about the policy
+# rather than about the intercept. The enforce-only protocol rejections
+# (UDP/443, 853) are exercised by demo-pipewarden-enforce.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'native-proxy/**'
+      - 'proxy/**'
+      - 'policy/**'
+      - 'scripts/**'
+      - '.github/workflows/bypass-suite.yml'
+      - '.github/bypass-cases.json'
+  pull_request:
+    paths:
+      - 'native-proxy/**'
+      - 'proxy/**'
+      - 'policy/**'
+      - 'scripts/**'
+      - '.github/workflows/bypass-suite.yml'
+      - '.github/bypass-cases.json'
+  workflow_dispatch:
+
+concurrency:
+  group: bypass-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bypass:
+    name: "Evasion attempts vs. the intercept"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "PipeWarden setup (monitor, transparent + DNS)"
+        uses: ./native-proxy/action-setup
+        with:
+          mode: monitor
+          transparent: 'true'
+          dns: 'true'
+
+      # Every attempt tolerates its own failure: what is being asserted is
+      # whether PipeWarden SAW the attempt, not whether the attempt succeeded.
+      # A refused or blocked connection still proves the intercept works.
+      - name: "1. Plain HTTPS resolved via DNS (control)"
+        run: curl -sS --max-time 15 -o /dev/null https://api.github.com/ || true
+
+      - name: "2. HTTPS straight to an IP, no DNS lookup"
+        run: |
+          # Resolve out-of-band so the request itself performs no lookup — the
+          # question is whether skipping DNS also skips the proxy. This is the
+          # same shape as DNS-over-HTTPS, which is just HTTPS to a resolver's
+          # IP and indistinguishable from any other request on 443.
+          ip="$(dig +short api.github.com A | grep -E '^[0-9.]+$' | head -1)"
+          echo "api.github.com -> ${ip:-<unresolved>}"
+          [ -n "$ip" ] && curl -sS --max-time 15 -k -o /dev/null "https://${ip}/" || true
+
+      - name: "3. DNS-over-TLS on port 853"
+        run: timeout 10 nc -w 3 api.github.com 853 </dev/null || true
+
+      - name: "4. QUIC / UDP on port 443"
+        run: |
+          # A datagram is enough: conntrack records the NEW entry whether or not
+          # anything answers, which is what a real HTTP/3 client also produces.
+          printf '\x00' | timeout 10 nc -u -w 3 api.github.com 443 || true
+
+      - name: "5. Raw TCP on a non-standard port"
+        run: timeout 10 nc -w 3 api.github.com 9999 </dev/null || true
+
+      - name: "6. DNS query"
+        run: dig +short +time=3 +tries=1 github.com A || true
+
+      - name: "7. KNOWN GAP — egress from a process running as the proxy user"
+        run: |
+          # The redirect carries `! --uid-owner pipewardenuser` so the proxy
+          # does not intercept itself, which exempts anything able to run as
+          # that user. Requires sudo, which a compromised build step on a
+          # GitHub-hosted runner already has. Pinned to a reserved .invalid
+          # name so the attempt cannot reach anything real.
+          sudo -u pipewardenuser curl -sS --max-time 10 -k -o /dev/null \
+            --resolve proxyuser-blindspot.invalid:443:127.0.0.1 \
+            https://proxyuser-blindspot.invalid/ || true
+
+      # NOT TESTED HERE: egress from a container started by a build step.
+      # Container traffic traverses the docker bridge and the FORWARD chain
+      # rather than OUTPUT, so the redirect never applies — a real blind spot,
+      # documented in the README. Testing it live would mean pulling an image
+      # from a public registry on every run, importing an outage this suite has
+      # no reason to own. It stays documentation rather than a flaky assertion.
+
+      - name: "PipeWarden teardown"
+        id: teardown
+        uses: ./native-proxy/action-teardown
+
+      - name: "Assert what was and was not seen"
+        env:
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          python3 scripts/check_bypass.py \
+            "${REPORT_DIR}/report.json" .github/bypass-cases.json
+
+      - name: "Upload the report for inspection"
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bypass-suite-report
+          path: ${{ steps.teardown.outputs.report-path }}
+          if-no-files-found: warn

@@ -74,6 +74,36 @@ jobs:
       - name: Mypy (type-check policy core)
         run: mypy
 
+  # Nothing else in CI installs proxy/requirements-lock.txt — it is consumed only
+  # by the image build, which does not run on pull requests. That gap let an
+  # unsatisfiable lock reach main and sit there for four days (#108: pyOpenSSL
+  # 26.3.0 against cryptography<49), undetectable until the next release build.
+  #
+  # tests/test_lock_consistency.py catches contradictory pins offline, but only an
+  # actual build proves the image works alongside the mitmproxy in the base image.
+  # Building here makes that a pre-merge check rather than a post-merge discovery.
+  proxy-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the proxy image
+        run: docker build -f proxy/Dockerfile -t pipewarden-proxy:ci .
+
+      - name: Verify the image is internally consistent
+        run: |
+          # pip check catches a lock that installed but left conflicting metadata;
+          # importing the addon under the base image's interpreter catches a
+          # dependency that resolved but cannot actually be used at runtime.
+          docker run --rm --entrypoint sh pipewarden-proxy:ci -c '
+            set -e
+            pip check
+            python3 -c "import OpenSSL, cryptography, yaml, certifi"
+            python3 -c "import sys; sys.path.insert(0, \"/app\"); import addon"
+            mitmdump --version | head -1
+          '
+
   python-tests:
     runs-on: ubuntu-latest
     strategy:

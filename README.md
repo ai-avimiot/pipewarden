@@ -3,7 +3,7 @@
 [![Tests](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml/badge.svg)](https://github.com/ai-avimiot/pipewarden/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Avimiot Pipewarden — see every outbound connection your CI pipeline makes. Block the ones it shouldn't.**
+**Avimiot Pipewarden — see every outbound connection your CI pipeline makes, and what leaves with it. Block both.**
 
 Part of [AI Avimiot](https://github.com/ai-avimiot).
 
@@ -11,10 +11,14 @@ Your build pipeline makes dozens of network calls you never see — package regi
 
 PipeWarden is the missing security layer between dependency scanning and production. It monitors **actual network behavior at build time** — the blind spot that static analysis, SCA, and provenance tools can't cover.
 
+It works at two levels. An **allowlist** decides which destinations your build may reach. And because PipeWarden terminates TLS on the runner, it can also read the **request itself** — so a secret sent to a destination you already allow is caught too, which no destination-based check can see.
+
 ## Table of contents
 
 - [What PipeWarden catches that other tools don't](#what-pipewarden-catches-that-other-tools-dont)
 - [What PipeWarden is (and isn't)](#what-pipewarden-is-and-isnt)
+- [What PipeWarden supports](#what-pipewarden-supports)
+  - [Where PipeWarden fits](#where-pipewarden-fits)
 - [Key benefits](#key-benefits)
 - [Quick start](#quick-start)
   - [60-second install](#60-second-install)
@@ -27,6 +31,10 @@ PipeWarden is the missing security layer between dependency scanning and product
 - [Compliance](#compliance)
 - [OWASP CI/CD Top 10 coverage](#owasp-cicd-top-10-coverage)
 - [Modes](#modes)
+- [Exfiltration detection](#exfiltration-detection)
+- [Known blind spots](#known-blind-spots)
+- [Certificate pinning and mTLS](#certificate-pinning-and-mtls)
+- [Migrating to v2.0](docs/migrating-to-v2.md)
 - [Deploy and credentialed jobs](#deploy-and-credentialed-jobs)
 - [Configuration reference](#configuration-reference)
 - [Container mode](#container-mode)
@@ -40,12 +48,15 @@ PipeWarden is the missing security layer between dependency scanning and product
 |--------|:-----:|:-----:|:-----:|
 | Compromised package phones home during install | | | :white_check_mark: **Blocked** |
 | Build step exfiltrates `GITHUB_TOKEN` to attacker server | | | :white_check_mark: **Blocked** |
+| …to a server your policy already allows | | | :white_check_mark: **Blocked** with [exfiltration detection](#exfiltration-detection) |
 | Dependency downloads second-stage payload | | | :white_check_mark: **Blocked** |
 | Cryptominer injected via post-install script | | | :white_check_mark: **Blocked** |
 | DNS exfiltration of secrets during build | | | :white_check_mark: **Blocked** |
 | Artifact tampering after build | | :white_check_mark: Detected | |
 
-> :rotating_light: **Every major CI/CD supply chain attack** — SolarWinds, Codecov, event-stream, xz-utils, tj-actions/changed-files — involved unauthorized network activity that PipeWarden would have detected.
+> :rotating_light: **Supply-chain compromises routinely show up as build-time network activity.** The Codecov bash-uploader compromise sent CI environment variables — including credentials — to an attacker-controlled host during customers' builds. The tj-actions/changed-files compromise fetched its payload from a remote URL mid-workflow. Both are the kind of egress PipeWarden is built to surface.
+>
+> Not every incident is: backdoors that activate in the shipped artifact rather than the pipeline (xz-utils) leave no build-time trace for a network control to catch. PipeWarden covers the build's egress — pair it with dependency scanning and artifact provenance for the rest.
 
 ## What PipeWarden is (and isn't)
 
@@ -60,11 +71,53 @@ PipeWarden is the missing security layer between dependency scanning and product
 
 PipeWarden **complements** your existing security stack — it covers the layer between "scan dependencies" and "verify the artifact."
 
+## What PipeWarden supports
+
+Stated plainly, so you can tell before adopting whether it fits.
+
+| | Supported |
+| --- | --- |
+| Domain / port / protocol allowlisting | ✅ |
+| **Request-path rules** (`paths: ["/simple/*"]`) | ✅ |
+| **Request body & query-string scanning** for secrets | ✅ opt-in ([exfiltration detection](#exfiltration-detection)) |
+| Request header scanning | ✅ opt-in (`scan_headers`) |
+| DNS interception & enforcement | ✅ |
+| TLS certificate-chain verification | ✅ |
+| Non-HTTP TCP/UDP connection logging | ✅ metadata only |
+| Runs with no TLS interception (pinning / mTLS) | ✅ ([`tls-intercept: false`](#certificate-pinning-and-mtls)) |
+| GitHub-hosted Linux runners | ✅ |
+| Container mode | ✅ ([container mode](#container-mode)) |
+| **Client attribution** — which tool made a request | ✅ ([who made the connection](#who-made-the-connection)) |
+| **Process attribution** — which process opened a connection | ✅ opt-in (`attribution: process`) |
+| **File-integrity monitoring** | ❌ out of scope |
+| Windows / macOS runners | ❌ Linux only |
+| Self-hosted runners / ARC | ❌ not supported today |
+| Per-host TLS exclusion (`tls-passthrough`) | ⏳ planned |
+| Curated known-malicious blocklist | ❌ deliberately not — see below |
+
+**No threat feed, by design.** PipeWarden ships no blocklist of known-bad domains and fetches nothing at build time. Allowlisting is the model: in enforce mode everything not on your list is already blocked, including infrastructure no feed has heard of yet. A bundled list would also go stale, and a stale list is worse than none — it implies a coverage guarantee nobody is maintaining.
+
+### Where PipeWarden fits
+
+There are two workable architectures for CI egress control, and the choice is a real trade rather than a ranking.
+
+**Observation-based** tools watch DNS and connections without touching TLS. Nothing in your build can break because of them, and pinned or mTLS clients are unaffected — but the request contents are, by construction, unreadable.
+
+**PipeWarden terminates TLS.** That is what makes request-path rules and payload scanning possible, and it is the reason a secret sent to an allowlisted host can be caught at all. The cost is real and worth stating up front: a CA is installed on the runner for the job, certificate-pinned clients will refuse it, mutual-TLS connections cannot be intercepted at all, and a proxy defect can break a build that an observation-based tool would have left alone. `tls-intercept: false` exists precisely so you can opt out of that trade without giving up allowlisting.
+
+PipeWarden is also younger and has had far fewer eyes on it than established tools — which is not the same as having fewer holes. That is why it ships an [adversarial bypass suite](#known-blind-spots) that runs in CI and documents what it does *not* catch.
+
+If you need file-integrity or process monitoring, Windows/macOS, or self-hosted and ARC coverage, PipeWarden does not do those today; [StepSecurity's harden-runner](https://github.com/step-security/harden-runner) is a well-established option in this space that does. The two are not mutually exclusive — running both is reasonable.
+
 ## Key benefits
 
-- **Your data stays in GitHub** — no SaaS dashboard, no third-party accounts, no data leaving your runner. Reports go to Job Summary, artifacts, and optionally the GitHub Security tab via SARIF
-- **No kernel access required** — unlike eBPF-based tools, PipeWarden works on any GitHub-hosted runner out of the box. No privileged containers, no agent installs
-- **Deep inspection** — transparent proxy sees full HTTP/HTTPS request/response content, TLS certificate chains, and DNS queries. Not just destination IPs
+- **Nothing leaves your infrastructure** — no SaaS dashboard, no accounts, no telemetry, and no data fetched at build time. PipeWarden makes no network calls of its own. Reports go to the Job Summary, artifacts, and optionally the GitHub Security tab via SARIF
+- **Catches secrets leaving, not just bad destinations** — [exfiltration detection](#exfiltration-detection) reads request bodies and query strings, so a token sent to a host your policy *allows* is still blocked. Opt-in, and the secret value is never written to any report
+- **Request-level policy** — rules match on paths, not only domains. TLS certificate chains are verified, and DNS queries are seen before anything connects
+- **Names who made each connection** — [attribution](#who-made-the-connection) reports the client behind every request, and optionally the process itself, so a report says *what ran*, not only where it went
+- **Works on a stock runner** — no kernel access, no privileged containers, no agent baked into an image
+- **Honest about its limits** — an [adversarial bypass suite](#known-blind-spots) runs in CI and documents what PipeWarden does *not* catch, so the gaps are stated rather than discovered
+- **Fits pinned and mTLS workflows** — [`tls-intercept: false`](#certificate-pinning-and-mtls) runs with no interception at all when your clients can't tolerate it
 - **Drop-in setup** — one step. Teardown is automatic, even if your job fails
 - **Policy as code** — define allowed destinations in a simple YAML file. Monitor first, enforce when ready
 
@@ -334,6 +387,129 @@ Without a token it logs a warning and falls back to fail-at-teardown.
 
 > **Tip:** the auto-generated policy adds **wildcard hint comments** (e.g. `# consider "*.npmjs.org"`) when it sees several sibling subdomains — review and apply them by hand. It never suggests wildcards for multi-tenant suffixes like `s3.amazonaws.com`.
 
+## Exfiltration detection
+
+An allowlist answers *where* traffic went. It cannot answer *what went with it*.
+
+Consider the threat this README opens with — a build step sending your `GITHUB_TOKEN` to an attacker. If the attacker picks an unlisted host, the allowlist stops it. If they pick a host you already allow — a gist, a chat webhook, your own object store, a CI service in your policy — it is an ordinary `POST` and the allowlist says yes.
+
+Because PipeWarden terminates TLS, it can read the request instead of only its destination. This is opt-in and requires policy `version: "2"` — see [Migrating to v2.0](docs/migrating-to-v2.md), and roll it out in `warn` before `block`:
+
+```yaml
+version: "2"
+mode: enforce
+
+exfiltration:
+  mode: block                        # off (default) | warn | block
+  detectors: [env-secrets, patterns]
+  watch_env: [GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, NPM_TOKEN]
+
+rules:
+  - name: "Artifact store"
+    allow_request_body: true         # this endpoint is *meant* to receive credentials
+    allow:
+      domains: ["uploads.example.com"]
+      ports: [443]
+      protocols: [https]
+```
+
+Bodies and query strings are scanned; headers are **not, by default**. A credential in an `Authorization:` header sent to an allowlisted host is almost always authentication — `gh`, `git`, artifact uploads — not exfiltration, and blocking it would break ordinary builds. Set `scan_headers: true` to include headers if your threat model wants them, and expect to pair it with `allow_request_body: true` on every credentialed destination.
+
+| Detector | What it matches | Blocks? |
+| --- | --- | --- |
+| `env-secrets` | The literal values of the env vars in `watch_env`, including their base64, URL- and hex-encoded forms | Yes |
+| `patterns` | Issuer-assigned credential shapes — `ghp_`, `github_pat_`, `AKIA`, `AIza`, `xox*`, PEM private keys, JWTs | Yes |
+| `entropy` | High-entropy blobs | **No** — reported only |
+
+`env-secrets` is the one that matters: matching against your *own* secret values answers "did a value from my secret store leave this runner" with no heuristics and effectively no false positives. `entropy` never blocks because it fires on checksums, cache keys and minified assets, and enforcing on it would break ordinary builds.
+
+Values shorter than 12 characters are ignored — CI is full of short "secrets" (`true`, a port number) whose bytes appear in nearly every request.
+
+### What the report records
+
+**Never the secret.** `report.json` is uploaded as a build artifact, so a detector that logged what it matched would publish the credential more conveniently than the exfiltration attempt did. Findings carry the *source* — the env var name, or the pattern class — plus a count and a fingerprint keyed with a per-run salt, so repeats collapse within one report while remaining useless outside it.
+
+### What this costs
+
+The proxy holds your watched secret values in memory to compare against them. See [SECURITY.md](SECURITY.md#payload-scanning) for the full picture before enabling it.
+
+## Who made the connection
+
+An allowlist answers *where* traffic went. Payload scanning answers *what went with it*. This answers *who sent it* — the question every incident review asks first, and the one a destination log cannot address. Eight requests to `registry.npmjs.org` look identical whether npm made them or a postinstall script did.
+
+```yaml
+- uses: ai-avimiot/pipewarden/native-proxy/action@v2
+  with:
+    attribution: process       # default is 'client'
+```
+
+Three sources, in increasing cost and decreasing availability:
+
+| Source | What it knows | Cost |
+|--------|---------------|------|
+| `user-agent` | The client's self-reported name, e.g. `npm/10.2.4` | Free. Readable **only because PipeWarden terminates TLS** — a tool that watches packets cannot see it |
+| `proc` | The real process behind the socket: pid, binary path, parent | A small root helper on the runner |
+| `audit` | `connect()` syscalls as they happen | The same helper, reading the kernel audit stream |
+
+`proc` and `audit` are complementary rather than ranked. `proc` joins on the client's source port, so it is exact — but a process that exits before the lookup lands leaves no `/proc` entry. `audit` never misses a short-lived process, but carries only the destination, so two processes contacting the same host in the same moment are indistinguishable. The helper prefers the first and falls back to the second.
+
+The report groups connections by actor, promoting whoever tripped a block or a payload finding:
+
+```
+Who made these connections (3 client(s)):
+  postinstall.sh (curl/8.5.0) — 1x to 1 destination(s) [1 with secret findings, 1 blocked]
+  npm — 2x to 1 destination(s)
+  git/2.43.0 — 1x to 1 destination(s)
+```
+
+The first row is the point. The process is `postinstall.sh`, but it told the server it was `curl` — and a `User-Agent` that disagrees with the process behind it is exactly the discrepancy attribution exists to expose. A client that lies is still believed, so `user-agent` alone identifies **tools, not adversaries**.
+
+### What it costs
+
+`attribution: process` runs a small root-owned helper on the runner for the life of the job. It needs root because `/proc/<pid>/fd` is readable only by the process owner or root, and your build steps run as the runner user while the proxy deliberately does not run as root. The privilege lives in that one process rather than being handed to mitmproxy. The helper speaks the netlink audit protocol directly — no `auditd`, no `libaudit`, nothing installed from outside your allowlist — and deletes its audit rule on the way out, on both the success and failure paths.
+
+Attribution is diagnostics. A helper that fails to start downgrades to `client` with a warning rather than failing the job, and the proxy stops querying one that stops answering. Losing attribution never affects whether traffic flows.
+
+`attribution-cmdline: true` additionally records each process's command line. It is off by default and should stay off unless you need it: CI scripts routinely put tokens on argv, and while the recorded string is scrubbed against both your watched secret values and the built-in credential patterns, a redactor cannot recognise a bespoke internal credential format. For an unknown format the safe answer is not to collect the string at all.
+
+With `tls-intercept: false` there is no decrypted request, so `client` mode has nothing to read — `process` is the only mode that reports anything, and it names the processes behind the conntrack rows that are then the whole connection log.
+
+## Known blind spots
+
+PipeWarden ships an [adversarial bypass suite](.github/workflows/bypass-suite.yml) that tries to evade its own interception on every relevant change and asserts the result. Cases marked `gap` are asserted to *stay* missing — if one starts being caught, the suite fails, because this section would then be wrong.
+
+**Caught:** HTTPS to a raw IP with no DNS lookup (including DNS-over-HTTPS, which is indistinguishable from it), DNS-over-TLS on 853, QUIC/UDP on 443, raw TCP on non-standard ports, and DNS queries.
+
+**Not caught:**
+
+| Blind spot | Why |
+| --- | --- |
+| Egress from a container started by a build step | Container traffic traverses the docker bridge and the `FORWARD` chain, never `OUTPUT`, so the redirect never applies. Use [container mode](#container-mode) for those workloads. |
+| Egress from a process running as `pipewardenuser` | The redirect carries `! --uid-owner pipewardenuser` so the proxy does not intercept itself. Reaching it needs `sudo` — which a compromised build step on a GitHub-hosted runner already has. |
+
+Both are properties of running on the same host as the workload. Neither is fixable without moving interception off the runner.
+
+## Certificate pinning and mTLS
+
+PipeWarden inspects TLS by terminating it: it presents a certificate it forged for the requested host, signed by a per-job CA it installs into the runner's trust store (see [How it works](#how-it-works)). Two kinds of client refuse that certificate, correctly:
+
+- **Certificate-pinned clients** validate the *real* site's key and reject anything else — including PipeWarden's forged leaf. That is pinning doing its job.
+- **Mutual-TLS (client-certificate) clients** cannot be intercepted even in principle: completing the upstream handshake needs the client's private key, which the proxy does not have.
+
+PipeWarden **detects pinning and tells you**. When a client rejects the forged certificate, the TLS handshake failure is recorded and the report names the host with the two fixes below — so the failure surfaces as *"pinned.example.com refused interception"* instead of an opaque handshake error inside your own build step.
+
+**Fix one host — `tls-passthrough`** *(planned)*: tunnel a named host's TLS untouched (real cert to the client, client cert to the server) while everything else stays intercepted. The host is still visible as SNI/connection metadata and still subject to the DNS allowlist — degraded to connection-level enforcement, not disabled.
+
+**Fix the whole workflow — `tls-intercept: false`**: run with no MITM at all. No CA is generated or trusted and no proxy starts, so pinned and mTLS clients see the genuine certificate chain and work unchanged. PipeWarden falls back to **DNS-layer enforcement plus conntrack connection logging** — the same posture harden-runner takes. You keep allowlist enforcement on domains and a record of what was contacted; you lose body/path/query inspection and upstream-certificate verification, because nothing is in the TLS path to provide them.
+
+```yaml
+- uses: ai-avimiot/pipewarden/native-proxy/action@v2
+  with:
+    mode: enforce
+    tls-intercept: 'false'   # no MITM — pinned & mTLS clients unaffected
+    dns: 'true'
+```
+
 ## Deploy and credentialed jobs
 
 PipeWarden is designed to be safe in jobs that hold live credentials (cloud deploys, OIDC token exchanges, package publishing):
@@ -355,6 +531,9 @@ PipeWarden is designed to be safe in jobs that hold live credentials (cloud depl
 | `proxy-port` | `8080` | Port for the proxy to listen on |
 | `dns` | `true` | Enable DNS interception |
 | `transparent` | `true` | Enable iptables transparent proxy |
+| `tls-intercept` | `true` | Terminate TLS for body/path/query inspection. Set `false` for [pinning/mTLS workflows](#certificate-pinning-and-mtls) — no MITM, DNS + connection logging only |
+| `attribution` | `client` | Record who made each connection. `client` reads the `User-Agent` from the decrypted request; `process` also names the real process via a root helper; `off` records nothing. See [Who made the connection](#who-made-the-connection) |
+| `attribution-cmdline` | `false` | `attribution: process` only: also record each process's command line, scrubbed against your watched secrets and the built-in credential patterns |
 | `fail-fast` | `false` | Enforce only: cancel the run on the first blocked connection (needs `github-token` + `actions: write`) |
 | `github-token` | `""` | Token used to cancel the run when `fail-fast` triggers |
 | `cache` | `true` | Cache the proxy engine's pip wheels across runs (saves ~10-20s of setup); `false` to disable |

@@ -26,6 +26,18 @@ inputs:
     description: "Enable iptables transparent proxy (true) or use env-var-only mode (false)"
     required: false
     default: "true"
+  tls-intercept:
+    description: "Terminate TLS to inspect request bodies, paths and query strings (true), or run without any MITM (false). Set false when the workflow uses certificate pinning or mutual TLS: no CA is generated or trusted and no proxy runs, so those clients work unchanged. PipeWarden then enforces at the DNS layer and logs connections via conntrack — no body scanning, path rules, or upstream-cert verification."
+    required: false
+    default: "true"
+  attribution:
+    description: "Record which client made each connection: 'client' reads the User-Agent from the decrypted request (free, no privileges, needs tls-intercept), 'process' additionally runs a small root helper that names the actual process behind each socket via the kernel socket table and audit connect() records, 'off' records nothing."
+    required: false
+    default: "client"
+  attribution-cmdline:
+    description: "attribution: process only. Also record each process's command line, scrubbed against the job's watched secrets and the built-in credential patterns. Off by default: a redactor cannot recognise a bespoke internal credential format, and command lines routinely carry tokens."
+    required: false
+    default: "false"
   fail-fast:
     description: "Enforce mode only: cancel the whole workflow run on the first blocked connection. Requires github-token with actions:write."
     required: false
@@ -56,6 +68,9 @@ runs:
         INPUT_PROXY_PORT: ${{ inputs.proxy-port }}
         INPUT_DNS: ${{ inputs.dns }}
         INPUT_TRANSPARENT: ${{ inputs.transparent }}
+        INPUT_TLS_INTERCEPT: ${{ inputs.tls-intercept }}
+        INPUT_ATTRIBUTION: ${{ inputs.attribution }}
+        INPUT_ATTRIBUTION_CMDLINE: ${{ inputs.attribution-cmdline }}
         INPUT_FAIL_FAST: ${{ inputs.fail-fast }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_MITMPROXY_VERSION: ${{ inputs.mitmproxy-version }}

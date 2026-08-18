@@ -85,6 +85,24 @@ def parse_nfw_log_file(path: str) -> list[dict]:
     return entries
 
 
+def _transport_of(protocol: str | None) -> str:
+    """Reduce a protocol label to the transport it runs over.
+
+    The two sources name things differently — the proxy records application
+    protocols ("https", "dns"), iptables records "TCP"/"UDP" — so they have to
+    be reduced to a common axis before entries can be compared. Anything
+    unrecognised falls back to TCP, matching the proxy's own default.
+    """
+    name = (protocol or "").lower()
+    if name in ("udp", "quic"):
+        return "udp"
+    if name == "dns":
+        # DNS is asked over UDP in practice; a TCP fallback would be recorded
+        # separately by the proxy anyway.
+        return "udp"
+    return "tcp"
+
+
 def merge_iptables_entries(
     iptables_entries: list[dict],
     existing_entries: list[dict],
@@ -108,20 +126,29 @@ def merge_iptables_entries(
         A new list containing all *existing_entries* followed by any
         non-duplicate *iptables_entries*.
     """
-    # Build a set of (ip, port) pairs from existing entries for fast lookup.
-    existing_keys: set[tuple[str, int]] = set()
+    # Keyed on transport as well as (ip, port). Without it, a UDP entry is
+    # discarded as a duplicate of a TCP one to the same destination — which
+    # hides essentially all QUIC, since an HTTP/3 client contacts a host over
+    # TCP/443 first and every subsequent UDP/443 datagram then looks like a
+    # repeat. Found by the bypass suite, which asserted UDP 443 was visible and
+    # it was not.
+    existing_keys: set[tuple[str, int, str]] = set()
     for entry in existing_entries:
         port = entry.get("port")
-        host = entry.get("host")
-        server_ip = entry.get("server_ip")
-        if host is not None and port is not None:
-            existing_keys.add((host, int(port)))
-        if server_ip is not None and port is not None:
-            existing_keys.add((server_ip, int(port)))
+        if port is None:
+            continue
+        transport = _transport_of(entry.get("protocol"))
+        for addr in (entry.get("host"), entry.get("server_ip")):
+            if addr is not None:
+                existing_keys.add((addr, int(port), transport))
 
     merged: list[dict] = list(existing_entries)
     for ipt_entry in iptables_entries:
-        key = (ipt_entry["dst_ip"], int(ipt_entry["dst_port"]))
+        key = (
+            ipt_entry["dst_ip"],
+            int(ipt_entry["dst_port"]),
+            _transport_of(ipt_entry.get("protocol")),
+        )
         if key not in existing_keys:
             merged.append(ipt_entry)
 

@@ -93,20 +93,56 @@ class MockRequest:
     """Minimal stand-in for ``mitmproxy.http.HTTPFlow.request``."""
 
     def __init__(self, scheme="https", host="example.com", port=443,
-                 path="/", method="GET", raw_content=b""):
+                 path="/", method="GET", raw_content=b"",
+                 content=None, headers=None):
         self.scheme = scheme
         self.host = host
         self.port = port
         self.path = path
         self.method = method
         self.raw_content = raw_content
+        # mitmproxy exposes the decoded body as .content (gzip/br already
+        # undone) and the wire bytes as .raw_content. Payload scanning wants
+        # the decoded form — a compressed body would otherwise hide a secret
+        # from every detector.
+        self.content = raw_content if content is None else content
+        self.headers = MockHeaders(headers)
+
+
+class MockHeaders(dict):
+    """Case-insensitive header lookup, as mitmproxy's ``Headers`` provides.
+
+    A plain dict would make ``headers.get("user-agent")`` miss a header the
+    client sent as ``User-Agent`` — production code that works would fail here,
+    which is the wrong way round for a test double.
+    """
+
+    def __init__(self, headers=None):
+        super().__init__(headers or {})
+        self._lower = {k.lower(): v for k, v in (headers or {}).items()}
+
+    def get(self, key, default=None):
+        return self._lower.get(key.lower(), default)
+
+    def __getitem__(self, key):
+        return self._lower[key.lower()]
+
+    def __contains__(self, key):
+        return key.lower() in self._lower
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._lower[key.lower()] = value
 
 
 class MockClientConn:
     """Minimal stand-in for ``mitmproxy.connection.Client``."""
 
-    def __init__(self, sni=None):
+    def __init__(self, sni=None, peername=None):
         self.sni = sni
+        # (ip, port). The port is the join key attribution uses against the
+        # kernel socket table; None mimics a connection mitmproxy has torn down.
+        self.peername = peername
 
 
 class MockCert:

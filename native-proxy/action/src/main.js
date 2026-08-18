@@ -70,6 +70,10 @@ async function main() {
     INPUT_PROXY_PORT: process.env["INPUT_PROXY-PORT"] || "8080",
     INPUT_DNS: process.env.INPUT_DNS || "true",
     INPUT_TRANSPARENT: process.env.INPUT_TRANSPARENT || "true",
+    // Dashed input name arrives as a dashed env key (INPUT_TLS-INTERCEPT).
+    INPUT_TLS_INTERCEPT: process.env["INPUT_TLS-INTERCEPT"] || "true",
+    INPUT_ATTRIBUTION: process.env.INPUT_ATTRIBUTION || "client",
+    INPUT_ATTRIBUTION_CMDLINE: process.env["INPUT_ATTRIBUTION-CMDLINE"] || "false",
     // Dashed input names map to dashed env keys (e.g. INPUT_FAIL-FAST).
     INPUT_FAIL_FAST: process.env["INPUT_FAIL-FAST"] || "false",
     INPUT_GITHUB_TOKEN: process.env["INPUT_GITHUB-TOKEN"] || "",

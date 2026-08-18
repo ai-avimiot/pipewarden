@@ -37,18 +37,24 @@ jobs:
       - name: Dispatch, wait, and report
         run: |
           set -euo pipefail
-          if [ -z "${GH_TOKEN:-}" ]; then
-            # Fail rather than skip. A green run here is read as "the release was
-            # smoke-tested"; exiting 0 without dispatching anything makes a
-            # no-op indistinguishable from a real pass, which is worse than no
-            # check at all.
+
+          # Shared because an absent token and an expired one need the same fix
+          # but fail at different points: the -z check below catches "not set",
+          # while an expired token sails past it and dies at the first dispatch.
+          # Before this was shared, that second path printed a bare
+          # "HTTP 401: Bad credentials" with no indication of what to do — which
+          # is exactly how the v1.4.1 release failed on 2026-08-07.
+          emit_token_help() {
             {
               echo "## Post-release smoke — NOT RUN"
               echo ""
-              echo "\`DEMO_SMOKE_TOKEN\` is not set, so the published release was **not** verified against \`${DEMO_REPO}\`."
+              echo "$1"
+              echo ""
+              echo "The published release was **not** verified against \`${DEMO_REPO}\`."
               echo ""
               echo "Fix: create a token with \`actions: write\` (and \`contents: read\`) on \`${DEMO_REPO}\`"
               echo "and add it as the \`DEMO_SMOKE_TOKEN\` secret on this repository, then re-run this workflow."
+              echo "Note the token's resource owner must be the \`${DEMO_REPO%%/*}\` organisation, not a personal account."
               echo ""
               echo "To verify by hand in the meantime:"
               echo ""
@@ -58,6 +64,14 @@ jobs:
               done
               echo '```'
             } >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            # Fail rather than skip. A green run here is read as "the release was
+            # smoke-tested"; exiting 0 without dispatching anything makes a
+            # no-op indistinguishable from a real pass, which is worse than no
+            # check at all.
+            emit_token_help "\`DEMO_SMOKE_TOKEN\` is not set."
             echo "::error title=Post-release smoke::DEMO_SMOKE_TOKEN not set — the release was NOT smoke-tested. Add a token with actions:write on ${DEMO_REPO}."
             exit 1
           fi
@@ -68,7 +82,14 @@ jobs:
           echo "Dispatching demo workflows in ${DEMO_REPO}..."
           for wf in ${WORKFLOWS}; do
             echo "  -> ${wf}"
-            gh workflow run "${wf}" --repo "${DEMO_REPO}" --ref main
+            # An expired token reaches here, not the -z check above, and gh
+            # reports only "HTTP 401: Bad credentials". Catch it so the run
+            # explains itself instead of leaving the reader to dig through logs.
+            if ! gh workflow run "${wf}" --repo "${DEMO_REPO}" --ref main; then
+              emit_token_help "Dispatching \`${wf}\` failed. The usual cause is an **expired** \`DEMO_SMOKE_TOKEN\` — an expired token passes the not-set check and fails here with \`HTTP 401: Bad credentials\`."
+              echo "::error title=Post-release smoke::Could not dispatch ${wf} to ${DEMO_REPO} — the release was NOT smoke-tested. Regenerate DEMO_SMOKE_TOKEN (likely expired)."
+              exit 1
+            fi
           done
 
           # Give the runs a moment to register, then resolve their run IDs.

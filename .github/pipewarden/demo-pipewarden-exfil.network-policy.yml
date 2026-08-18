@@ -1,0 +1,20 @@
+# Policy for the exfiltration-detection demo job (demo-pipewarden-enforce.yml).
+#
+# api.github.com is deliberately ALLOWLISTED: the scenario being proven is a
+# secret leaving through a destination the policy already permits — the case
+# destination-based enforcement cannot see. The demo POSTs a fake secret there
+# and asserts the request is blocked for its payload, not its destination.
+version: "2"
+mode: enforce
+
+exfiltration:
+  mode: block
+  detectors: [env-secrets, patterns]
+  watch_env: [PW_DEMO_FAKE_SECRET]
+
+rules:
+  - name: "GitHub API (allowlisted on purpose — the demo exfiltrates TO it)"
+    allow:
+      domains: ["api.github.com", "*.github.com"]
+      ports: [443]
+      protocols: [https]

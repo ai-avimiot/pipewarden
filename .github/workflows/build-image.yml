@@ -20,6 +20,16 @@ on:
       - 'runner/**'
       # Workflow itself
       - '.github/workflows/build-image.yml'
+  # Backstop for published-image freshness. Dependabot auto-merges land under
+  # GITHUB_TOKEN, and GitHub suppresses workflow triggers from GITHUB_TOKEN
+  # pushes (recursion guard) — so a merge touching proxy/** publishes no new
+  # image and :latest silently drifts behind main. Between 2026-07-29 and
+  # 2026-08-07 four such merges landed and no image was built.
+  #
+  # Breakage is caught earlier, at PR time, by the proxy-image job in test.yml;
+  # this only keeps the published images current.
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 env:

@@ -16,7 +16,17 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from policy.attribution import summarise as _summarise_attribution
+except ImportError:  # pragma: no cover - report generation must not depend on it
+    def _summarise_attribution(connections):
+        return {"attributed_connections": 0,
+                "unattributed_connections": len(connections), "actors": []}
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +63,20 @@ def read_jsonl(input_path: str) -> list[dict]:
     return connections
 
 
+def _attribution_hint(mode: str | None) -> str:
+    """Explain an unattributed count in terms of the mode that produced it.
+
+    Without this, "0 attributed" reads the same whether attribution was off,
+    was on and genuinely found nothing, or was asked for as ``process`` and
+    quietly downgraded to ``client`` because the helper could not start.
+    """
+    if mode == "off":
+        return " (attribution was off)"
+    if mode == "client":
+        return " (client mode names the User-Agent only; use attribution: process for names)"
+    return ""
+
+
 def build_report(connections: list[dict]) -> dict:
     """Build a report dict from a list of connection dicts."""
     # Separate DNS queries from other connections for counting
@@ -83,10 +107,66 @@ def build_report(connections: list[dict]) -> dict:
         # fail-on-block decision is made on.
         "total_blocked": blocked_connections + blocked_dns_queries,
         "dns_queries": len(dns_queries),
+        "tls_pinned": _build_pinning_summary(non_dns),
+        "exfiltration": _build_exfil_summary(non_dns),
+        "attribution": _summarise_attribution(non_dns),
         "access_summary": _build_access_summary(non_dns),
         "dns_summary": _build_dns_summary(dns_queries),
         "connections": connections,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_pinning_summary(connections: list[dict]) -> dict:
+    """Collect hosts whose clients refused interception (certificate pinning).
+
+    A pinned client produces a TLS handshake error inside the user's own build
+    step, with no hint that PipeWarden is the cause. Surfacing the hosts here —
+    with the two concrete escape hatches — turns an opaque failure into an
+    actionable one.
+    """
+    hosts = []
+    for c in connections:
+        if c.get("status") == "tls_pinned":
+            name = c.get("tls_sni") or c.get("host", "")
+            if name and name not in hosts:
+                hosts.append(name)
+    return {"count": len(hosts), "hosts": hosts}
+
+
+def _build_exfil_summary(connections: list[dict]) -> dict:
+    """Aggregate payload-scan findings so they surface, not just sit in raw
+    connection entries.
+
+    Without this, a finding in warn mode left the connection "allowed" and the
+    only trace was a nested field deep in the connections array — which made
+    the documented rollout advice ("run warn first and read the report")
+    point at information the report never showed. Labels are env var names or
+    pattern classes, never values, so aggregating them is safe by the same
+    argument that lets them be logged at all.
+    """
+    by_dest: dict[str, dict] = {}
+    total = 0
+    for c in connections:
+        findings = c.get("exfil_findings") or []
+        if not findings:
+            continue
+        total += 1
+        key = f"{c.get('host', 'unknown')}:{c.get('port', 0)}"
+        dest = by_dest.setdefault(
+            key,
+            {"host": c.get("host", "unknown"), "port": c.get("port", 0),
+             "connections": 0, "labels": [], "blocked": False},
+        )
+        dest["connections"] += 1
+        dest["blocked"] = dest["blocked"] or c.get("status") == "blocked"
+        for f in findings:
+            label = f"{f.get('detector', '?')}:{f.get('label', '?')}"
+            if label not in dest["labels"]:
+                dest["labels"].append(label)
+    return {
+        "connections_with_findings": total,
+        "destinations": list(by_dest.values()),
     }
 
 
@@ -387,6 +467,73 @@ def format_summary(report: dict) -> str:
         f"DNS queries:         {report.get('dns_queries', 0)}",
         "",
     ]
+    pinned = report.get("tls_pinned", {})
+    if pinned.get("count"):
+        lines.append(
+            f"CERTIFICATE PINNING detected on {pinned['count']} host(s) — "
+            f"these clients refused TLS interception:"
+        )
+        for host in pinned["hosts"]:
+            lines.append(f"  {host}")
+        lines.append(
+            "  Fix: exclude these hosts with `tls-passthrough`, or run the "
+            "action with `tls-intercept: false` if the whole workflow needs "
+            "pinning or client certificates."
+        )
+        lines.append("")
+
+    exfil = report.get("exfiltration", {})
+    if exfil.get("connections_with_findings"):
+        # The single most serious thing a run can find; it must never be
+        # buried, least of all in warn mode where the connection itself
+        # counted as "allowed".
+        lines.append(
+            f"SECRET MATERIAL DETECTED in {exfil['connections_with_findings']} "
+            f"request(s):"
+        )
+        for dest in exfil.get("destinations", []):
+            verdict = "blocked" if dest.get("blocked") else "NOT blocked (warn mode)"
+            lines.append(
+                f"  {dest['host']}:{dest['port']} — {', '.join(dest['labels'])} "
+                f"({dest['connections']}x, {verdict})"
+            )
+        lines.append("")
+
+    attribution = report.get("attribution", {})
+    actors = attribution.get("actors", [])
+    if not actors and attribution.get("unattributed_connections"):
+        # The section is otherwise skipped entirely when nothing was named,
+        # which is precisely the shape a failed helper produces — silence where
+        # the reader most needs to know attribution was not running.
+        hint = _attribution_hint(attribution.get("mode"))
+        if hint:
+            lines.append(
+                f"Who made these connections: none identified"
+                f"{hint}"
+            )
+            lines.append("")
+    if actors:
+        unattributed = attribution.get("unattributed_connections", 0)
+        lines.append(f"Who made these connections ({len(actors)} client(s)):")
+        lines.append("-" * 60)
+        for actor in actors:
+            flags = []
+            if actor.get("with_findings"):
+                flags.append(f"{actor['with_findings']} with secret findings")
+            if actor.get("blocked"):
+                flags.append(f"{actor['blocked']} blocked")
+            suffix = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(
+                f"  {actor['actor']} — {actor['connections']}x to "
+                f"{len(actor['destinations'])} destination(s){suffix}"
+            )
+        if unattributed:
+            lines.append(
+                f"  ({unattributed} connection(s) could not be attributed"
+                f"{_attribution_hint(attribution.get('mode'))})"
+            )
+        lines.append("")
+
     if report.get("discovery"):
         cp = report.get("commit_path") or "network-policy.yml"
         lines += [
@@ -544,6 +691,98 @@ def format_markdown_summary(report: dict) -> str:
         f"| DNS queries | {report.get('dns_queries', 0)} |",
         "",
     ]
+
+    pinned = report.get("tls_pinned", {})
+    if pinned.get("count"):
+        lines.append("### \U0001f512 Certificate pinning detected")
+        lines.append("")
+        lines.append(
+            "These clients refused the certificate PipeWarden presented — the "
+            "signature of certificate pinning or mutual TLS, which cannot be "
+            "intercepted:"
+        )
+        lines.append("")
+        for host in pinned["hosts"]:
+            lines.append(f"- `{_md(host)}`")
+        lines.append("")
+        lines.append(
+            "> Exclude these hosts with `tls-passthrough`, or set "
+            "`tls-intercept: false` on the action if the whole workflow needs "
+            "pinning or client certificates. See "
+            "[Certificate pinning & mTLS](README.md#certificate-pinning-and-mtls)."
+        )
+        lines.append("")
+
+    exfil = report.get("exfiltration", {})
+    if exfil.get("connections_with_findings"):
+        # Above the fold and never inside a <details>: in warn mode this is
+        # the only visible trace of a detected leak, because the connection
+        # itself still counted as allowed.
+        lines.append("### \U0001f6a8 Secret material detected in outbound requests")
+        lines.append("")
+        lines.append("| Destination | Findings | Requests | Outcome |")
+        lines.append("|-------------|----------|---------:|---------|")
+        for dest in exfil.get("destinations", []):
+            outcome = (
+                "\U0001f6ab blocked" if dest.get("blocked")
+                else "⚠️ **not blocked** (warn mode)"
+            )
+            labels = ", ".join(_md(label) for label in dest.get("labels", []))
+            lines.append(
+                f"| `{_md(dest['host'])}:{dest['port']}` | {labels} "
+                f"| {dest['connections']} | {outcome} |"
+            )
+        lines.append("")
+        lines.append(
+            "> Labels name the watched variable or credential class — the "
+            "value itself is never recorded. If this destination is *meant* "
+            "to receive credentials, add `allow_request_body: true` to its "
+            "rule."
+        )
+        lines.append("")
+
+    attribution = report.get("attribution", {})
+    actors = attribution.get("actors", [])
+    if not actors and attribution.get("unattributed_connections"):
+        hint = _attribution_hint(attribution.get("mode"))
+        if hint:
+            lines.append(f"> No connection could be attributed to a client{hint}.")
+            lines.append("")
+    if actors:
+        lines.append("<details>")
+        lines.append(
+            f"<summary>\U0001f464 Who made these connections ({len(actors)})</summary>"
+        )
+        lines.append("")
+        lines.append("| Client / process | Requests | Destinations | Source |")
+        lines.append("|------------------|---------:|-------------:|--------|")
+        for actor in actors:
+            note = ""
+            if actor.get("with_findings"):
+                note = " \U0001f6a8"
+            elif actor.get("blocked"):
+                note = " \U0001f6ab"
+            lines.append(
+                f"| `{_md(actor['actor'])}`{note} | {actor['connections']} "
+                f"| {len(actor['destinations'])} | {_md(actor.get('source', ''))} |"
+            )
+        lines.append("")
+        unattributed = attribution.get("unattributed_connections", 0)
+        if unattributed:
+            lines.append(
+                f"> {unattributed} connection(s) could not be attributed"
+                f"{_attribution_hint(attribution.get('mode'))}. A client that "
+                "exits immediately leaves no process to identify, and one that "
+                "sends no `User-Agent` names itself to nobody."
+            )
+        else:
+            lines.append(
+                "> `user-agent` is self-reported by the client; `proc` and "
+                "`audit` name the process the kernel saw."
+            )
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     if cert_warnings:
         lines.append("### \u26a0\ufe0f TLS Certificate Warnings")
@@ -750,17 +989,22 @@ def generate_complete_policy_yaml(report: dict) -> str:
 def generate_report(input_path: str, output_dir: str,
                     policy_path: str | None = None,
                     mode: str | None = None,
-                    commit_path: str | None = None) -> dict:
+                    commit_path: str | None = None,
+                    attribution_mode: str | None = None) -> dict:
     """Read JSONL log, produce report.json, summary.txt, summary.md.
 
     If policy_path is provided, also runs policy analysis (dry-run mode).
     ``mode`` ("monitor"/"enforce") drives the report banner; ``commit_path`` is
     the suggested location to commit the generated policy (discovery mode).
-    Returns the report dict.
+    ``attribution_mode`` is the mode that was actually in effect, which is not
+    always the one that was asked for — setup downgrades to ``client`` when the
+    helper cannot start. Returns the report dict.
     """
     connections = read_jsonl(input_path)
     report = build_report(connections)
     _enrich_destinations(report)
+    if attribution_mode:
+        report["attribution"]["mode"] = attribution_mode
     report["run_mode"] = mode or "monitor"
     report["discovery"] = policy_path is None
     report["commit_path"] = commit_path or "network-policy.yml"
@@ -816,11 +1060,14 @@ def main():
     parser.add_argument("--policy", default=None, help="Path to network-policy.yml for dry-run analysis")
     parser.add_argument("--mode", default=None, help="Run mode: monitor or enforce (for the report banner)")
     parser.add_argument("--commit-path", default=None, help="Suggested path to commit the generated policy")
+    parser.add_argument("--attribution-mode", default=None,
+                        help="Attribution mode actually in effect: off, client or process")
     args = parser.parse_args()
 
     report = generate_report(
         args.input, args.output, policy_path=args.policy,
         mode=args.mode, commit_path=args.commit_path,
+        attribution_mode=args.attribution_mode,
     )
     print(format_summary(report))
 

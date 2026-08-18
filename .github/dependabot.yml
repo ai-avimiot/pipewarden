@@ -111,11 +111,20 @@ updates:
     # pyopenssl 26.3+ requires cryptography>=49, so it is capped transitively.
     # Without these, /proxy generates the same dead PRs /requirements already
     # suppresses (#107 cryptography 49.0.0, #112 cryptography 50.0.0).
+    #
+    # typing-extensions is capped at mitmproxy's <=4.14 and must stay there.
+    # Dependabot does not only propose lock bumps here — it rewrites the
+    # *constraint* to "permit the latest version" (#115 raised the cap to
+    # <=4.16.0 and edited the explanatory comment to claim mitmproxy allows
+    # it, which it does not). A ceiling dictated by the base image cannot be
+    # inferred from what the package has published, so it is ignored outright.
     ignore:
       - dependency-name: "cryptography"
         versions: [">=49"]
       - dependency-name: "pyopenssl"
         versions: [">=26.3"]
+      - dependency-name: "typing-extensions"
+        versions: [">4.14"]
 
   - package-ecosystem: "npm"
     directory: "/native-proxy/action"

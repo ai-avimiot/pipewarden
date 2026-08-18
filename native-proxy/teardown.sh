@@ -18,12 +18,19 @@ MODE="${NFW_MODE:-monitor}"
 POLICY_FILE="${NFW_POLICY_FILE:-}"
 ACTION_PATH="${NFW_ACTION_PATH:-${INPUT_ACTION_PATH:-.}}"
 TRANSPARENT="${NFW_TRANSPARENT:-false}"
+# A conntrack LOG rule may be live even when not transparent: the
+# tls-intercept=false path logs connections without a proxy or a redirect.
+CONN_LOGGING="${NFW_CONN_LOGGING:-${TRANSPARENT}}"
 FAIL_ON_BLOCK="${NFW_FAIL_ON_BLOCK:-true}"
 PROXY_PORT="${NFW_PROXY_PORT:-8080}"
 FORWARD_LOG="${NFW_FORWARD_LOG:-false}"
 IP6TABLES="${NFW_IP6TABLES:-false}"
 BLINDSPOT_IPV6="${NFW_BLINDSPOT_IPV6:-false}"
 BLINDSPOT_DOCKER="${NFW_BLINDSPOT_DOCKER:-false}"
+ATTRIBUTION_MODE="${NFW_ATTRIBUTION_MODE:-off}"
+ATTRIBUTION_SOCKET="${NFW_ATTRIBUTION_SOCKET:-/tmp/nfw-attribution.sock}"
+ATTRIBUTION_EVENTS="${NFW_ATTRIBUTION_EVENTS:-/tmp/nfw-attribution-events.jsonl}"
+ATTRIBUTION_PID_FILE="${NFW_ATTRIBUTION_PID_FILE:-/tmp/nfw-attribution.pid}"
 
 # The project root is one level up from native-proxy/
 PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
@@ -116,6 +123,15 @@ if [ "${TRANSPARENT}" = "true" ]; then
     fi
     echo "iptables rules removed"
     echo "::endgroup::"
+elif [ "${CONN_LOGGING}" = "true" ]; then
+    # tls-intercept=false: only the plain conntrack LOG rules were added (no
+    # redirect, no proxy-user exemption), so only those need removing.
+    echo "::group::PipeWarden: Remove connection-log rules"
+    sudo iptables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null || true
+    if command -v ip6tables &>/dev/null; then
+        sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true
+    fi
+    echo "::endgroup::"
 fi
 
 # ---------------------------------------------------------------------------
@@ -155,9 +171,12 @@ if [ ! -f "${CONN_LOG}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3.5. Parse iptables connection logs (transparent mode only)
+# 3.5. Parse iptables connection logs (whenever a LOG rule was live)
 # ---------------------------------------------------------------------------
-if [ "${TRANSPARENT}" = "true" ]; then
+# Runs for transparent mode and for tls-intercept=false, where conntrack is the
+# only source of connection data — without this that mode's report would be
+# empty of everything the DNS server did not see.
+if [ "${CONN_LOGGING}" = "true" ]; then
     echo "::group::PipeWarden: Parse iptables connection logs"
     python3 -c "
 import sys, json, os
@@ -209,10 +228,83 @@ else:
 fi
 
 # ---------------------------------------------------------------------------
+# 3.6. Stop the attribution helper and merge its connect() events
+# ---------------------------------------------------------------------------
+# Stopped before the merge so the events file is complete and nothing is still
+# appending to it. SIGTERM rather than SIGKILL: the helper deletes its audit
+# rule on the way out, and a rule left installed outlives the job that added
+# it — removal is the contract for touching the audit subsystem at all.
+if [ -f "${ATTRIBUTION_PID_FILE}" ]; then
+    echo "::group::PipeWarden: Stop attribution helper"
+    sudo kill -TERM "$(cat "${ATTRIBUTION_PID_FILE}")" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+        pgrep -f "attribution_helper.py" > /dev/null 2>&1 || break
+        sleep 0.3
+    done
+    if pgrep -f "attribution_helper.py" > /dev/null 2>&1; then
+        echo "Warning: attribution helper did not exit on SIGTERM — forcing"
+        sudo pkill -KILL -f "attribution_helper.py" 2>/dev/null || true
+    fi
+    sudo rm -f "${ATTRIBUTION_PID_FILE}" 2>/dev/null || true
+    echo "::endgroup::"
+fi
+
+# Attaches a process name to rows the proxy never saw. The conntrack entries
+# merged above carry addresses and a uid but never a process, and under
+# tls-intercept=false they are the whole connection log — so without this that
+# mode's report can say where traffic went but never what sent it.
+if [ -s "${ATTRIBUTION_EVENTS}" ]; then
+    echo "::group::PipeWarden: Attribute connections"
+    python3 -c "
+import sys, json
+sys.path.insert(0, '${PROJECT_ROOT}')
+from policy.attribution import apply_events
+
+events = []
+with open('${ATTRIBUTION_EVENTS}', 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+conn_log = '${LOG_DIR}/connections.jsonl'
+connections = []
+with open(conn_log, 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            connections.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+attached = apply_events(connections, events)
+if attached:
+    # Safe to rewrite rather than append: the proxy is stopped, so nothing
+    # else holds this file open.
+    with open(conn_log, 'w') as f:
+        for conn in connections:
+            f.write(json.dumps(conn) + '\n')
+print(f'Attributed {attached} connection(s) from {len(events)} connect() event(s)')
+" || echo "Warning: Failed to merge attribution events"
+    echo "::endgroup::"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Generate report
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Generate report"
+# The mode setup exported is the one that ended up in effect, which is not
+# always the one that was asked for: a helper that fails to start downgrades
+# process to client. Recording it is what separates "nothing to attribute" from
+# "attribution was not running".
 REPORT_ARGS="--input ${CONN_LOG} --output ${REPORT_DIR} --mode ${MODE:-monitor}"
+REPORT_ARGS="${REPORT_ARGS} --attribution-mode ${ATTRIBUTION_MODE}"
 if [ -n "${NFW_PIPELINE_POLICY:-}" ]; then
     REPORT_ARGS="${REPORT_ARGS} --commit-path ${NFW_PIPELINE_POLICY}"
 fi
@@ -412,6 +504,19 @@ echo "::group::PipeWarden: Cleanup"
 rm -rf "${CA_DIR}"
 sudo rm -f /usr/local/share/ca-certificates/nfw-ca.crt
 sudo update-ca-certificates > /dev/null 2>&1 || true
+
+# Watched secret values handed to the proxy for payload scanning. Written 0600
+# and owned by pipewardenuser, but they must not outlive the job that needed
+# them — later steps run on the same runner.
+sudo rm -f "${NFW_WATCH_SECRETS_FILE:-/tmp/nfw-watch-secrets.json}" 2>/dev/null || true
+
+# Attribution helper artifacts. The events file can name processes and, when
+# attribution-cmdline was on, carry redacted command lines — job-scoped data
+# that later steps on the same runner have no business reading.
+sudo rm -f "${ATTRIBUTION_SOCKET}" "${ATTRIBUTION_EVENTS}" 2>/dev/null || true
+# Belt and braces: if the pid file was lost the helper would otherwise survive
+# teardown, still holding an audit rule.
+sudo pkill -f "attribution_helper.py" 2>/dev/null || true
 
 # Unset proxy env vars for subsequent steps
 if [ -n "${GITHUB_ENV:-}" ]; then

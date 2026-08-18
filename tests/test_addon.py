@@ -2,8 +2,13 @@
 
 import json
 import os
+import socket
 import ssl
+import sys
+import time
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from proxy.addon import (
     NetworkMonitorAddon,
@@ -22,6 +27,8 @@ from tests.conftest import (
     MockTCPFlow,
     MockTCPMessage,
 )
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _self_signed_pem(cn: str = "evil.test", sans: list[str] | None = None) -> bytes:
@@ -849,3 +856,564 @@ class TestPolicyFileResolution:
 
         assert addon.init_error is not None
         assert addon.engine.rules == []
+
+
+class TestExfiltrationDetection:
+    """Payload scanning wired into the request path.
+
+    The case that matters is an allowlisted destination: destination-based
+    enforcement has already said yes, so if a secret leaves here, only reading
+    the payload can catch it.
+    """
+
+    SECRET = "supersecretvalue123456"
+
+    def _policy(self, tmp_path, mode="block", extra_rule="", scan_headers=False):
+        content = f"""
+version: "2"
+mode: enforce
+exfiltration:
+  mode: {mode}
+  detectors: [env-secrets, patterns]
+  watch_env: [MY_TOKEN]
+  scan_headers: {str(scan_headers).lower()}
+rules:
+  - name: "Allowed host"
+    allow:
+      domains: ["allowed.example.com"]
+      ports: [443]
+      protocols: [https]
+{extra_rule}
+"""
+        path = tmp_path / "policy.yml"
+        path.write_text(content, encoding="utf-8")
+        return str(path)
+
+    def _addon(self, tmp_path, log_file, monkeypatch, **kw):
+        monkeypatch.setenv("MY_TOKEN", self.SECRET)
+        return NetworkMonitorAddon(
+            policy_file=self._policy(tmp_path, **kw),
+            mode="enforce",
+            log_path=log_file,
+        )
+
+    def _post(self, body: bytes, host="allowed.example.com"):
+        return MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host=host, port=443,
+                path="/upload", method="POST", raw_content=body,
+            )
+        )
+
+    def test_secret_to_allowlisted_host_is_blocked(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        flow = self._post(f'{{"data":"{self.SECRET}"}}'.encode())
+
+        addon.request(flow)
+
+        assert flow.response is not None, "expected the request to be blocked"
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "blocked"
+        assert entry["exfil_findings"][0]["label"] == "MY_TOKEN"
+
+    def test_clean_request_to_same_host_passes(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        flow = self._post(b'{"data":"nothing interesting"}')
+
+        addon.request(flow)
+
+        assert flow.response is None
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "allowed"
+        assert "exfil_findings" not in entry
+
+    def test_warn_mode_records_but_does_not_block(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch, mode="warn")
+        flow = self._post(f'{{"data":"{self.SECRET}"}}'.encode())
+
+        addon.request(flow)
+
+        assert flow.response is None, "warn mode must not block"
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "allowed"
+        assert entry["exfil_findings"][0]["label"] == "MY_TOKEN"
+
+    def test_off_by_default_for_v1_policies(self, tmp_path, log_file, monkeypatch):
+        monkeypatch.setenv("MY_TOKEN", self.SECRET)
+        path = tmp_path / "v1.yml"
+        path.write_text(
+            'version: "1"\nmode: enforce\nrules:\n'
+            '  - name: "Allowed host"\n    allow:\n'
+            '      domains: ["allowed.example.com"]\n'
+            "      ports: [443]\n      protocols: [https]\n",
+            encoding="utf-8",
+        )
+        addon = NetworkMonitorAddon(
+            policy_file=str(path), mode="enforce", log_path=log_file
+        )
+        flow = self._post(f'{{"data":"{self.SECRET}"}}'.encode())
+
+        addon.request(flow)
+
+        assert flow.response is None
+        assert "exfil_findings" not in _read_log_entries(log_file)[0]
+
+    def test_per_rule_opt_out_skips_scanning(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        extra = """  - name: "Secrets manager"
+    allow_request_body: true
+    allow:
+      domains: ["vault.example.com"]
+      ports: [443]
+      protocols: [https]
+"""
+        addon = self._addon(tmp_path, log_file, monkeypatch, extra_rule=extra)
+        flow = self._post(
+            f'{{"data":"{self.SECRET}"}}'.encode(), host="vault.example.com"
+        )
+
+        addon.request(flow)
+
+        assert flow.response is None
+        assert "exfil_findings" not in _read_log_entries(log_file)[0]
+
+    def test_secret_in_query_string_is_caught(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """_redact_path strips the query before logging, so this is the only
+        place it can still be examined."""
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        flow = MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host="allowed.example.com", port=443,
+                path=f"/x?token={self.SECRET}", method="GET",
+            )
+        )
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "blocked"
+        assert entry["exfil_findings"][0]["label"] == "MY_TOKEN"
+
+    def test_secret_in_header_is_caught_when_opted_in(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch, scan_headers=True)
+        flow = MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host="allowed.example.com", port=443,
+                path="/x", method="GET",
+                headers={"X-Custom-Auth": self.SECRET},
+            )
+        )
+
+        addon.request(flow)
+
+        assert _read_log_entries(log_file)[0]["status"] == "blocked"
+
+    def test_known_token_shape_caught_without_env_watch(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        pat = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        flow = self._post(f'{{"t":"{pat}"}}'.encode())
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "blocked"
+        assert entry["exfil_findings"][0]["label"] == "github-pat"
+
+    def test_log_never_contains_the_secret(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """connections.jsonl is uploaded as a build artifact. A detector that
+        recorded its match would publish the credential more conveniently than
+        the exfiltration attempt it caught."""
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        addon.request(self._post(f'{{"data":"{self.SECRET}"}}'.encode()))
+
+        raw = open(log_file, encoding="utf-8").read()
+        assert self.SECRET not in raw
+        assert "MY_TOKEN" in raw  # the label names the source, not the value
+
+    def test_monitor_mode_never_blocks_on_findings(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """Monitor mode is a promise not to interfere; a finding must not
+        become the one thing that breaks the build."""
+        monkeypatch.setenv("MY_TOKEN", self.SECRET)
+        addon = NetworkMonitorAddon(
+            policy_file=self._policy(tmp_path),
+            mode="monitor",
+            log_path=log_file,
+        )
+        flow = self._post(f'{{"data":"{self.SECRET}"}}'.encode())
+
+        addon.request(flow)
+
+        assert flow.response is None
+
+    def test_auth_header_to_allowlisted_host_passes_by_default(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """A credential sent to the service it belongs to is authentication,
+        not exfiltration. Scanning headers by default 403'd every
+        `Authorization: Bearer` to an allowlisted host — plain gh/git/upload
+        traffic — under the documented recommended config."""
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        flow = MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host="allowed.example.com", port=443,
+                path="/repos", method="GET",
+                headers={"Authorization": f"Bearer {self.SECRET}"},
+            )
+        )
+
+        addon.request(flow)
+
+        assert flow.response is None
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "allowed"
+        assert "exfil_findings" not in entry
+
+    def test_pattern_shaped_auth_header_also_passes_by_default(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        ghs = "ghs_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        flow = MockHTTPFlow(
+            request=MockRequest(
+                scheme="https", host="allowed.example.com", port=443,
+                path="/", method="GET",
+                headers={"Authorization": f"Bearer {ghs}"},
+            )
+        )
+
+        addon.request(flow)
+
+        assert flow.response is None
+
+    def test_body_is_still_scanned_with_headers_off(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """Turning headers off must not soften the body path — the body is
+        the exfiltration carrier that matters."""
+        addon = self._addon(tmp_path, log_file, monkeypatch)
+        flow = self._post(f'{{"data":"{self.SECRET}"}}'.encode())
+
+        addon.request(flow)
+
+        assert _read_log_entries(log_file)[0]["status"] == "blocked"
+
+    def test_opt_out_survives_a_broader_rule_listed_first(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """Policies routinely put a wildcard rule ahead of the specific one.
+        First-match semantics made allow_request_body silently inert in
+        exactly that ordinary layout."""
+        extra = """  - name: "Everything on example.com"
+    allow:
+      domains: ["*.example.com"]
+      ports: [443]
+      protocols: [https]
+  - name: "Secrets manager"
+    allow_request_body: true
+    allow:
+      domains: ["vault.example.com"]
+      ports: [443]
+      protocols: [https]
+"""
+        addon = self._addon(tmp_path, log_file, monkeypatch, extra_rule=extra)
+        flow = self._post(
+            f'{{"data":"{self.SECRET}"}}'.encode(), host="vault.example.com"
+        )
+
+        addon.request(flow)
+
+        assert flow.response is None, (
+            "allow_request_body must hold whichever matching rule carries it"
+        )
+        assert "exfil_findings" not in _read_log_entries(log_file)[0]
+
+    def test_v1_policy_with_exfiltration_block_fails_closed(
+        self, tmp_path, log_file, monkeypatch,
+    ):
+        """The author wrote the block expecting payload scanning; running
+        green without it is the outcome the refusal exists to prevent."""
+        monkeypatch.setenv("MY_TOKEN", self.SECRET)
+        path = tmp_path / "v1-exfil.yml"
+        path.write_text(
+            'version: "1"\nmode: enforce\nexfiltration:\n  mode: block\n'
+            "rules: []\n",
+            encoding="utf-8",
+        )
+        addon = NetworkMonitorAddon(
+            policy_file=str(path), mode="enforce", log_path=log_file
+        )
+        assert addon.init_error is not None
+        assert "version 2" in addon.init_error
+
+
+# ------------------------------------------------------------------
+# Client / process attribution
+# ------------------------------------------------------------------
+
+class TestAttribution:
+    """Who made the connection — see policy/attribution.py.
+
+    The User-Agent tier is readable only because PipeWarden terminates TLS, so
+    these assertions cover a capability a passive network monitor cannot have.
+    """
+
+    def test_user_agent_is_recorded(self, sample_policy_file, log_file):
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        flow = MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+            headers={"User-Agent": "npm/10.2.4 node/v20.11.0 linux x64"},
+        ))
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["attribution"]["client"] == "npm/10.2.4"
+        assert entry["attribution"]["source"] == "user-agent"
+
+    def test_absent_user_agent_leaves_no_key(self, sample_policy_file, log_file):
+        """An empty attribution must not cost a key on every connection."""
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+        )))
+        assert "attribution" not in _read_log_entries(log_file)[0]
+
+    def test_blocked_request_is_still_attributed(self, sample_policy_file, log_file):
+        """The blocked connection is the one whose author matters most."""
+        addon = _make_addon(sample_policy_file, mode="enforce", log_path=log_file)
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="evil.example.com", port=443, path="/",
+            headers={"User-Agent": "curl/8.5.0"},
+        )))
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "blocked"
+        assert entry["attribution"]["client"] == "curl/8.5.0"
+
+    def test_header_lookup_is_case_insensitive_when_headers_are(
+        self, sample_policy_file, log_file,
+    ):
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+            headers={"user-agent": "pip/24.0"},
+        )))
+        entry = _read_log_entries(log_file)[0]
+        assert entry.get("attribution", {}).get("client") == "pip/24.0"
+
+    def test_hostile_user_agent_cannot_break_out_of_a_report_cell(
+        self, sample_policy_file, log_file,
+    ):
+        """A User-Agent is whatever the client typed, and it reaches Markdown."""
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+            headers={"User-Agent": "evil|`<script>`|x [link](http://x)"},
+        )))
+        client = _read_log_entries(log_file)[0].get("attribution", {}).get("client", "")
+        for char in "<>|`[]()":
+            assert char not in client
+
+    def test_mode_off_records_nothing(self, sample_policy_file, log_file, monkeypatch):
+        monkeypatch.setenv("ATTRIBUTION_MODE", "off")
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+            headers={"User-Agent": "npm/10.2.4"},
+        )))
+        assert "attribution" not in _read_log_entries(log_file)[0]
+
+    def test_process_mode_without_a_socket_falls_back_to_client(
+        self, sample_policy_file, log_file, monkeypatch,
+    ):
+        """Losing process detail must not lose the free tier with it."""
+        monkeypatch.setenv("ATTRIBUTION_MODE", "process")
+        monkeypatch.delenv("ATTRIBUTION_SOCKET", raising=False)
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        assert addon.attribution_cfg.mode == "client"
+
+        addon.request(MockHTTPFlow(MockRequest(
+            scheme="https", host="api.github.com", port=443, path="/repos",
+            headers={"User-Agent": "npm/10.2.4"},
+        )))
+        assert _read_log_entries(log_file)[0]["attribution"]["client"] == "npm/10.2.4"
+
+    def test_unreachable_helper_does_not_break_the_request(
+        self, sample_policy_file, log_file, monkeypatch, tmp_path,
+    ):
+        """Attribution is diagnostics; egress control must survive its loss."""
+        monkeypatch.setenv("ATTRIBUTION_MODE", "process")
+        monkeypatch.setenv("ATTRIBUTION_SOCKET", str(tmp_path / "absent.sock"))
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+
+        for _ in range(3):
+            addon.request(MockHTTPFlow(MockRequest(
+                scheme="https", host="api.github.com", port=443, path="/repos",
+                headers={"User-Agent": "npm/10.2.4"},
+            )))
+
+        entries = _read_log_entries(log_file)
+        assert len(entries) == 3
+        assert all(e["status"] == "allowed" for e in entries)
+        assert all(e["attribution"]["client"] == "npm/10.2.4" for e in entries)
+
+    def test_tcp_flow_is_attributed(self, sample_policy_file, log_file):
+        """Raw TCP is where process attribution earns its keep: nothing else
+        in the entry says what made the connection."""
+        addon = _make_addon(sample_policy_file, log_path=log_file)
+        addon.tcp_message(MockTCPFlow())
+        # No User-Agent exists for raw TCP, so this stays absent without a helper.
+        assert "attribution" not in _read_log_entries(log_file)[0]
+
+class TestAttributionAgainstALiveHelper:
+    """The addon and the helper, running together over a real unix socket.
+
+    Every other test stops at one side of this seam: the helper is exercised
+    against its own sockets and the addon against the ``User-Agent`` header. The
+    one bug that made process attribution return nothing at all lived precisely
+    here — in what the addon asks for versus what the helper is willing to
+    answer — and neither side's tests could see it.
+
+    Linux only: the lookup reads the kernel socket table through ``/proc``.
+    """
+
+    @staticmethod
+    def _start_helper(tmp_path):
+        import subprocess
+        import time
+
+        sock = str(tmp_path / "helper.sock")
+        proc = subprocess.Popen(
+            [sys.executable,
+             os.path.join(REPO_ROOT, "scripts", "attribution_helper.py"),
+             "--socket", sock, "--no-audit"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if os.path.exists(sock):
+                return proc, sock
+            time.sleep(0.05)
+        proc.terminate()
+        pytest.skip("helper did not come up")
+
+    @pytest.fixture
+    def live_helper(self, tmp_path, monkeypatch):
+        if not os.path.exists("/proc/net/tcp"):
+            pytest.skip("needs a real /proc socket table")
+        proc, sock = self._start_helper(tmp_path)
+        monkeypatch.setenv("ATTRIBUTION_MODE", "process")
+        monkeypatch.setenv("ATTRIBUTION_SOCKET", sock)
+        try:
+            yield sock
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    @staticmethod
+    def _connected_port():
+        """A live client socket, so the helper has a row in /proc to find."""
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        cli = socket.socket()
+        cli.connect(srv.getsockname())
+        return cli, srv, cli.getsockname()[1]
+
+    def test_the_helper_names_the_process_behind_a_request(
+            self, live_helper, sample_policy_file, log_file):
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        assert addon.attribution_cfg.mode == "process"
+        cli, srv, port = self._connected_port()
+        try:
+            addon.request(MockHTTPFlow(
+                MockRequest(scheme="https", host="api.github.com", port=443,
+                            path="/repos", headers={"User-Agent": "curl/8.5.0"}),
+                client_conn=MockClientConn(peername=("127.0.0.1", port)),
+            ))
+        finally:
+            cli.close()
+            srv.close()
+        att = _read_log_entries(log_file)[0]["attribution"]
+        assert att["source"] == "proc"
+        assert att["pid"] == os.getpid()
+        # The kernel answer joins the self-reported one rather than replacing
+        # it: which tool it claims to be is worth keeping next to what it is.
+        assert att["client"] == "curl/8.5.0"
+
+    def test_raw_tcp_is_named_when_nothing_else_can_name_it(
+            self, live_helper, sample_policy_file, log_file):
+        """No User-Agent exists here, so this is the privileged tier alone."""
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        cli, srv, port = self._connected_port()
+        flow = MockTCPFlow()
+        flow.client_conn = MockClientConn(peername=("127.0.0.1", port))
+        try:
+            addon.tcp_message(flow)
+        finally:
+            cli.close()
+            srv.close()
+        att = _read_log_entries(log_file)[0]["attribution"]
+        assert att["pid"] == os.getpid()
+        assert att["source"] == "proc"
+
+    def test_a_port_nobody_owns_falls_back_instead_of_failing(
+            self, live_helper, sample_policy_file, log_file):
+        """A client that exited before the lookup is routine, not a failure.
+
+        Counting it as one would make the addon give up on a helper that is
+        working perfectly, on nothing worse than a short-lived curl.
+        """
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        addon.request(MockHTTPFlow(
+            MockRequest(scheme="https", host="api.github.com", port=443,
+                        path="/x", headers={"User-Agent": "npm/10.2.4"}),
+            client_conn=MockClientConn(peername=("127.0.0.1", 1)),
+        ))
+        att = _read_log_entries(log_file)[0]["attribution"]
+        assert att["client"] == "npm/10.2.4"
+        assert att["source"] == "user-agent"
+        assert addon._attribution_failures == 0
+
+    def test_a_helper_that_dies_degrades_instead_of_stalling_the_job(
+            self, tmp_path, monkeypatch, sample_policy_file, log_file):
+        """Attribution is reporting; losing it must not cost traffic or time."""
+        if not os.path.exists("/proc/net/tcp"):
+            pytest.skip("needs a real /proc socket table")
+        proc, sock = self._start_helper(tmp_path)
+        proc.terminate()
+        proc.wait(timeout=10)
+        monkeypatch.setenv("ATTRIBUTION_MODE", "process")
+        monkeypatch.setenv("ATTRIBUTION_SOCKET", sock)
+
+        addon = _make_addon(sample_policy_file, mode="monitor", log_path=log_file)
+        started = time.monotonic()
+        for i in range(12):
+            addon.request(MockHTTPFlow(
+                MockRequest(scheme="https", host="api.github.com", port=443,
+                            path=f"/{i}", headers={"User-Agent": "curl/8.5.0"}),
+                # Distinct ports: an unanswered port is cached like any other,
+                # so repeating one would never reach the give-up threshold.
+                client_conn=MockClientConn(peername=("127.0.0.1", 40000 + i)),
+            ))
+        assert time.monotonic() - started < 10
+        assert addon._attribution_failures >= 5
+
+        entries = _read_log_entries(log_file)
+        assert len(entries) == 12
+        assert all(e["status"] == "allowed" for e in entries)
+        assert all(e["attribution"]["client"] == "curl/8.5.0" for e in entries)
