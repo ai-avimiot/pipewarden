@@ -195,9 +195,13 @@ jobs:
 
       - name: "A direct query to an external resolver is refused"
         run: |
-          # Must fail. dig exits 9 when it gets no usable reply; a 0 here means
-          # the query reached 1.1.1.1 and the gap is still open.
-          if timeout 10 dig +short +tries=1 +time=3 @1.1.1.1 example.com A 2>/dev/null | grep -qE '[0-9]+\.[0-9]+'; then
+          # Anchored to a whole IPv4 address on its own line. `dig +short`
+          # writes its failure to STDOUT, not stderr — ";; communications error
+          # to 1.1.1.1#53: connection refused" — so a looser pattern matches the
+          # error message's own IP and reports the reject as a success.
+          out=$(timeout 10 dig +short +tries=1 +time=3 @1.1.1.1 example.com A 2>/dev/null || true)
+          echo "dig stdout: ${out}"
+          if printf '%s\n' "${out}" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
             echo "::error::direct DNS to an external resolver still succeeded"; exit 1
           fi
           echo "OK: direct external DNS refused"
