@@ -71,6 +71,7 @@ A blocked connection fails the job by default (the pipeline stops); `fail-on-blo
 **Blocked / inspected**
 - TCP HTTP on 80 and HTTPS on 443 (IPv4, host netns) — TLS-terminated, matched against policy, blocked when disallowed. This is the primary path and covers the overwhelming majority of CI egress.
 - QUIC / HTTP-3 (UDP 443) and DNS-over-TLS/QUIC (853) — **rejected** in enforce mode so clients fall back to the interceptable TCP path (they are not proxy-inspected themselves).
+- Plain DNS (TCP/UDP 53) to anything other than the local interceptor — **rejected** in enforce mode when `dns: true`, for every user except root. `resolv.conf` points at the interceptor, but that is a default rather than a control: a step addressing `8.8.8.8` directly resolved names that never appeared in the DNS log. Root is exempt because the interceptor itself forwards upstream on that port as root. Note what this does and does not change: resolving a name elsewhere never granted egress in the first place, because enforcement happens at connection time against the SNI, not at resolution time. This closes a **visibility** gap, not a bypass.
 - IPv6 HTTP/HTTPS/DoT — **rejected** in enforce mode (the proxy is IPv4-only, so uninspected IPv6 egress is failed closed rather than allowed through).
 
 **Logged but NOT blocked or TLS-inspected** (visible as IP/port metadata in the report; each raises a `::warning::` and a `health.json` flag so it is never silent)
@@ -80,6 +81,7 @@ A blocked connection fails the job by default (the pipeline stops); `fail-on-blo
 
 **Not covered**
 - Any code able to run as the `pipewardenuser` UID (e.g. `sudo -u pipewardenuser`, which passwordless-sudo runners allow) is exempt from the redirect by design and can reach 443 directly.
+- **Connections already established when PipeWarden starts.** The redirect is a `nat` rule, which the kernel consults once per connection, and the conntrack logging matches `--ctstate NEW`. A socket opened by an earlier step — before the setup action ran — therefore keeps flowing on its original path: not redirected, not inspected, not logged. In the normal case PipeWarden is the first step and there is nothing open yet; the gap is real when it is placed after steps that start long-lived connections. Put it first.
 - Full IPv6 and in-container TLS interception are roadmap items, not current guarantees.
 
 If you run in `enforce` on a job holding live credentials, treat the metadata-only report and these boundaries as the contract. The report itself is metadata-only by construction: connection host/port/path/method/bytes/SNI/cert-chain, with **URL query strings redacted** before logging, and request/response headers and bodies never written to it.

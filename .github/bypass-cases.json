@@ -39,6 +39,13 @@
     "note": "The DNS interceptor is the only leg that sees a name before anything connects."
   },
   {
+    "name": "Plain DNS straight to an external resolver",
+    "host": "1.1.1.1",
+    "port": 53,
+    "expect": "observed",
+    "note": "resolv.conf points at the interceptor, but a step can address a resolver directly and the query never reaches the DNS log. Visible here only because conntrack logs the packet. Pinned to a specific resolver because the interceptor's own upstream forwarding is also UDP/53 — without a destination, PipeWarden's own traffic would satisfy this case and it could never fail. Enforce mode now rejects this for every non-root user; this suite runs in monitor, where the requirement is that it is seen rather than stopped."
+  },
+  {
     "name": "Egress from a process running as the proxy user",
     "host": "proxyuser-blindspot.invalid",
     "expect": "gap",

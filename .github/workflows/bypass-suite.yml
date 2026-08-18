@@ -95,7 +95,17 @@ jobs:
       - name: "6. DNS query"
         run: dig +short +time=3 +tries=1 github.com A || true
 
-      - name: "7. KNOWN GAP — egress from a process running as the proxy user"
+      - name: "7. Plain DNS straight to an external resolver"
+        run: |
+          # resolv.conf points at the interceptor, but nothing stopped a step
+          # from addressing a resolver itself. Pinned to 1.1.1.1 rather than any
+          # resolver: the runner's own upstream forwarding is also UDP/53, so
+          # without a destination the interceptor's traffic would satisfy this
+          # case and it could not fail. Enforce mode rejects this outright; the
+          # suite runs in monitor, where the requirement is that it is seen.
+          dig +short +time=3 +tries=1 @1.1.1.1 example.com A || true
+
+      - name: "8. KNOWN GAP — egress from a process running as the proxy user"
         run: |
           # The redirect carries `! --uid-owner pipewardenuser` so the proxy
           # does not intercept itself, which exempts anything able to run as

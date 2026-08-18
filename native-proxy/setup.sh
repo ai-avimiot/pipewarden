@@ -113,6 +113,10 @@ rollback_on_failure() {
         sudo iptables -D OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
         sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset 2>/dev/null || true
         sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+        # Removed unconditionally: a rollback that leaves DNS rejected would
+        # break every later step on the runner, not just PipeWarden's own.
+        sudo iptables -D OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+        sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
     fi
     if [ "${FORWARD_LOG_INSTALLED}" = "true" ]; then
         sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || true
@@ -577,6 +581,23 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
         sudo iptables -A OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset
         sudo iptables -A OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable
         echo "Enforce: blocked QUIC (udp/443) and DoT/DoQ (853) to force interceptable TCP"
+
+        # Plain DNS straight to an external resolver. resolv.conf points at our
+        # server, but nothing stopped a step from addressing 8.8.8.8 itself, and
+        # those queries never reached the log — the name was resolved, and the
+        # report simply had no record of anyone asking. Unlike DoT on 853 this
+        # needs a destination match rather than a port match, because the
+        # allowed case is the same protocol on the same port to our own server.
+        #
+        # Exempts root, not pipewardenuser: dns_server.py runs as root (port 53
+        # needs it) and forwards upstream on this very port, so filtering on the
+        # proxy user would reject the forwarder and leave the runner unable to
+        # resolve anything at all.
+        if [ "${ENABLE_DNS}" = "true" ]; then
+            sudo iptables -A OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+            sudo iptables -A OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+            echo "Enforce: blocked direct DNS to external resolvers (queries must go through the interceptor)"
+        fi
     fi
 
     # Visibility for the known interception blind spots. Log-only (never
