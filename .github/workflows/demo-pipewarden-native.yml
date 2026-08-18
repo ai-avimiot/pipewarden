@@ -155,6 +155,67 @@ jobs:
           fi
           echo "OK: helper stopped, socket and events removed"
 
+  # enforce + dns:true — the only combination in which the direct-DNS reject
+  # exists. The enforce demo runs dns:false and the other native jobs run
+  # monitor, so without this job the rule ships with no runner ever installing
+  # it. It is also the combination where a wrong uid filter would be worst:
+  # dns_server.py forwards upstream as root on port 53, so a rule filtering on
+  # the proxy user would leave the runner unable to resolve anything at all.
+  native-dns-enforced:
+    name: "Native proxy (enforce + DNS interception)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "PipeWarden setup (enforce, DNS on)"
+        uses: ./native-proxy/action-setup
+        with:
+          mode: enforce
+          dns: 'true'
+          transparent: 'true'
+      - name: "The reject rules were actually installed"
+        run: |
+          if ! sudo iptables -S OUTPUT | grep -q 'dport 53'; then
+            echo "::error::no port 53 reject rule present — the rest of this job would prove nothing"
+            sudo iptables -S OUTPUT; exit 1
+          fi
+          sudo iptables -S OUTPUT | grep 'dport 53'
+
+      - name: "Ordinary resolution still works through the interceptor"
+        run: |
+          # The failure this guards against is the rule rejecting the
+          # interceptor's own upstream forwarding, which breaks every name on
+          # the runner rather than just the direct ones.
+          if ! getent hosts api.github.com > /dev/null; then
+            echo "::error::name resolution is broken — the reject caught the forwarder"; exit 1
+          fi
+          echo "OK: api.github.com resolves"
+          curl -sS -o /dev/null --max-time 20 https://api.github.com/ \
+            || { echo "::error::allowed HTTPS failed under enforce+dns"; exit 1; }
+          echo "OK: allowed HTTPS still works"
+
+      - name: "A direct query to an external resolver is refused"
+        run: |
+          # Must fail. dig exits 9 when it gets no usable reply; a 0 here means
+          # the query reached 1.1.1.1 and the gap is still open.
+          if timeout 10 dig +short +tries=1 +time=3 @1.1.1.1 example.com A 2>/dev/null | grep -qE '[0-9]+\.[0-9]+'; then
+            echo "::error::direct DNS to an external resolver still succeeded"; exit 1
+          fi
+          echo "OK: direct external DNS refused"
+
+      - name: "PipeWarden teardown"
+        uses: ./native-proxy/action-teardown
+
+      - name: "No DNS rule outlived the job"
+        run: |
+          if sudo iptables -S OUTPUT | grep -q 'dport 53'; then
+            echo "::error::a port 53 reject survived teardown — later jobs on this runner cannot resolve"
+            sudo iptables -S OUTPUT; exit 1
+          fi
+          # And resolution works for whatever runs next.
+          getent hosts example.com > /dev/null \
+            || { echo "::error::resolution still broken after teardown"; exit 1; }
+          echo "OK: rules removed, resolution restored"
+
   # tls-intercept: false — no MITM at all. Proves a pinned/mTLS client sees the
   # real certificate chain (nothing forged, no CA installed), while DNS
   # enforcement and conntrack logging still work. This is the mode for
