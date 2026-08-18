@@ -1297,9 +1297,9 @@ tornado==6.5.5 \
     --hash=sha256:dd3eafaaeec1c7f2f8fdcd5f964e8907ad788fe8a5a32c4426fbbdda621223b7 \
     --hash=sha256:e74c92e8e65086b338fd56333fb9a68b9f6f2fe7ad532645a290a464bcf46be5
     # via mitmproxy
-types-pyyaml==6.0.12.20260724 \
-    --hash=sha256:3c1ce1bb73cd5ec02e90390c2b1f00e810d241d8825fd73ff359696839271b6b \
-    --hash=sha256:d57db930a4b2efbc57cf430ec8882765d246929432fa253092f383902329a453
+types-pyyaml==6.0.12.20260815 \
+    --hash=sha256:28764110c9cf35846e733da32d8d734df7473c5dde9ef67c3b7332ec0e819858 \
+    --hash=sha256:6f332212b7e191f3afd5016a713c510b6340593b7ebec573c7d5d20aa5386d3b
     # via -r requirements/requirements.txt
 typing-extensions==4.14.0 \
     --hash=sha256:8676b788e32f02ab42d9e7c61324048ae4c6d844a399eebace3d4979d75ceef4 \
