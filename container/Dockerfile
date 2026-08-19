@@ -14,7 +14,7 @@
 # Stage 1: grab the static Docker CLI binary
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 # To refresh manually: docker buildx imagetools inspect docker:<tag>
-FROM docker:29-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144 AS docker-cli
+FROM docker:29-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe AS docker-cli
 
 # Stage 2: download act binary and pre-cache common GitHub Actions
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
