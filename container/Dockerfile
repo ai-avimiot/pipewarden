@@ -19,7 +19,7 @@ FROM docker:29-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d537
 # Stage 2: download act binary and pre-cache common GitHub Actions
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 # To refresh manually: docker buildx imagetools inspect ubuntu:<tag>
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb AS act-download
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03 AS act-download
 ARG ACT_VERSION="0.2.89"
 RUN apt-get update -qq && apt-get install -y -qq curl git \
     && curl -fsSL "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz" \
@@ -42,7 +42,7 @@ RUN mkdir -p /opt/act-cache \
        done
 
 # Stage 3: runtime image — same Ubuntu LTS (and digest) as build stage.
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 
 # Avoid interactive prompts during apt-get
 ENV DEBIAN_FRONTEND=noninteractive
