@@ -134,7 +134,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v2
         with:
           mode: monitor   # discover first; switch to enforce once stable
 
@@ -150,7 +150,7 @@ That's it. The report lands in your job summary, in `/tmp/report/`, and is uploa
 
 > Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
-**Versioning.** `@v1` tracks the latest 1.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major (`v2`). For production, pin to an exact release (`@v1.0.7`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
+**Versioning.** `@v2` tracks the latest 2.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major. `@v1` still resolves to 1.4.1 and does not carry the 2.x work — upgrading the tag is all the move takes, see [Migrating to v2.0](docs/migrating-to-v2.md). For production, pin to an exact release (`@v2.1.0`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
 
 > **Pinning to a SHA:** annotated tags resolve to a *tag object* SHA that Actions cannot use in `uses:`. Always pin to the **commit** SHA: `git rev-list -n 1 vX.Y.Z` (or take the SHA shown next to the tag on the release page), not `git rev-parse vX.Y.Z`.
 
@@ -166,7 +166,7 @@ If you need manual control of teardown (for example to gate other steps on the r
 
 ```yaml
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v2
         with:
           mode: monitor
 
@@ -174,7 +174,7 @@ If you need manual control of teardown (for example to gate other steps on the r
 
       - name: PipeWarden Teardown
         if: always()
-        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v2
         # uploads the `network-report` artifact (disable with upload-artifact: false)
 ```
 
@@ -240,7 +240,7 @@ Once the policy is stable, just point PipeWarden at it. Enforce is the default �
 
 ```yaml
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v2
         with:
           policy-file: network-policy.yml
 ```
@@ -298,7 +298,7 @@ Upload the SARIF report to surface blocked connections as code scanning alerts. 
 
 ```yaml
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v2
         with:
           mode: monitor
 
@@ -306,7 +306,7 @@ Upload the SARIF report to surface blocked connections as code scanning alerts. 
 
       - name: PipeWarden Teardown
         if: always()
-        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v2
 
       - name: Upload to Security tab
         if: always()
@@ -356,7 +356,7 @@ Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS que
 **Block but continue (`fail-on-block: false`).** If you want the traffic blocked at the network level but the job to keep running — e.g. a deploy where you'd rather ship than stop, while still recording every violation in the report — set `fail-on-block: false`. The connection is still blocked; the job logs a `::warning::` and continues.
 
 ```yaml
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v2
         with:
           mode: enforce
           fail-on-block: false   # block the traffic, but don't fail the job
@@ -373,7 +373,7 @@ Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS que
 **Fail fast.** A blocked request usually breaks the command that made it, but some tools swallow the error and keep going. Set `fail-fast: true` (enforce only) to **cancel the whole run the moment the first blocked connection is seen**, instead of waiting for teardown. It needs a token with `actions: write`:
 
 ```yaml
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v2
         with:
           mode: enforce
           fail-fast: true
@@ -478,7 +478,7 @@ With `tls-intercept: false` there is no decrypted request, so `client` mode has 
 
 PipeWarden ships an [adversarial bypass suite](.github/workflows/bypass-suite.yml) that tries to evade its own interception on every relevant change and asserts the result. Cases marked `gap` are asserted to *stay* missing — if one starts being caught, the suite fails, because this section would then be wrong.
 
-**Caught:** HTTPS to a raw IP with no DNS lookup (including DNS-over-HTTPS, which is indistinguishable from it), DNS-over-TLS on 853, QUIC/UDP on 443, raw TCP on non-standard ports, and DNS queries.
+**Caught:** HTTPS to a raw IP with no DNS lookup (including DNS-over-HTTPS, which is indistinguishable from it), DNS-over-TLS on 853, QUIC/UDP on 443, raw TCP on non-standard ports, DNS queries, and plain DNS sent straight to an external resolver — visible through conntrack, and **rejected** outright in `enforce` with `dns: true` for every user except root.
 
 **Not caught:**
 
@@ -486,8 +486,9 @@ PipeWarden ships an [adversarial bypass suite](.github/workflows/bypass-suite.ym
 | --- | --- |
 | Egress from a container started by a build step | Container traffic traverses the docker bridge and the `FORWARD` chain, never `OUTPUT`, so the redirect never applies. Use [container mode](#container-mode) for those workloads. |
 | Egress from a process running as `pipewardenuser` | The redirect carries `! --uid-owner pipewardenuser` so the proxy does not intercept itself. Reaching it needs `sudo` — which a compromised build step on a GitHub-hosted runner already has. |
+| Connections already established when PipeWarden starts | The redirect is a `nat` rule the kernel consults once per connection, and conntrack logging matches `--ctstate NEW`. A socket opened by an earlier step keeps flowing on its original path: not redirected, not inspected, not logged. Put the setup step first. |
 
-Both are properties of running on the same host as the workload. Neither is fixable without moving interception off the runner.
+The first two are properties of running on the same host as the workload, and neither is fixable without moving interception off the runner. The third is a matter of step order: run PipeWarden before anything that opens a long-lived connection.
 
 ## Certificate pinning and mTLS
 
@@ -529,7 +530,7 @@ PipeWarden is designed to be safe in jobs that hold live credentials (cloud depl
 | `mode` | `enforce` | `enforce` (block + fail) or `monitor` (log only) |
 | `fail-on-block` | `true` | Enforce only: fail the job when any connection was blocked (stops the pipeline). Set `false` to block the traffic but let the job continue. Ignored in monitor mode |
 | `proxy-port` | `8080` | Port for the proxy to listen on |
-| `dns` | `true` | Enable DNS interception |
+| `dns` | `true` | Enable DNS interception. In `enforce`, also rejects plain DNS (TCP/UDP 53) addressed to anything other than the local interceptor, for every user except root |
 | `transparent` | `true` | Enable iptables transparent proxy |
 | `tls-intercept` | `true` | Terminate TLS for body/path/query inspection. Set `false` for [pinning/mTLS workflows](#certificate-pinning-and-mtls) — no MITM, DNS + connection logging only |
 | `attribution` | `client` | Record who made each connection. `client` reads the `User-Agent` from the decrypted request; `process` also names the real process via a root helper; `off` records nothing. See [Who made the connection](#who-made-the-connection) |
