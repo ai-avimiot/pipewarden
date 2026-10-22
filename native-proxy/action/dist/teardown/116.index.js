@@ -1950,7 +1950,7 @@ const util = __importStar(__webpack_require__(39023));
 const utils = __importStar(__webpack_require__(98299));
 const constants_1 = __webpack_require__(58287);
 const requestUtils_1 = __webpack_require__(32846);
-const abort_controller_1 = __webpack_require__(39048);
+const abort_controller_1 = __webpack_require__(68110);
 /**
  * Pipes the body of a HTTP response to a stream
  *
@@ -2852,6 +2852,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listTar = listTar;
 exports.extractTar = extractTar;
 exports.createTar = createTar;
+const core = __importStar(__webpack_require__(37484));
 const exec_1 = __webpack_require__(95236);
 const io = __importStar(__webpack_require__(94994));
 const fs_1 = __webpack_require__(79896);
@@ -2921,7 +2922,9 @@ function getTarArgs(tarPath_1, compressionMethod_1, type_1) {
             case 'extract':
                 args.push('-xf', BSD_TAR_ZSTD
                     ? tarFile
-                    : archivePath.replace(new RegExp(`\\${path.sep}`, 'g'), '/'), '-P', '-C', workingDirectory.replace(new RegExp(`\\${path.sep}`, 'g'), '/'));
+                    : archivePath.replace(new RegExp(`\\${path.sep}`, 'g'), '/'), '-P', '-C', BSD_TAR_ZSTD
+                    ? quoteAbsolutePath(workingDirectory)
+                    : workingDirectory.replace(new RegExp(`\\${path.sep}`, 'g'), '/'));
                 break;
             case 'list':
                 args.push('-tf', BSD_TAR_ZSTD
@@ -2961,15 +2964,18 @@ function getCommands(compressionMethod_1, type_1) {
         else {
             args = [[...tarArgs].join(' '), [...compressionArgs].join(' ')];
         }
-        if (BSD_TAR_ZSTD) {
-            return args;
-        }
-        return [args.join(' ')];
+        return {
+            commands: BSD_TAR_ZSTD ? args : [args.join(' ')],
+            requiresTempDirectory: BSD_TAR_ZSTD && type !== 'create'
+        };
     });
 }
 function getWorkingDirectory() {
     var _a;
     return (_a = process.env['GITHUB_WORKSPACE']) !== null && _a !== void 0 ? _a : process.cwd();
+}
+function quoteAbsolutePath(filePath) {
+    return `"${path.resolve(filePath).replace(new RegExp(`\\${path.sep}`, 'g'), '/')}"`;
 }
 // Common function for extractTar and listTar to get the compression method
 function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
@@ -2987,7 +2993,7 @@ function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
                     ? [
                         'zstd -d --long=30 --force -o',
                         constants_1.TarFilename,
-                        archivePath.replace(new RegExp(`\\${path.sep}`, 'g'), '/')
+                        quoteAbsolutePath(archivePath)
                     ]
                     : [
                         '--use-compress-program',
@@ -2995,11 +3001,7 @@ function getDecompressionProgram(tarPath, compressionMethod, archivePath) {
                     ];
             case constants_1.CompressionMethod.ZstdWithoutLong:
                 return BSD_TAR_ZSTD
-                    ? [
-                        'zstd -d --force -o',
-                        constants_1.TarFilename,
-                        archivePath.replace(new RegExp(`\\${path.sep}`, 'g'), '/')
-                    ]
+                    ? ['zstd -d --force -o', constants_1.TarFilename, quoteAbsolutePath(archivePath)]
                     : ['--use-compress-program', IS_WINDOWS ? '"zstd -d"' : 'unzstd'];
             default:
                 return ['-z'];
@@ -3059,11 +3061,34 @@ function execCommands(commands, cwd) {
         }
     });
 }
+function execReadCommands(archivePath, compressionMethod, type) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { commands, requiresTempDirectory } = yield getCommands(compressionMethod, type, archivePath);
+        // The Windows BSD-tar fallback decompresses into cache.tar before reading
+        // it. Isolate that intermediate for each list/extract operation, including
+        // debug listings during saves.
+        const tempDirectory = requiresTempDirectory
+            ? yield utils.createTempDirectory()
+            : undefined;
+        try {
+            yield execCommands(commands, tempDirectory);
+        }
+        finally {
+            if (tempDirectory) {
+                try {
+                    yield io.rmRF(tempDirectory);
+                }
+                catch (error) {
+                    core.debug(`Failed to delete temporary tar directory: ${error}`);
+                }
+            }
+        }
+    });
+}
 // List the contents of a tar
 function listTar(archivePath, compressionMethod) {
     return __awaiter(this, void 0, void 0, function* () {
-        const commands = yield getCommands(compressionMethod, 'list', archivePath);
-        yield execCommands(commands);
+        yield execReadCommands(archivePath, compressionMethod, 'list');
     });
 }
 // Extract a tar
@@ -3072,8 +3097,7 @@ function extractTar(archivePath, compressionMethod) {
         // Create directory to extract tar into
         const workingDirectory = getWorkingDirectory();
         yield io.mkdirP(workingDirectory);
-        const commands = yield getCommands(compressionMethod, 'extract', archivePath);
-        yield execCommands(commands);
+        yield execReadCommands(archivePath, compressionMethod, 'extract');
     });
 }
 // Create a tar
@@ -3081,7 +3105,7 @@ function createTar(archiveFolder, sourceDirectories, compressionMethod) {
     return __awaiter(this, void 0, void 0, function* () {
         // Write source directories to manifest.txt to avoid command length limits
         (0, fs_1.writeFileSync)(path.join(archiveFolder, constants_1.ManifestFilename), sourceDirectories.join('\n'));
-        const commands = yield getCommands(compressionMethod, 'create');
+        const { commands } = yield getCommands(compressionMethod, 'create');
         yield execCommands(commands, archiveFolder);
     });
 }
@@ -3403,253 +3427,6 @@ function getDownloadOptions(copy) {
     return result;
 }
 //# sourceMappingURL=options.js.map
-
-/***/ }),
-
-/***/ 39048:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT license.
-/// <reference path="../shims-public.d.ts" />
-const listenersMap = new WeakMap();
-const abortedMap = new WeakMap();
-/**
- * An aborter instance implements AbortSignal interface, can abort HTTP requests.
- *
- * - Call AbortSignal.none to create a new AbortSignal instance that cannot be cancelled.
- * Use `AbortSignal.none` when you are required to pass a cancellation token but the operation
- * cannot or will not ever be cancelled.
- *
- * @example
- * Abort without timeout
- * ```ts
- * await doAsyncWork(AbortSignal.none);
- * ```
- */
-class AbortSignal {
-    constructor() {
-        /**
-         * onabort event listener.
-         */
-        this.onabort = null;
-        listenersMap.set(this, []);
-        abortedMap.set(this, false);
-    }
-    /**
-     * Status of whether aborted or not.
-     *
-     * @readonly
-     */
-    get aborted() {
-        if (!abortedMap.has(this)) {
-            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
-        }
-        return abortedMap.get(this);
-    }
-    /**
-     * Creates a new AbortSignal instance that will never be aborted.
-     *
-     * @readonly
-     */
-    static get none() {
-        return new AbortSignal();
-    }
-    /**
-     * Added new "abort" event listener, only support "abort" event.
-     *
-     * @param _type - Only support "abort" event
-     * @param listener - The listener to be added
-     */
-    addEventListener(
-    // tslint:disable-next-line:variable-name
-    _type, listener) {
-        if (!listenersMap.has(this)) {
-            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
-        }
-        const listeners = listenersMap.get(this);
-        listeners.push(listener);
-    }
-    /**
-     * Remove "abort" event listener, only support "abort" event.
-     *
-     * @param _type - Only support "abort" event
-     * @param listener - The listener to be removed
-     */
-    removeEventListener(
-    // tslint:disable-next-line:variable-name
-    _type, listener) {
-        if (!listenersMap.has(this)) {
-            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
-        }
-        const listeners = listenersMap.get(this);
-        const index = listeners.indexOf(listener);
-        if (index > -1) {
-            listeners.splice(index, 1);
-        }
-    }
-    /**
-     * Dispatches a synthetic event to the AbortSignal.
-     */
-    dispatchEvent(_event) {
-        throw new Error("This is a stub dispatchEvent implementation that should not be used.  It only exists for type-checking purposes.");
-    }
-}
-/**
- * Helper to trigger an abort event immediately, the onabort and all abort event listeners will be triggered.
- * Will try to trigger abort event for all linked AbortSignal nodes.
- *
- * - If there is a timeout, the timer will be cancelled.
- * - If aborted is true, nothing will happen.
- *
- * @internal
- */
-// eslint-disable-next-line @azure/azure-sdk/ts-use-interface-parameters
-function abortSignal(signal) {
-    if (signal.aborted) {
-        return;
-    }
-    if (signal.onabort) {
-        signal.onabort.call(signal);
-    }
-    const listeners = listenersMap.get(signal);
-    if (listeners) {
-        // Create a copy of listeners so mutations to the array
-        // (e.g. via removeListener calls) don't affect the listeners
-        // we invoke.
-        listeners.slice().forEach((listener) => {
-            listener.call(signal, { type: "abort" });
-        });
-    }
-    abortedMap.set(signal, true);
-}
-
-// Copyright (c) Microsoft Corporation.
-/**
- * This error is thrown when an asynchronous operation has been aborted.
- * Check for this error by testing the `name` that the name property of the
- * error matches `"AbortError"`.
- *
- * @example
- * ```ts
- * const controller = new AbortController();
- * controller.abort();
- * try {
- *   doAsyncWork(controller.signal)
- * } catch (e) {
- *   if (e.name === 'AbortError') {
- *     // handle abort error here.
- *   }
- * }
- * ```
- */
-class AbortError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = "AbortError";
-    }
-}
-/**
- * An AbortController provides an AbortSignal and the associated controls to signal
- * that an asynchronous operation should be aborted.
- *
- * @example
- * Abort an operation when another event fires
- * ```ts
- * const controller = new AbortController();
- * const signal = controller.signal;
- * doAsyncWork(signal);
- * button.addEventListener('click', () => controller.abort());
- * ```
- *
- * @example
- * Share aborter cross multiple operations in 30s
- * ```ts
- * // Upload the same data to 2 different data centers at the same time,
- * // abort another when any of them is finished
- * const controller = AbortController.withTimeout(30 * 1000);
- * doAsyncWork(controller.signal).then(controller.abort);
- * doAsyncWork(controller.signal).then(controller.abort);
- *```
- *
- * @example
- * Cascaded aborting
- * ```ts
- * // All operations can't take more than 30 seconds
- * const aborter = Aborter.timeout(30 * 1000);
- *
- * // Following 2 operations can't take more than 25 seconds
- * await doAsyncWork(aborter.withTimeout(25 * 1000));
- * await doAsyncWork(aborter.withTimeout(25 * 1000));
- * ```
- */
-class AbortController {
-    // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-    constructor(parentSignals) {
-        this._signal = new AbortSignal();
-        if (!parentSignals) {
-            return;
-        }
-        // coerce parentSignals into an array
-        if (!Array.isArray(parentSignals)) {
-            // eslint-disable-next-line prefer-rest-params
-            parentSignals = arguments;
-        }
-        for (const parentSignal of parentSignals) {
-            // if the parent signal has already had abort() called,
-            // then call abort on this signal as well.
-            if (parentSignal.aborted) {
-                this.abort();
-            }
-            else {
-                // when the parent signal aborts, this signal should as well.
-                parentSignal.addEventListener("abort", () => {
-                    this.abort();
-                });
-            }
-        }
-    }
-    /**
-     * The AbortSignal associated with this controller that will signal aborted
-     * when the abort method is called on this controller.
-     *
-     * @readonly
-     */
-    get signal() {
-        return this._signal;
-    }
-    /**
-     * Signal that any operations passed this controller's associated abort signal
-     * to cancel any remaining work and throw an `AbortError`.
-     */
-    abort() {
-        abortSignal(this._signal);
-    }
-    /**
-     * Creates a new AbortSignal instance that will abort after the provided ms.
-     * @param ms - Elapsed time in milliseconds to trigger an abort.
-     */
-    static timeout(ms) {
-        const signal = new AbortSignal();
-        const timer = setTimeout(abortSignal, ms, signal);
-        // Prevent the active Timer from keeping the Node.js event loop active.
-        if (typeof timer.unref === "function") {
-            timer.unref();
-        }
-        return signal;
-    }
-}
-
-exports.AbortController = AbortController;
-exports.AbortError = AbortError;
-exports.AbortSignal = AbortSignal;
-//# sourceMappingURL=index.js.map
-
 
 /***/ }),
 
@@ -4705,7 +4482,7 @@ const os = __importStar(__webpack_require__(70857));
 const path = __importStar(__webpack_require__(16928));
 const pathHelper = __importStar(__webpack_require__(84138));
 const assert_1 = __importDefault(__webpack_require__(42613));
-const minimatch_1 = __webpack_require__(29526);
+const minimatch_1 = __webpack_require__(43772);
 const internal_match_kind_1 = __webpack_require__(62644);
 const internal_path_1 = __webpack_require__(76617);
 const IS_WINDOWS = process.platform === 'win32';
@@ -4952,7 +4729,254 @@ exports.SearchState = SearchState;
 
 /***/ }),
 
-/***/ 89034:
+/***/ 68110:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+/// <reference path="../shims-public.d.ts" />
+const listenersMap = new WeakMap();
+const abortedMap = new WeakMap();
+/**
+ * An aborter instance implements AbortSignal interface, can abort HTTP requests.
+ *
+ * - Call AbortSignal.none to create a new AbortSignal instance that cannot be cancelled.
+ * Use `AbortSignal.none` when you are required to pass a cancellation token but the operation
+ * cannot or will not ever be cancelled.
+ *
+ * @example
+ * Abort without timeout
+ * ```ts
+ * await doAsyncWork(AbortSignal.none);
+ * ```
+ */
+class AbortSignal {
+    constructor() {
+        /**
+         * onabort event listener.
+         */
+        this.onabort = null;
+        listenersMap.set(this, []);
+        abortedMap.set(this, false);
+    }
+    /**
+     * Status of whether aborted or not.
+     *
+     * @readonly
+     */
+    get aborted() {
+        if (!abortedMap.has(this)) {
+            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
+        }
+        return abortedMap.get(this);
+    }
+    /**
+     * Creates a new AbortSignal instance that will never be aborted.
+     *
+     * @readonly
+     */
+    static get none() {
+        return new AbortSignal();
+    }
+    /**
+     * Added new "abort" event listener, only support "abort" event.
+     *
+     * @param _type - Only support "abort" event
+     * @param listener - The listener to be added
+     */
+    addEventListener(
+    // tslint:disable-next-line:variable-name
+    _type, listener) {
+        if (!listenersMap.has(this)) {
+            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
+        }
+        const listeners = listenersMap.get(this);
+        listeners.push(listener);
+    }
+    /**
+     * Remove "abort" event listener, only support "abort" event.
+     *
+     * @param _type - Only support "abort" event
+     * @param listener - The listener to be removed
+     */
+    removeEventListener(
+    // tslint:disable-next-line:variable-name
+    _type, listener) {
+        if (!listenersMap.has(this)) {
+            throw new TypeError("Expected `this` to be an instance of AbortSignal.");
+        }
+        const listeners = listenersMap.get(this);
+        const index = listeners.indexOf(listener);
+        if (index > -1) {
+            listeners.splice(index, 1);
+        }
+    }
+    /**
+     * Dispatches a synthetic event to the AbortSignal.
+     */
+    dispatchEvent(_event) {
+        throw new Error("This is a stub dispatchEvent implementation that should not be used.  It only exists for type-checking purposes.");
+    }
+}
+/**
+ * Helper to trigger an abort event immediately, the onabort and all abort event listeners will be triggered.
+ * Will try to trigger abort event for all linked AbortSignal nodes.
+ *
+ * - If there is a timeout, the timer will be cancelled.
+ * - If aborted is true, nothing will happen.
+ *
+ * @internal
+ */
+// eslint-disable-next-line @azure/azure-sdk/ts-use-interface-parameters
+function abortSignal(signal) {
+    if (signal.aborted) {
+        return;
+    }
+    if (signal.onabort) {
+        signal.onabort.call(signal);
+    }
+    const listeners = listenersMap.get(signal);
+    if (listeners) {
+        // Create a copy of listeners so mutations to the array
+        // (e.g. via removeListener calls) don't affect the listeners
+        // we invoke.
+        listeners.slice().forEach((listener) => {
+            listener.call(signal, { type: "abort" });
+        });
+    }
+    abortedMap.set(signal, true);
+}
+
+// Copyright (c) Microsoft Corporation.
+/**
+ * This error is thrown when an asynchronous operation has been aborted.
+ * Check for this error by testing the `name` that the name property of the
+ * error matches `"AbortError"`.
+ *
+ * @example
+ * ```ts
+ * const controller = new AbortController();
+ * controller.abort();
+ * try {
+ *   doAsyncWork(controller.signal)
+ * } catch (e) {
+ *   if (e.name === 'AbortError') {
+ *     // handle abort error here.
+ *   }
+ * }
+ * ```
+ */
+class AbortError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "AbortError";
+    }
+}
+/**
+ * An AbortController provides an AbortSignal and the associated controls to signal
+ * that an asynchronous operation should be aborted.
+ *
+ * @example
+ * Abort an operation when another event fires
+ * ```ts
+ * const controller = new AbortController();
+ * const signal = controller.signal;
+ * doAsyncWork(signal);
+ * button.addEventListener('click', () => controller.abort());
+ * ```
+ *
+ * @example
+ * Share aborter cross multiple operations in 30s
+ * ```ts
+ * // Upload the same data to 2 different data centers at the same time,
+ * // abort another when any of them is finished
+ * const controller = AbortController.withTimeout(30 * 1000);
+ * doAsyncWork(controller.signal).then(controller.abort);
+ * doAsyncWork(controller.signal).then(controller.abort);
+ *```
+ *
+ * @example
+ * Cascaded aborting
+ * ```ts
+ * // All operations can't take more than 30 seconds
+ * const aborter = Aborter.timeout(30 * 1000);
+ *
+ * // Following 2 operations can't take more than 25 seconds
+ * await doAsyncWork(aborter.withTimeout(25 * 1000));
+ * await doAsyncWork(aborter.withTimeout(25 * 1000));
+ * ```
+ */
+class AbortController {
+    // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+    constructor(parentSignals) {
+        this._signal = new AbortSignal();
+        if (!parentSignals) {
+            return;
+        }
+        // coerce parentSignals into an array
+        if (!Array.isArray(parentSignals)) {
+            // eslint-disable-next-line prefer-rest-params
+            parentSignals = arguments;
+        }
+        for (const parentSignal of parentSignals) {
+            // if the parent signal has already had abort() called,
+            // then call abort on this signal as well.
+            if (parentSignal.aborted) {
+                this.abort();
+            }
+            else {
+                // when the parent signal aborts, this signal should as well.
+                parentSignal.addEventListener("abort", () => {
+                    this.abort();
+                });
+            }
+        }
+    }
+    /**
+     * The AbortSignal associated with this controller that will signal aborted
+     * when the abort method is called on this controller.
+     *
+     * @readonly
+     */
+    get signal() {
+        return this._signal;
+    }
+    /**
+     * Signal that any operations passed this controller's associated abort signal
+     * to cancel any remaining work and throw an `AbortError`.
+     */
+    abort() {
+        abortSignal(this._signal);
+    }
+    /**
+     * Creates a new AbortSignal instance that will abort after the provided ms.
+     * @param ms - Elapsed time in milliseconds to trigger an abort.
+     */
+    static timeout(ms) {
+        const signal = new AbortSignal();
+        const timer = setTimeout(abortSignal, ms, signal);
+        // Prevent the active Timer from keeping the Node.js event loop active.
+        if (typeof timer.unref === "function") {
+            timer.unref();
+        }
+        return signal;
+    }
+}
+
+exports.AbortController = AbortController;
+exports.AbortError = AbortError;
+exports.AbortSignal = AbortSignal;
+//# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 94691:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
 var concatMap = __webpack_require__(97087);
@@ -4980,6 +5004,26 @@ var EXPANSION_MAX = 100000
 // characters) so legitimate input is unaffected.
 var EXPANSION_MAX_LENGTH = 4000000
 
+// `expand` recurses once per level of brace *nesting* - both when expanding a
+// set's comma members and when re-wrapping a set whose body is a single part.
+// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+// level per chained group), which left nesting depth unbounded: about 3,100
+// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+// will follow nesting. It sits far above any realistic pattern and well below
+// the depth at which the stack runs out.
+var EXPANSION_MAX_DEPTH = 1000
+
+// Bash keeps a quirk where a brace group followed by a comma set still expands
+// (`{a},b}`). The parser implements it by rewriting the string and restarting
+// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+// full passes over a string that itself grows by one `escClose` sentinel each
+// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+// times the scan may restart. Real `{a},b}` input needs a handful.
+var EXPANSION_MAX_REWRITES = 1000
+
 function numeric(str) {
   return parseInt(str, 10) == str
     ? parseInt(str, 10)
@@ -5003,34 +5047,54 @@ function unescapeBraces(str) {
 }
 
 
+// Like `target.push(...items)` but doesn't overflow the stack
+function pushAll(target, items) {
+  for (var i = 0; i < items.length; i++) {
+    target.push(items[i]);
+  }
+}
+
 // Basically just str.split(","), but handling cases
 // where we have nested braced sections, which should be
 // treated as individual members, like {a,{b,c},d}
 function parseCommaParts(str) {
-  if (!str)
-    return [''];
-
   var parts = [];
-  var m = balanced('{', '}', str);
 
-  if (!m)
-    return str.split(',');
+  // Walk the brace groups iteratively. Recursing on `post` once per group let a
+  // chain of them exhaust the stack - the parsing-side counterpart to
+  // the `expand` overflow fixed for CVE-2026-14257, and not something `max` or
+  // `maxLength` can bound, since it happens before expansion.
+  //
+  // The part the next chunk continues
+  var carry = '';
 
-  var pre = m.pre;
-  var body = m.body;
-  var post = m.post;
-  var p = pre.split(',');
+  for (;;) {
+    var m = balanced('{', '}', str);
 
-  p[p.length-1] += '{' + body + '}';
-  var postParts = parseCommaParts(post);
-  if (post.length) {
-    p[p.length-1] += postParts.shift();
-    p.push.apply(p, postParts);
+    if (!m) {
+      var tail = str.split(',');
+      tail[0] = carry + tail[0];
+      pushAll(parts, tail);
+      return parts;
+    }
+
+    var pre = m.pre;
+    var body = m.body;
+    var post = m.post;
+    var p = pre.split(',');
+
+    p[0] = carry + p[0];
+    p[p.length-1] += '{' + body + '}';
+
+    if (!post.length) {
+      pushAll(parts, p);
+      return parts;
+    }
+
+    carry = p.pop();
+    pushAll(parts, p);
+    str = post;
   }
-
-  parts.push.apply(parts, p);
-
-  return parts;
 }
 
 function expandTop(str, options) {
@@ -5040,6 +5104,8 @@ function expandTop(str, options) {
   options = options || {};
   var max = options.max == null ? EXPANSION_MAX : options.max;
   var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
 
   // I don't know why Bash 4.3 does this, but it does.
   // Anything starting with {} will have the first two bytes preserved
@@ -5051,7 +5117,7 @@ function expandTop(str, options) {
     str = '\\{\\}' + str.substr(2);
   }
 
-  return expand(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
+  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
 }
 
 function identity(e) {
@@ -5175,8 +5241,18 @@ function expand(
   str,
   max,
   maxLength,
+  maxDepth,
+  depth,
+  maxRewrites,
   isTop
 ) {
+  // Too deeply nested to keep following: treat the rest as literal, the same
+  // way a group that cannot expand is already handled. Truncating rather than
+  // throwing keeps expansion total, matching `max` and `maxLength`.
+  if (depth > maxDepth) {
+    return [str];
+  }
+
   // Consume the string's top-level brace groups left to right, threading a
   // running set of combined prefixes (`acc`). Expanding the tail iteratively -
   // rather than recursing on `m.post` once per group - keeps the native stack
@@ -5197,6 +5273,9 @@ function expand(
   // `accBase[a]` records how much of `acc[a]` predates the current run;
   // `combine` treats an expansion as empty when it adds nothing past that.
   var accBase = [0]
+  // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+  // re-reads the whole string, so leaving this unbounded is quadratic.
+  var rewrites = 0
   var dropEmpties = false
   var firstGroup = true
   var nextBase
@@ -5228,7 +5307,8 @@ function expand(
     var isOptions = m.body.indexOf(',') >= 0;
     if (!isSequence && !isOptions) {
       // {a},b}
-      if (m.post.match(/,(?!,).*\}/)) {
+      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+        rewrites++;
         str = m.pre + '{' + m.body + escClose + m.post;
         // The rewritten string is expanded as if it were a fresh top-level one,
         // so start a new empty-drop run: anchor the baseline at what `acc`
@@ -5267,7 +5347,7 @@ function expand(
       var n = parseCommaParts(m.body);
       if (n.length === 1 && n[0] !== undefined) {
         // x{{a,b}}y ==> x{a}y x{b}y
-        n = expand(n[0], max, maxLength, false).map(embrace);
+        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
         //XXX is this necessary? Can't seem to hit it in tests.
         /* c8 ignore start */
         if (n.length === 1) {
@@ -5306,7 +5386,7 @@ function expand(
       values = []
       var valuesLength = 0
       outer: for (var j = 0; j < n.length; j++) {
-        var expanded = expand(n[j], max, maxLength, false)
+        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false)
         for (var k = 0; k < expanded.length; k++) {
           var v = expanded[k]
           if (dropsEmpties && !v) continue
@@ -5341,7 +5421,27 @@ function expand(
 
 /***/ }),
 
-/***/ 29526:
+/***/ 97087:
+/***/ ((module) => {
+
+module.exports = function (xs, fn) {
+    var res = [];
+    for (var i = 0; i < xs.length; i++) {
+        var x = fn(xs[i], i);
+        if (isArray(x)) res.push.apply(res, x);
+        else res.push(x);
+    }
+    return res;
+};
+
+var isArray = Array.isArray || function (xs) {
+    return Object.prototype.toString.call(xs) === '[object Array]';
+};
+
+
+/***/ }),
+
+/***/ 43772:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
 module.exports = minimatch
@@ -5353,7 +5453,7 @@ var path = (function () { try { return __webpack_require__(16928) } catch (e) {}
 minimatch.sep = path.sep
 
 var GLOBSTAR = minimatch.GLOBSTAR = Minimatch.GLOBSTAR = {}
-var expand = __webpack_require__(89034)
+var expand = __webpack_require__(94691)
 
 var plTypes = {
   '!': { open: '(?:(?!(?:', close: '))[^/]*?)'},
@@ -6349,26 +6449,6 @@ function globUnescape (s) {
 function regExpEscape (s) {
   return s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
 }
-
-
-/***/ }),
-
-/***/ 97087:
-/***/ ((module) => {
-
-module.exports = function (xs, fn) {
-    var res = [];
-    for (var i = 0; i < xs.length; i++) {
-        var x = fn(xs[i], i);
-        if (isArray(x)) res.push.apply(res, x);
-        else res.push(x);
-    }
-    return res;
-};
-
-var isArray = Array.isArray || function (xs) {
-    return Object.prototype.toString.call(xs) === '[object Array]';
-};
 
 
 /***/ }),
@@ -8027,7 +8107,7 @@ function coerce (version, options) {
 /***/ ((module) => {
 
 "use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"name":"@actions/cache","version":"5.2.0","preview":true,"description":"Actions cache lib","keywords":["github","actions","cache"],"homepage":"https://github.com/actions/toolkit/tree/main/packages/cache","license":"MIT","main":"lib/cache.js","types":"lib/cache.d.ts","directories":{"lib":"lib","test":"__tests__"},"files":["lib","!.DS_Store"],"publishConfig":{"access":"public"},"repository":{"type":"git","url":"git+https://github.com/actions/toolkit.git","directory":"packages/cache"},"scripts":{"audit-moderate":"npm install && npm audit --json --audit-level=moderate > audit.json","test":"echo \\"Error: run tests from root\\" && exit 1","tsc":"tsc"},"bugs":{"url":"https://github.com/actions/toolkit/issues"},"dependencies":{"@actions/core":"^2.0.0","@actions/exec":"^2.0.0","@actions/glob":"^0.5.1","@protobuf-ts/runtime-rpc":"^2.11.1","@actions/http-client":"^3.0.2","@actions/io":"^2.0.0","@azure/abort-controller":"^1.1.0","@azure/core-rest-pipeline":"^1.22.0","@azure/storage-blob":"^12.29.1","semver":"^6.3.1"},"devDependencies":{"@types/node":"^24.1.0","@types/semver":"^6.0.0","@protobuf-ts/plugin":"^2.9.4","typescript":"^5.2.2"},"overrides":{"uri-js":"npm:uri-js-replace@^1.0.1","node-fetch":"^3.3.2"}}');
+module.exports = /*#__PURE__*/JSON.parse('{"name":"@actions/cache","version":"5.3.0","preview":true,"description":"Actions cache lib","keywords":["github","actions","cache"],"homepage":"https://github.com/actions/toolkit/tree/main/packages/cache","license":"MIT","main":"lib/cache.js","types":"lib/cache.d.ts","directories":{"lib":"lib","test":"__tests__"},"files":["lib","!.DS_Store"],"publishConfig":{"access":"public"},"repository":{"type":"git","url":"git+https://github.com/actions/toolkit.git","directory":"packages/cache"},"scripts":{"audit-moderate":"npm install && npm audit --json --audit-level=moderate > audit.json","test":"echo \\"Error: run tests from root\\" && exit 1","tsc":"tsc"},"bugs":{"url":"https://github.com/actions/toolkit/issues"},"dependencies":{"@actions/core":"^2.0.3","@actions/exec":"^2.0.0","@actions/glob":"^0.5.1","@actions/http-client":"^3.0.2","@actions/io":"^2.0.0","@azure/abort-controller":"^1.1.0","@azure/core-rest-pipeline":"^1.25.0","@azure/storage-blob":"^12.34.0","@protobuf-ts/runtime-rpc":"^2.11.1","semver":"^6.3.1"},"devDependencies":{"@protobuf-ts/plugin":"^2.11.1","@types/node":"^24.13.6","@types/semver":"^6.2.7","typescript":"^5.9.3"},"overrides":{"uri-js":"npm:uri-js-replace@^1.0.1","node-fetch":"^3.3.2"}}');
 
 /***/ })
 

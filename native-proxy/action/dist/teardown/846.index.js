@@ -10730,6 +10730,44 @@ module.exports = Zip;
 
 /***/ }),
 
+/***/ 49290:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var $byteLength = callBound('ArrayBuffer.prototype.byteLength', true);
+
+var isArrayBuffer = __webpack_require__(96429);
+
+/** @type {import('.')} */
+module.exports = function byteLength(ab) {
+	if (!isArrayBuffer(ab)) {
+		return NaN;
+	}
+	return $byteLength ? $byteLength(ab) : ab.byteLength;
+}; // in node < 0.11, byteLength is an own nonconfigurable property
+
+
+/***/ }),
+
+/***/ 51491:
+/***/ ((module) => {
+
+"use strict";
+
+
+// eslint-disable-next-line no-extra-parens, no-empty-function
+const cached = /** @type {import('.').AsyncFunctionConstructor} */ (async function () {}.constructor);
+
+/** @type {import('.')} */
+module.exports = () => cached;
+
+
+
+/***/ }),
+
 /***/ 97329:
 /***/ (function(__unused_webpack_module, exports) {
 
@@ -16881,6 +16919,10 @@ function toString(buffer, encoding, start, end) {
   return toBuffer(buffer).toString(encoding, start, end)
 }
 
+function toHex(buffer, start, end) {
+  return toBuffer(buffer).toString('hex', start, end)
+}
+
 function write(buffer, string, offset, length, encoding) {
   return toBuffer(buffer).write(string, offset, length, encoding)
 }
@@ -16970,6 +17012,7 @@ module.exports = {
   swap64,
   toBuffer,
   toString,
+  toHex,
   write,
   readDoubleBE,
   readDoubleLE,
@@ -19142,351 +19185,6 @@ module.exports = function (store) {
 
 /***/ }),
 
-/***/ 94691:
-/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
-
-var balanced = __webpack_require__(59380);
-
-module.exports = expandTop;
-
-var escSlash = '\0SLASH'+Math.random()+'\0';
-var escOpen = '\0OPEN'+Math.random()+'\0';
-var escClose = '\0CLOSE'+Math.random()+'\0';
-var escComma = '\0COMMA'+Math.random()+'\0';
-var escPeriod = '\0PERIOD'+Math.random()+'\0';
-
-var EXPANSION_MAX = 100000
-
-// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
-// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
-// truncated to 100k results - while making every result ~1500 characters
-// long. The result set, and the intermediate arrays built while combining
-// brace sets, then grow large enough to exhaust memory and crash the process
-// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
-// characters the accumulator may hold at any point, so memory stays flat no
-// matter how many brace groups are chained. The limit sits well above any
-// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
-// characters) so legitimate input is unaffected.
-var EXPANSION_MAX_LENGTH = 4000000
-
-function numeric(str) {
-  return parseInt(str, 10) == str
-    ? parseInt(str, 10)
-    : str.charCodeAt(0);
-}
-
-function escapeBraces(str) {
-  return str.split('\\\\').join(escSlash)
-            .split('\\{').join(escOpen)
-            .split('\\}').join(escClose)
-            .split('\\,').join(escComma)
-            .split('\\.').join(escPeriod);
-}
-
-function unescapeBraces(str) {
-  return str.split(escSlash).join('\\')
-            .split(escOpen).join('{')
-            .split(escClose).join('}')
-            .split(escComma).join(',')
-            .split(escPeriod).join('.');
-}
-
-
-// Basically just str.split(","), but handling cases
-// where we have nested braced sections, which should be
-// treated as individual members, like {a,{b,c},d}
-function parseCommaParts(str) {
-  if (!str)
-    return [''];
-
-  var parts = [];
-  var m = balanced('{', '}', str);
-
-  if (!m)
-    return str.split(',');
-
-  var pre = m.pre;
-  var body = m.body;
-  var post = m.post;
-  var p = pre.split(',');
-
-  p[p.length-1] += '{' + body + '}';
-  var postParts = parseCommaParts(post);
-  if (post.length) {
-    p[p.length-1] += postParts.shift();
-    p.push.apply(p, postParts);
-  }
-
-  parts.push.apply(parts, p);
-
-  return parts;
-}
-
-function expandTop(str, options) {
-  if (!str)
-    return [];
-
-  options = options || {};
-  var max = options.max == null ? EXPANSION_MAX : options.max;
-  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
-
-  // I don't know why Bash 4.3 does this, but it does.
-  // Anything starting with {} will have the first two bytes preserved
-  // but *only* at the top level, so {},a}b will not expand to anything,
-  // but a{},b}c will be expanded to [a}c,abc].
-  // One could argue that this is a bug in Bash, but since the goal of
-  // this module is to match Bash's rules, we escape a leading {}
-  if (str.substr(0, 2) === '{}') {
-    str = '\\{\\}' + str.substr(2);
-  }
-
-  return expand(escapeBraces(str), max, maxLength, true).map(unescapeBraces);
-}
-
-function embrace(str) {
-  return '{' + str + '}';
-}
-function isPadded(el) {
-  return /^-?0\d/.test(el);
-}
-
-function lte(i, y) {
-  return i <= y;
-}
-function gte(i, y) {
-  return i >= y;
-}
-
-// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
-// number of results at `max` and the total number of characters at `maxLength`.
-// This is the one place output grows, so bounding it here keeps the single
-// accumulator - and therefore memory - flat regardless of how many brace groups
-// are combined (CVE-2026-14257).
-function combine(
-  acc,
-  pre,
-  values,
-  max,
-  maxLength,
-  dropEmpties
-) {
-  var out = []
-  var length = 0
-  for (var a = 0; a < acc.length; a++) {
-    for (var v = 0; v < values.length; v++) {
-      if (out.length >= max) return out
-      var expansion = acc[a] + pre + values[v]
-      // Bash drops empty results at the top level. Skip them before they count
-      // against `max`, so `max` bounds the number of *kept* results.
-      if (dropEmpties && !expansion) continue
-      if (length + expansion.length > maxLength) return out
-      out.push(expansion)
-      length += expansion.length
-    }
-  }
-  return out
-}
-
-// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
-// sequence body.
-function expandSequence(
-  body,
-  isAlphaSequence,
-  max,
-  maxLength
-) {
-  var n = body.split(/\.\./)
-  var N = []
-  // A sequence body always splits into two or three parts, but the compiler
-  // can't know that.
-  /* c8 ignore start */
-  if (n[0] === undefined || n[1] === undefined) {
-    return N
-  }
-  /* c8 ignore stop */
-  var x = numeric(n[0])
-  var y = numeric(n[1])
-  var width = Math.max(n[0].length, n[1].length)
-  var incr =
-    n.length === 3 && n[2] !== undefined ?
-      Math.max(Math.abs(numeric(n[2])), 1)
-    : 1
-  var test = lte
-  var reverse = y < x
-  if (reverse) {
-    incr *= -1
-    test = gte
-  }
-  var pad = n.some(isPadded)
-
-  var length = 0
-  for (var i = x; test(i, y) && N.length < max; i += incr) {
-    var c
-    if (isAlphaSequence) {
-      c = String.fromCharCode(i)
-      if (c === '\\') {
-        c = ''
-      }
-    } else {
-      c = String(i)
-      if (pad) {
-        var need = width - c.length
-        if (need > 0) {
-          var z = new Array(need + 1).join('0')
-          if (i < 0) {
-            c = '-' + z + c.slice(1)
-          } else {
-            c = z + c
-          }
-        }
-      }
-    }
-    if (length + c.length > maxLength) break
-    N.push(c)
-    length += c.length
-  }
-  return N
-}
-
-function expand(
-  str,
-  max,
-  maxLength,
-  isTop
-) {
-  // Consume the string's top-level brace groups left to right, threading a
-  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
-  // rather than recursing on `m.post` once per group - keeps the native stack
-  // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
-  // longer overflow the stack, and leaves a single accumulator whose size
-  // `maxLength` bounds directly (CVE-2026-14257).
-  var acc = ['']
-
-  // Bash drops empty results, but only when the *first* top-level group is a
-  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
-  // is on the final strings, so it is applied to whichever `combine` produces
-  // them (the one with no brace set left in the tail).
-  var dropEmpties = false
-  var firstGroup = true
-
-  for (;;) {
-    const m = balanced('{', '}', str)
-
-    // No brace set left: the rest of the string is literal.
-    if (!m) {
-      return combine(acc, str, [''], max, maxLength, dropEmpties)
-    }
-
-    // no need to expand pre, since it is guaranteed to be free of brace-sets
-    const pre = m.pre
-
-    if (/\$$/.test(pre)) {
-      acc = combine(
-        acc,
-        pre + '{' + m.body + '}',
-        [''],
-        max,
-        maxLength,
-        dropEmpties && !m.post.length
-      )
-      firstGroup = false
-      if (!m.post.length) break
-      str = m.post
-      continue
-    }
-
-    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
-    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
-    var isSequence = isNumericSequence || isAlphaSequence;
-    var isOptions = m.body.indexOf(',') >= 0;
-    if (!isSequence && !isOptions) {
-      // {a},b}
-      if (m.post.match(/,(?!,).*\}/)) {
-        str = m.pre + '{' + m.body + escClose + m.post;
-        isTop = true;
-        continue;
-      }
-      // Nothing here expands, so the whole remaining string is literal.
-      return combine(
-        acc,
-        pre + '{' + m.body + '}' + m.post,
-        [''],
-        max,
-        maxLength,
-        dropEmpties
-      )
-    }
-
-    if (firstGroup) {
-      dropEmpties = isTop && !isSequence
-      firstGroup = false
-    }
-
-    var values;
-    if (isSequence) {
-      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
-    } else {
-      var n = parseCommaParts(m.body);
-      if (n.length === 1 && n[0] !== undefined) {
-        // x{{a,b}}y ==> x{a}y x{b}y
-        n = expand(n[0], max, maxLength, false).map(embrace);
-        //XXX is this necessary? Can't seem to hit it in tests.
-        /* c8 ignore start */
-        if (n.length === 1) {
-          acc = combine(
-            acc,
-            pre + n[0],
-            [''],
-            max,
-            maxLength,
-            dropEmpties && !m.post.length
-          )
-          if (!m.post.length) break
-          str = m.post
-          continue
-        }
-        /* c8 ignore stop */
-      }
-
-      // Values that `combine` is going to drop as empty produce no result, so
-      // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
-      // would stop at `['a', '']` and yield one result instead of two. Skipping
-      // them outright keeps `values` bounded while leaving `max` a bound on
-      // *kept* results.
-      var dropsEmpties = dropEmpties && !m.post.length && !pre
-      for (var d = 0; dropsEmpties && d < acc.length; d++) {
-        if (acc[d]) {
-          dropsEmpties = false
-        }
-      }
-
-      values = []
-      var valuesLength = 0
-      outer: for (var j = 0; j < n.length; j++) {
-        var expanded = expand(n[j], max, maxLength, false)
-        for (var k = 0; k < expanded.length; k++) {
-          var v = expanded[k]
-          if (dropsEmpties && !v) continue
-          if (values.length >= max || valuesLength + v.length > maxLength) {
-            break outer
-          }
-          values.push(v)
-          valuesLength += v.length
-        }
-      }
-    }
-
-    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length)
-    if (!m.post.length) break
-    str = m.post
-  }
-
-  return acc
-}
-
-
-/***/ }),
-
 /***/ 86627:
 /***/ ((module) => {
 
@@ -19759,6 +19457,160 @@ Buffers.prototype.toBuffer = function() {
 Buffers.prototype.toString = function(encoding, start, end) {
     return this.slice(start, end).toString(encoding);
 }
+
+
+/***/ }),
+
+/***/ 22639:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var bind = __webpack_require__(37564);
+
+var $apply = __webpack_require__(33945);
+var $call = __webpack_require__(88093);
+var $reflectApply = __webpack_require__(31330);
+
+/** @type {import('./actualApply')} */
+module.exports = $reflectApply || bind.call($call, $apply);
+
+
+/***/ }),
+
+/***/ 76002:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var bind = __webpack_require__(37564);
+var $apply = __webpack_require__(33945);
+var actualApply = __webpack_require__(22639);
+
+/** @type {import('./applyBind')} */
+module.exports = function applyBind() {
+	return actualApply(bind, $apply, arguments);
+};
+
+
+/***/ }),
+
+/***/ 33945:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./functionApply')} */
+module.exports = Function.prototype.apply;
+
+
+/***/ }),
+
+/***/ 88093:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./functionCall')} */
+module.exports = Function.prototype.call;
+
+
+/***/ }),
+
+/***/ 88705:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var bind = __webpack_require__(37564);
+var $TypeError = __webpack_require__(73314);
+
+var $call = __webpack_require__(88093);
+var $actualApply = __webpack_require__(22639);
+
+/** @type {(args: [Function, thisArg?: unknown, ...args: unknown[]]) => Function} TODO FIXME, find a way to use import('.') */
+module.exports = function callBindBasic(args) {
+	if (args.length < 1 || typeof args[0] !== 'function') {
+		throw new $TypeError('a function is required');
+	}
+	return $actualApply(bind, $call, args);
+};
+
+
+/***/ }),
+
+/***/ 31330:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./reflectApply')} */
+module.exports = typeof Reflect !== 'undefined' && Reflect && Reflect.apply;
+
+
+/***/ }),
+
+/***/ 53844:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var setFunctionLength = __webpack_require__(49346);
+
+var $defineProperty = __webpack_require__(79094);
+
+var callBindBasic = __webpack_require__(88705);
+var applyBind = __webpack_require__(76002);
+
+module.exports = function callBind(originalFunction) {
+	var func = callBindBasic(arguments);
+	var adjustedLength = 1 + originalFunction.length - (arguments.length - 1);
+	return setFunctionLength(
+		func,
+		adjustedLength > 0 ? adjustedLength : 0,
+		true
+	);
+};
+
+if ($defineProperty) {
+	$defineProperty(module.exports, 'apply', { value: applyBind });
+} else {
+	module.exports.apply = applyBind;
+}
+
+
+/***/ }),
+
+/***/ 23105:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var callBindBasic = __webpack_require__(88705);
+
+/** @type {(thisArg: string, searchString: string, position?: number) => number} */
+var $indexOf = callBindBasic([GetIntrinsic('%String.prototype.indexOf%')]);
+
+/** @type {import('.')} */
+module.exports = function callBoundIntrinsic(name, allowMissing) {
+	/* eslint no-extra-parens: 0 */
+
+	var intrinsic = /** @type {(this: unknown, ...args: unknown[]) => unknown} */ (GetIntrinsic(name, !!allowMissing));
+	if (typeof intrinsic === 'function' && $indexOf(name, '.prototype.') > -1) {
+		return callBindBasic(/** @type {const} */ ([intrinsic]));
+	}
+	return intrinsic;
+};
 
 
 /***/ }),
@@ -21677,6 +21529,125 @@ module.exports = {
 
 /***/ }),
 
+/***/ 31316:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $defineProperty = __webpack_require__(79094);
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+
+var gopd = __webpack_require__(33170);
+
+/** @type {import('.')} */
+module.exports = function defineDataProperty(
+	obj,
+	property,
+	value
+) {
+	if (!obj || (typeof obj !== 'object' && typeof obj !== 'function')) {
+		throw new $TypeError('`obj` must be an object or a function`');
+	}
+	if (typeof property !== 'string' && typeof property !== 'symbol') {
+		throw new $TypeError('`property` must be a string or a symbol`');
+	}
+	if (arguments.length > 3 && typeof arguments[3] !== 'boolean' && arguments[3] !== null) {
+		throw new $TypeError('`nonEnumerable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 4 && typeof arguments[4] !== 'boolean' && arguments[4] !== null) {
+		throw new $TypeError('`nonWritable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 5 && typeof arguments[5] !== 'boolean' && arguments[5] !== null) {
+		throw new $TypeError('`nonConfigurable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 6 && typeof arguments[6] !== 'boolean') {
+		throw new $TypeError('`loose`, if provided, must be a boolean');
+	}
+
+	var nonEnumerable = arguments.length > 3 ? arguments[3] : null;
+	var nonWritable = arguments.length > 4 ? arguments[4] : null;
+	var nonConfigurable = arguments.length > 5 ? arguments[5] : null;
+	var loose = arguments.length > 6 ? arguments[6] : false;
+
+	/* @type {false | TypedPropertyDescriptor<unknown>} */
+	var desc = !!gopd && gopd(obj, property);
+
+	if ($defineProperty) {
+		$defineProperty(obj, property, {
+			configurable: nonConfigurable === null && desc ? desc.configurable : !nonConfigurable,
+			enumerable: nonEnumerable === null && desc ? desc.enumerable : !nonEnumerable,
+			value: value,
+			writable: nonWritable === null && desc ? desc.writable : !nonWritable
+		});
+	} else if (loose || (!nonEnumerable && !nonWritable && !nonConfigurable)) {
+		// must fall back to [[Set]], and was not explicitly asked to make non-enumerable, non-writable, or non-configurable
+		obj[property] = value; // eslint-disable-line no-param-reassign
+	} else {
+		throw new $SyntaxError('This environment does not support defining a property as non-configurable, non-writable, or non-enumerable.');
+	}
+};
+
+
+/***/ }),
+
+/***/ 50191:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var keys = __webpack_require__(62682);
+var hasSymbols = typeof Symbol === 'function' && typeof Symbol('foo') === 'symbol';
+
+var toStr = Object.prototype.toString;
+var concat = Array.prototype.concat;
+var defineDataProperty = __webpack_require__(31316);
+
+var isFunction = function (fn) {
+	return typeof fn === 'function' && toStr.call(fn) === '[object Function]';
+};
+
+var supportsDescriptors = __webpack_require__(60497)();
+
+var defineProperty = function (object, name, value, predicate) {
+	if (name in object) {
+		if (predicate === true) {
+			if (object[name] === value) {
+				return;
+			}
+		} else if (!isFunction(predicate) || !predicate()) {
+			return;
+		}
+	}
+
+	if (supportsDescriptors) {
+		defineDataProperty(object, name, value, true);
+	} else {
+		defineDataProperty(object, name, value);
+	}
+};
+
+var defineProperties = function (object, map) {
+	var predicates = arguments.length > 2 ? arguments[2] : {};
+	var props = keys(map);
+	if (hasSymbols) {
+		props = concat.call(props, Object.getOwnPropertySymbols(map));
+	}
+	for (var i = 0; i < props.length; i += 1) {
+		defineProperty(object, props[i], map[props[i]], predicates[props[i]]);
+	}
+};
+
+defineProperties.supportsDescriptors = !!supportsDescriptors;
+
+module.exports = defineProperties;
+
+
+/***/ }),
+
 /***/ 14150:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -21701,6 +21672,389 @@ class Deprecation extends Error {
 }
 
 exports.Deprecation = Deprecation;
+
+
+/***/ }),
+
+/***/ 26669:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBind = __webpack_require__(88705);
+var gOPD = __webpack_require__(33170);
+
+var hasProtoAccessor;
+try {
+	// eslint-disable-next-line no-extra-parens, no-proto
+	hasProtoAccessor = /** @type {{ __proto__?: typeof Array.prototype }} */ ([]).__proto__ === Array.prototype;
+} catch (e) {
+	if (!e || typeof e !== 'object' || !('code' in e) || e.code !== 'ERR_PROTO_ACCESS') {
+		throw e;
+	}
+}
+
+// eslint-disable-next-line no-extra-parens
+var desc = !!hasProtoAccessor && gOPD && gOPD(Object.prototype, /** @type {keyof typeof Object.prototype} */ ('__proto__'));
+
+var $Object = Object;
+var $getPrototypeOf = $Object.getPrototypeOf;
+
+/** @type {import('./get')} */
+module.exports = desc && typeof desc.get === 'function'
+	? callBind([desc.get])
+	: typeof $getPrototypeOf === 'function'
+		? /** @type {import('./get')} */ function getDunder(value) {
+			// eslint-disable-next-line eqeqeq
+			return $getPrototypeOf(value == null ? value : $Object(value));
+		}
+		: false;
+
+
+/***/ }),
+
+/***/ 24765:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var isCallable = __webpack_require__(69203);
+
+var inspect = __webpack_require__(60506);
+
+var GetV = __webpack_require__(47996);
+var isPropertyKey = __webpack_require__(29336);
+
+// https://262.ecma-international.org/6.0/#sec-getmethod
+
+/** @type {import('./GetMethod')} */
+module.exports = function GetMethod(O, P) {
+	// 7.3.9.1
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: P is not a Property Key');
+	}
+
+	// 7.3.9.2
+	var func = GetV(O, P);
+
+	// 7.3.9.4
+	if (func == null) {
+		return void 0;
+	}
+
+	// 7.3.9.5
+	if (!isCallable(func)) {
+		throw new $TypeError(inspect(P) + ' is not a function: ' + inspect(func));
+	}
+
+	// 7.3.9.6
+	return func;
+};
+
+
+/***/ }),
+
+/***/ 47996:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var inspect = __webpack_require__(60506);
+
+var isPropertyKey = __webpack_require__(29336);
+
+// https://262.ecma-international.org/6.0/#sec-getv
+
+/** @type {import('./GetV')} */
+module.exports = function GetV(V, P) {
+	// 7.3.2.1
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: P is not a Property Key, got ' + inspect(P));
+	}
+
+	// 7.3.2.2-3
+	// var O = ToObject(V);
+
+	// 7.3.2.4
+	return /** @type {Record<typeof P, unknown>} */ (V)[P]; // O.[[Get]](P, V)
+};
+
+
+/***/ }),
+
+/***/ 29336:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./isPropertyKey')} */
+module.exports = function isPropertyKey(argument) {
+	return typeof argument === 'string' || typeof argument === 'symbol';
+};
+
+
+/***/ }),
+
+/***/ 79094:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+var $defineProperty = Object.defineProperty || false;
+if ($defineProperty) {
+	try {
+		$defineProperty({}, 'a', { value: 1 });
+	} catch (e) {
+		// IE 8 has a broken defineProperty
+		$defineProperty = false;
+	}
+}
+
+module.exports = $defineProperty;
+
+
+/***/ }),
+
+/***/ 33056:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./eval')} */
+module.exports = EvalError;
+
+
+/***/ }),
+
+/***/ 31620:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+module.exports = Error;
+
+
+/***/ }),
+
+/***/ 14585:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./range')} */
+module.exports = RangeError;
+
+
+/***/ }),
+
+/***/ 46905:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./ref')} */
+module.exports = ReferenceError;
+
+
+/***/ }),
+
+/***/ 80105:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./syntax')} */
+module.exports = SyntaxError;
+
+
+/***/ }),
+
+/***/ 73314:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./type')} */
+module.exports = TypeError;
+
+
+/***/ }),
+
+/***/ 32578:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./uri')} */
+module.exports = URIError;
+
+
+/***/ }),
+
+/***/ 19601:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+/** @type {import('./RequireObjectCoercible')} */
+module.exports = function RequireObjectCoercible(value) {
+	if (value == null) {
+		throw new $TypeError((arguments.length > 0 && arguments[1]) || ('Cannot call method on ' + value));
+	}
+	return value;
+};
+
+
+/***/ }),
+
+/***/ 95399:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+module.exports = Object;
+
+
+/***/ }),
+
+/***/ 21040:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./isObject')} */
+module.exports = function isObject(x) {
+	return !!x && (typeof x === 'function' || typeof x === 'object');
+};
+
+
+/***/ }),
+
+/***/ 75604:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasSymbols = typeof Symbol === 'function' && typeof Symbol.iterator === 'symbol';
+
+var isCallable = __webpack_require__(69203);
+var isDate = __webpack_require__(86253);
+var isSymbol = __webpack_require__(63927);
+var $TypeError = __webpack_require__(73314);
+
+var isPrimitive = __webpack_require__(49306);
+
+/** @import { primitiveES6 } from './es2015' */
+
+/** @type {(O: { valueOf?: () => unknown, toString?: () => unknown }, hint: 'number' | 'string') => primitiveES6} */
+function OrdinaryToPrimitive(O, hint) {
+	if (typeof O === 'undefined' || O === null) {
+		throw new $TypeError('Cannot call method on ' + O);
+	}
+	if (typeof hint !== 'string' || (hint !== 'number' && hint !== 'string')) {
+		throw new $TypeError('hint must be "string" or "number"');
+	}
+	/** @type {('toString' | 'valueOf')[]} */
+	var methodNames = hint === 'string' ? ['toString', 'valueOf'] : ['valueOf', 'toString'];
+	var method, result, i;
+	for (i = 0; i < methodNames.length; ++i) {
+		method = O[methodNames[i]];
+		if (isCallable(method)) {
+			result = method.call(O);
+			if (isPrimitive(result)) {
+				return /** @type {primitiveES6} */ (result);
+			}
+		}
+	}
+	throw new $TypeError('No default value');
+}
+
+var GetMethod = __webpack_require__(24765);
+
+/** @type {import('./es2015')} */
+// http://www.ecma-international.org/ecma-262/6.0/#sec-toprimitive
+module.exports = function ToPrimitive(input) {
+	if (isPrimitive(input)) {
+		return /** @type {primitiveES6} */ (input);
+	}
+	/** @type {'default' | 'string' | 'number'} */
+	var hint = 'default';
+	if (arguments.length > 1) {
+		if (arguments[1] === String) {
+			hint = 'string';
+		} else if (arguments[1] === Number) {
+			hint = 'number';
+		}
+	}
+
+	var exoticToPrim;
+	if (hasSymbols) {
+		if (Symbol.toPrimitive) {
+
+			exoticToPrim = GetMethod(
+				/** @type {{ [k in SymbolConstructor['toPrimitive']]?: Function }} */
+				(input),
+				Symbol.toPrimitive
+			);
+		} else if (isSymbol(input)) {
+			exoticToPrim = Symbol.prototype.valueOf;
+		}
+	}
+	if (typeof exoticToPrim !== 'undefined') {
+		var result = exoticToPrim.call(input, hint);
+		if (isPrimitive(result)) {
+			return /** @type {primitiveES6} */ (result);
+		}
+		throw new $TypeError('unable to convert exotic object to primitive');
+	}
+	if (hint === 'default' && (isDate(input) || isSymbol(input))) {
+		hint = /** @type {const} */ ('string');
+	}
+
+	return OrdinaryToPrimitive(input, hint === 'default' ? 'number' : hint);
+};
+
+
+/***/ }),
+
+/***/ 49306:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @import { primitive } from '../' */
+/** @import { primitiveES5 } from '../es5' */
+
+/** @type {<T extends primitive | primitiveES5>(value: unknown) => value is T} */
+module.exports = function isPrimitive(value) {
+	return value === null || (typeof value !== 'function' && typeof value !== 'object');
+};
 
 
 /***/ }),
@@ -22693,6 +23047,1270 @@ module.exports = class FastFIFO {
 
 /***/ }),
 
+/***/ 14963:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var isCallable = __webpack_require__(69203);
+
+var toStr = Object.prototype.toString;
+var hasOwnProperty = Object.prototype.hasOwnProperty;
+
+/** @type {<This, A extends readonly unknown[]>(arr: A, iterator: (this: This | void, value: A[number], index: number, arr: A) => void, receiver: This | undefined) => void} */
+var forEachArray = function forEachArray(array, iterator, receiver) {
+    for (var i = 0, len = array.length; i < len; i++) {
+        if (hasOwnProperty.call(array, i)) {
+            if (receiver == null) {
+                iterator(array[i], i, array);
+            } else {
+                iterator.call(receiver, array[i], i, array);
+            }
+        }
+    }
+};
+
+/** @type {<This, S extends string>(string: S, iterator: (this: This | void, value: S[number], index: number, string: S) => void, receiver: This | undefined) => void} */
+var forEachString = function forEachString(string, iterator, receiver) {
+    for (var i = 0, len = string.length; i < len; i++) {
+        // no such thing as a sparse string.
+        if (receiver == null) {
+            iterator(string.charAt(i), i, string);
+        } else {
+            iterator.call(receiver, string.charAt(i), i, string);
+        }
+    }
+};
+
+/** @type {<This, O>(obj: O, iterator: (this: This | void, value: O[keyof O], index: keyof O, obj: O) => void, receiver: This | undefined) => void} */
+var forEachObject = function forEachObject(object, iterator, receiver) {
+    for (var k in object) {
+        if (hasOwnProperty.call(object, k)) {
+            if (receiver == null) {
+                iterator(object[k], k, object);
+            } else {
+                iterator.call(receiver, object[k], k, object);
+            }
+        }
+    }
+};
+
+/** @type {(x: unknown) => x is readonly unknown[]} */
+function isArray(x) {
+    return toStr.call(x) === '[object Array]';
+}
+
+/** @type {import('.')._internal} */
+module.exports = function forEach(list, iterator, thisArg) {
+    if (!isCallable(iterator)) {
+        throw new TypeError('iterator must be a function');
+    }
+
+    var receiver;
+    if (arguments.length >= 3) {
+        receiver = thisArg;
+    }
+
+    if (isArray(list)) {
+        forEachArray(list, iterator, receiver);
+    } else if (typeof list === 'string') {
+        forEachString(list, iterator, receiver);
+    } else {
+        forEachObject(list, iterator, receiver);
+    }
+};
+
+
+/***/ }),
+
+/***/ 99808:
+/***/ ((module) => {
+
+"use strict";
+
+
+/* eslint no-invalid-this: 1 */
+
+var ERROR_MESSAGE = 'Function.prototype.bind called on incompatible ';
+var toStr = Object.prototype.toString;
+var max = Math.max;
+var funcType = '[object Function]';
+
+var concatty = function concatty(a, b) {
+    var arr = [];
+
+    for (var i = 0; i < a.length; i += 1) {
+        arr[i] = a[i];
+    }
+    for (var j = 0; j < b.length; j += 1) {
+        arr[j + a.length] = b[j];
+    }
+
+    return arr;
+};
+
+var slicy = function slicy(arrLike, offset) {
+    var arr = [];
+    for (var i = offset || 0, j = 0; i < arrLike.length; i += 1, j += 1) {
+        arr[j] = arrLike[i];
+    }
+    return arr;
+};
+
+var joiny = function (arr, joiner) {
+    var str = '';
+    for (var i = 0; i < arr.length; i += 1) {
+        str += arr[i];
+        if (i + 1 < arr.length) {
+            str += joiner;
+        }
+    }
+    return str;
+};
+
+module.exports = function bind(that) {
+    var target = this;
+    if (typeof target !== 'function' || toStr.apply(target) !== funcType) {
+        throw new TypeError(ERROR_MESSAGE + target);
+    }
+    var args = slicy(arguments, 1);
+
+    var bound;
+    var binder = function () {
+        if (this instanceof bound) {
+            var result = target.apply(
+                this,
+                concatty(args, arguments)
+            );
+            if (Object(result) === result) {
+                return result;
+            }
+            return this;
+        }
+        return target.apply(
+            that,
+            concatty(args, arguments)
+        );
+
+    };
+
+    var boundLength = max(0, target.length - args.length);
+    var boundArgs = [];
+    for (var i = 0; i < boundLength; i++) {
+        boundArgs[i] = '$' + i;
+    }
+
+    bound = Function('binder', 'return function (' + joiny(boundArgs, ',') + '){ return binder.apply(this,arguments); }')(binder);
+
+    if (target.prototype) {
+        var Empty = function Empty() {};
+        Empty.prototype = target.prototype;
+        bound.prototype = new Empty();
+        Empty.prototype = null;
+    }
+
+    return bound;
+};
+
+
+/***/ }),
+
+/***/ 37564:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(99808);
+
+module.exports = Function.prototype.bind || implementation;
+
+
+/***/ }),
+
+/***/ 89947:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var IsCallable = __webpack_require__(69203);
+var hasOwn = __webpack_require__(54076);
+var functionsHaveNames = __webpack_require__(21327)();
+var $TypeError = __webpack_require__(73314);
+var callBound = __webpack_require__(23105);
+var isDDA = __webpack_require__(10647);
+
+var $functionToString = callBound('Function.prototype.toString');
+var $stringMatch = callBound('String.prototype.match');
+
+var classRegex = /^class /;
+
+/** @param {unknown} fn */
+var isClass = function isClassConstructor(fn) {
+	if (IsCallable(fn)) {
+		return false;
+	}
+	if (typeof fn !== 'function') {
+		return false;
+	}
+	try {
+		var match = $stringMatch($functionToString(fn), classRegex);
+		return !!match;
+	} catch (e) {}
+	return false;
+};
+
+var regex = /\s*function\s+([^(\s]*)\s*/;
+
+var functionProto = Function.prototype;
+
+/** @type {import('./implementation')} */
+module.exports = function getName() {
+	if (isDDA(this) || (!isClass(this) && !IsCallable(this))) {
+		throw new $TypeError('Function.prototype.name sham getter called on non-function');
+	}
+	if (functionsHaveNames && hasOwn(this, 'name')) {
+		return this.name;
+	}
+	if (this === functionProto) {
+		return '';
+	}
+	var str = $functionToString(this);
+	var match = $stringMatch(str, regex);
+	var name = match && match[1];
+
+	return /** @type {string} */ (name);
+};
+
+
+/***/ }),
+
+/***/ 82069:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBind = __webpack_require__(53844);
+
+var implementation = __webpack_require__(89947);
+var getPolyfill = __webpack_require__(85202);
+var shim = __webpack_require__(70016);
+
+var bound = callBind(implementation);
+
+/** @type {import('.')} */
+module.exports = bound;
+
+module.exports.getPolyfill = getPolyfill;
+module.exports.implementation = implementation;
+module.exports.shim = shim;
+
+
+/***/ }),
+
+/***/ 85202:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(89947);
+
+/** @type {import('./polyfill')} */
+module.exports = function getPolyfill() {
+	return implementation;
+};
+
+
+/***/ }),
+
+/***/ 70016:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var supportsDescriptors = __webpack_require__(60497)();
+var functionsHaveNames = __webpack_require__(21327)();
+var $TypeError = __webpack_require__(73314);
+
+var getPolyfill = __webpack_require__(85202);
+var defineProperty = __webpack_require__(79094);
+
+/** @type {import('./shim')} */
+module.exports = function shimName() {
+	var polyfill = getPolyfill();
+	if (functionsHaveNames) {
+		return polyfill;
+	}
+	if (!supportsDescriptors || !defineProperty) {
+		throw new $TypeError('Shimming Function.prototype.name support requires ES5 property descriptor support.');
+	}
+
+	var functionProto = Function.prototype;
+	defineProperty(functionProto, 'name', {
+		configurable: true,
+		enumerable: false,
+		get: function () {
+			var name = polyfill.call(this);
+			if (this !== functionProto) {
+				/** @type {Exclude<typeof defineProperty, false>} */ (defineProperty)(this, 'name', {
+					configurable: true,
+					enumerable: false,
+					value: name,
+					writable: false
+				});
+			}
+			return name;
+		}
+	});
+	return polyfill;
+};
+
+
+/***/ }),
+
+/***/ 21327:
+/***/ ((module) => {
+
+"use strict";
+
+
+var functionsHaveNames = function functionsHaveNames() {
+	return typeof function f() {}.name === 'string';
+};
+
+var gOPD = Object.getOwnPropertyDescriptor;
+if (gOPD) {
+	try {
+		gOPD([], 'length');
+	} catch (e) {
+		// IE 8 has a broken gOPD
+		gOPD = null;
+	}
+}
+
+functionsHaveNames.functionsHaveConfigurableNames = function functionsHaveConfigurableNames() {
+	if (!functionsHaveNames() || !gOPD) {
+		return false;
+	}
+	var desc = gOPD(function () {}, 'name');
+	return !!desc && !!desc.configurable;
+};
+
+var $bind = Function.prototype.bind;
+
+functionsHaveNames.boundFunctionsHaveNames = function boundFunctionsHaveNames() {
+	return functionsHaveNames() && typeof $bind === 'function' && function f() {}.bind().name !== '';
+};
+
+module.exports = functionsHaveNames;
+
+
+/***/ }),
+
+/***/ 47228:
+/***/ ((module) => {
+
+"use strict";
+
+
+// eslint-disable-next-line no-extra-parens, no-empty-function
+const cached = /** @type {GeneratorFunctionConstructor} */ (function* () {}.constructor);
+
+/** @type {import('.')} */
+module.exports = () => cached;
+
+
+
+/***/ }),
+
+/***/ 60470:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var undefined;
+
+var $Object = __webpack_require__(95399);
+
+var $Error = __webpack_require__(31620);
+var $EvalError = __webpack_require__(33056);
+var $RangeError = __webpack_require__(14585);
+var $ReferenceError = __webpack_require__(46905);
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+var $URIError = __webpack_require__(32578);
+
+var abs = __webpack_require__(55641);
+var floor = __webpack_require__(96171);
+var max = __webpack_require__(57147);
+var min = __webpack_require__(41017);
+var pow = __webpack_require__(56947);
+var round = __webpack_require__(42621);
+var sign = __webpack_require__(30156);
+
+var $Function = Function;
+
+// eslint-disable-next-line consistent-return
+var getEvalledConstructor = function (expressionSyntax) {
+	try {
+		return $Function('"use strict"; return (' + expressionSyntax + ').constructor;')();
+	} catch (e) {}
+};
+
+var $gOPD = __webpack_require__(33170);
+var $defineProperty = __webpack_require__(79094);
+
+var throwTypeError = function () {
+	throw new $TypeError();
+};
+var ThrowTypeError = $gOPD
+	? (function () {
+		try {
+			// eslint-disable-next-line no-unused-expressions, no-caller, no-restricted-properties
+			arguments.callee; // IE 8 does not throw here
+			return throwTypeError;
+		} catch (calleeThrows) {
+			try {
+				// IE 8 throws on Object.getOwnPropertyDescriptor(arguments, '')
+				return $gOPD(arguments, 'callee').get;
+			} catch (gOPDthrows) {
+				return throwTypeError;
+			}
+		}
+	}())
+	: throwTypeError;
+
+var hasSymbols = __webpack_require__(23336)();
+
+var getProto = __webpack_require__(81967);
+var $ObjectGPO = __webpack_require__(91311);
+var $ReflectGPO = __webpack_require__(48681);
+
+var $apply = __webpack_require__(33945);
+var $call = __webpack_require__(88093);
+
+var needsEval = {};
+
+var TypedArray = typeof Uint8Array === 'undefined' || !getProto ? undefined : getProto(Uint8Array);
+
+var INTRINSICS = {
+	__proto__: null,
+	'%AggregateError%': typeof AggregateError === 'undefined' ? undefined : AggregateError,
+	'%Array%': Array,
+	'%ArrayBuffer%': typeof ArrayBuffer === 'undefined' ? undefined : ArrayBuffer,
+	'%ArrayIteratorPrototype%': hasSymbols && getProto ? getProto([][Symbol.iterator]()) : undefined,
+	'%AsyncFromSyncIteratorPrototype%': undefined,
+	'%AsyncFunction%': needsEval,
+	'%AsyncGenerator%': needsEval,
+	'%AsyncGeneratorFunction%': needsEval,
+	'%AsyncIteratorPrototype%': needsEval,
+	'%Atomics%': typeof Atomics === 'undefined' ? undefined : Atomics,
+	'%BigInt%': typeof BigInt === 'undefined' ? undefined : BigInt,
+	'%BigInt64Array%': typeof BigInt64Array === 'undefined' ? undefined : BigInt64Array,
+	'%BigUint64Array%': typeof BigUint64Array === 'undefined' ? undefined : BigUint64Array,
+	'%Boolean%': Boolean,
+	'%DataView%': typeof DataView === 'undefined' ? undefined : DataView,
+	'%Date%': Date,
+	'%decodeURI%': decodeURI,
+	'%decodeURIComponent%': decodeURIComponent,
+	'%encodeURI%': encodeURI,
+	'%encodeURIComponent%': encodeURIComponent,
+	'%Error%': $Error,
+	'%eval%': eval, // eslint-disable-line no-eval
+	'%EvalError%': $EvalError,
+	'%Float16Array%': typeof Float16Array === 'undefined' ? undefined : Float16Array,
+	'%Float32Array%': typeof Float32Array === 'undefined' ? undefined : Float32Array,
+	'%Float64Array%': typeof Float64Array === 'undefined' ? undefined : Float64Array,
+	'%FinalizationRegistry%': typeof FinalizationRegistry === 'undefined' ? undefined : FinalizationRegistry,
+	'%Function%': $Function,
+	'%GeneratorFunction%': needsEval,
+	'%Int8Array%': typeof Int8Array === 'undefined' ? undefined : Int8Array,
+	'%Int16Array%': typeof Int16Array === 'undefined' ? undefined : Int16Array,
+	'%Int32Array%': typeof Int32Array === 'undefined' ? undefined : Int32Array,
+	'%isFinite%': isFinite,
+	'%isNaN%': isNaN,
+	'%IteratorPrototype%': hasSymbols && getProto ? getProto(getProto([][Symbol.iterator]())) : undefined,
+	'%JSON%': typeof JSON === 'object' ? JSON : undefined,
+	'%Map%': typeof Map === 'undefined' ? undefined : Map,
+	'%MapIteratorPrototype%': typeof Map === 'undefined' || !hasSymbols || !getProto ? undefined : getProto(new Map()[Symbol.iterator]()),
+	'%Math%': Math,
+	'%Number%': Number,
+	'%Object%': $Object,
+	'%Object.getOwnPropertyDescriptor%': $gOPD,
+	'%parseFloat%': parseFloat,
+	'%parseInt%': parseInt,
+	'%Promise%': typeof Promise === 'undefined' ? undefined : Promise,
+	'%Proxy%': typeof Proxy === 'undefined' ? undefined : Proxy,
+	'%RangeError%': $RangeError,
+	'%ReferenceError%': $ReferenceError,
+	'%Reflect%': typeof Reflect === 'undefined' ? undefined : Reflect,
+	'%RegExp%': RegExp,
+	'%Set%': typeof Set === 'undefined' ? undefined : Set,
+	'%SetIteratorPrototype%': typeof Set === 'undefined' || !hasSymbols || !getProto ? undefined : getProto(new Set()[Symbol.iterator]()),
+	'%SharedArrayBuffer%': typeof SharedArrayBuffer === 'undefined' ? undefined : SharedArrayBuffer,
+	'%String%': String,
+	'%StringIteratorPrototype%': hasSymbols && getProto ? getProto(''[Symbol.iterator]()) : undefined,
+	'%Symbol%': hasSymbols ? Symbol : undefined,
+	'%SyntaxError%': $SyntaxError,
+	'%ThrowTypeError%': ThrowTypeError,
+	'%TypedArray%': TypedArray,
+	'%TypeError%': $TypeError,
+	'%Uint8Array%': typeof Uint8Array === 'undefined' ? undefined : Uint8Array,
+	'%Uint8ClampedArray%': typeof Uint8ClampedArray === 'undefined' ? undefined : Uint8ClampedArray,
+	'%Uint16Array%': typeof Uint16Array === 'undefined' ? undefined : Uint16Array,
+	'%Uint32Array%': typeof Uint32Array === 'undefined' ? undefined : Uint32Array,
+	'%URIError%': $URIError,
+	'%WeakMap%': typeof WeakMap === 'undefined' ? undefined : WeakMap,
+	'%WeakRef%': typeof WeakRef === 'undefined' ? undefined : WeakRef,
+	'%WeakSet%': typeof WeakSet === 'undefined' ? undefined : WeakSet,
+
+	'%Function.prototype.call%': $call,
+	'%Function.prototype.apply%': $apply,
+	'%Object.defineProperty%': $defineProperty,
+	'%Object.getPrototypeOf%': $ObjectGPO,
+	'%Math.abs%': abs,
+	'%Math.floor%': floor,
+	'%Math.max%': max,
+	'%Math.min%': min,
+	'%Math.pow%': pow,
+	'%Math.round%': round,
+	'%Math.sign%': sign,
+	'%Reflect.getPrototypeOf%': $ReflectGPO
+};
+
+if (getProto) {
+	try {
+		null.error; // eslint-disable-line no-unused-expressions
+	} catch (e) {
+		// https://github.com/tc39/proposal-shadowrealm/pull/384#issuecomment-1364264229
+		var errorProto = getProto(getProto(e));
+		INTRINSICS['%Error.prototype%'] = errorProto;
+	}
+}
+
+var doEval = function doEval(name) {
+	var value;
+	if (name === '%AsyncFunction%') {
+		value = getEvalledConstructor('async function () {}');
+	} else if (name === '%GeneratorFunction%') {
+		value = getEvalledConstructor('function* () {}');
+	} else if (name === '%AsyncGeneratorFunction%') {
+		value = getEvalledConstructor('async function* () {}');
+	} else if (name === '%AsyncGenerator%') {
+		var fn = doEval('%AsyncGeneratorFunction%');
+		if (fn) {
+			value = fn.prototype;
+		}
+	} else if (name === '%AsyncIteratorPrototype%') {
+		var gen = doEval('%AsyncGenerator%');
+		if (gen && getProto) {
+			value = getProto(gen.prototype);
+		}
+	}
+
+	INTRINSICS[name] = value;
+
+	return value;
+};
+
+var LEGACY_ALIASES = {
+	__proto__: null,
+	'%ArrayBufferPrototype%': ['ArrayBuffer', 'prototype'],
+	'%ArrayPrototype%': ['Array', 'prototype'],
+	'%ArrayProto_entries%': ['Array', 'prototype', 'entries'],
+	'%ArrayProto_forEach%': ['Array', 'prototype', 'forEach'],
+	'%ArrayProto_keys%': ['Array', 'prototype', 'keys'],
+	'%ArrayProto_values%': ['Array', 'prototype', 'values'],
+	'%AsyncFunctionPrototype%': ['AsyncFunction', 'prototype'],
+	'%AsyncGenerator%': ['AsyncGeneratorFunction', 'prototype'],
+	'%AsyncGeneratorPrototype%': ['AsyncGeneratorFunction', 'prototype', 'prototype'],
+	'%BooleanPrototype%': ['Boolean', 'prototype'],
+	'%DataViewPrototype%': ['DataView', 'prototype'],
+	'%DatePrototype%': ['Date', 'prototype'],
+	'%ErrorPrototype%': ['Error', 'prototype'],
+	'%EvalErrorPrototype%': ['EvalError', 'prototype'],
+	'%Float32ArrayPrototype%': ['Float32Array', 'prototype'],
+	'%Float64ArrayPrototype%': ['Float64Array', 'prototype'],
+	'%FunctionPrototype%': ['Function', 'prototype'],
+	'%Generator%': ['GeneratorFunction', 'prototype'],
+	'%GeneratorPrototype%': ['GeneratorFunction', 'prototype', 'prototype'],
+	'%Int8ArrayPrototype%': ['Int8Array', 'prototype'],
+	'%Int16ArrayPrototype%': ['Int16Array', 'prototype'],
+	'%Int32ArrayPrototype%': ['Int32Array', 'prototype'],
+	'%JSONParse%': ['JSON', 'parse'],
+	'%JSONStringify%': ['JSON', 'stringify'],
+	'%MapPrototype%': ['Map', 'prototype'],
+	'%NumberPrototype%': ['Number', 'prototype'],
+	'%ObjectPrototype%': ['Object', 'prototype'],
+	'%ObjProto_toString%': ['Object', 'prototype', 'toString'],
+	'%ObjProto_valueOf%': ['Object', 'prototype', 'valueOf'],
+	'%PromisePrototype%': ['Promise', 'prototype'],
+	'%PromiseProto_then%': ['Promise', 'prototype', 'then'],
+	'%Promise_all%': ['Promise', 'all'],
+	'%Promise_reject%': ['Promise', 'reject'],
+	'%Promise_resolve%': ['Promise', 'resolve'],
+	'%RangeErrorPrototype%': ['RangeError', 'prototype'],
+	'%ReferenceErrorPrototype%': ['ReferenceError', 'prototype'],
+	'%RegExpPrototype%': ['RegExp', 'prototype'],
+	'%SetPrototype%': ['Set', 'prototype'],
+	'%SharedArrayBufferPrototype%': ['SharedArrayBuffer', 'prototype'],
+	'%StringPrototype%': ['String', 'prototype'],
+	'%SymbolPrototype%': ['Symbol', 'prototype'],
+	'%SyntaxErrorPrototype%': ['SyntaxError', 'prototype'],
+	'%TypedArrayPrototype%': ['TypedArray', 'prototype'],
+	'%TypeErrorPrototype%': ['TypeError', 'prototype'],
+	'%Uint8ArrayPrototype%': ['Uint8Array', 'prototype'],
+	'%Uint8ClampedArrayPrototype%': ['Uint8ClampedArray', 'prototype'],
+	'%Uint16ArrayPrototype%': ['Uint16Array', 'prototype'],
+	'%Uint32ArrayPrototype%': ['Uint32Array', 'prototype'],
+	'%URIErrorPrototype%': ['URIError', 'prototype'],
+	'%WeakMapPrototype%': ['WeakMap', 'prototype'],
+	'%WeakSetPrototype%': ['WeakSet', 'prototype']
+};
+
+var bind = __webpack_require__(37564);
+var hasOwn = __webpack_require__(54076);
+var $concat = bind.call($call, Array.prototype.concat);
+var $spliceApply = bind.call($apply, Array.prototype.splice);
+var $replace = bind.call($call, String.prototype.replace);
+var $strSlice = bind.call($call, String.prototype.slice);
+var $exec = bind.call($call, RegExp.prototype.exec);
+
+/* adapted from https://github.com/lodash/lodash/blob/4.17.15/dist/lodash.js#L6735-L6744 */
+var rePropName = /[^%.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|%$))/g;
+var reEscapeChar = /\\(\\)?/g; /** Used to match backslashes in property paths. */
+var stringToPath = function stringToPath(string) {
+	var first = $strSlice(string, 0, 1);
+	var last = $strSlice(string, -1);
+	if (first === '%' && last !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected closing `%`');
+	} else if (last === '%' && first !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected opening `%`');
+	}
+	var result = [];
+	$replace(string, rePropName, function (match, number, quote, subString) {
+		result[result.length] = quote ? $replace(subString, reEscapeChar, '$1') : number || match;
+	});
+	return result;
+};
+/* end adaptation */
+
+var getBaseIntrinsic = function getBaseIntrinsic(name, allowMissing) {
+	var intrinsicName = name;
+	var alias;
+	if (hasOwn(LEGACY_ALIASES, intrinsicName)) {
+		alias = LEGACY_ALIASES[intrinsicName];
+		intrinsicName = '%' + alias[0] + '%';
+	}
+
+	if (hasOwn(INTRINSICS, intrinsicName)) {
+		var value = INTRINSICS[intrinsicName];
+		if (value === needsEval) {
+			value = doEval(intrinsicName);
+		}
+		if (typeof value === 'undefined' && !allowMissing) {
+			throw new $TypeError('intrinsic ' + name + ' exists, but is not available. Please file an issue!');
+		}
+
+		return {
+			alias: alias,
+			name: intrinsicName,
+			value: value
+		};
+	}
+
+	throw new $SyntaxError('intrinsic ' + name + ' does not exist!');
+};
+
+module.exports = function GetIntrinsic(name, allowMissing) {
+	if (typeof name !== 'string' || name.length === 0) {
+		throw new $TypeError('intrinsic name must be a non-empty string');
+	}
+	if (arguments.length > 1 && typeof allowMissing !== 'boolean') {
+		throw new $TypeError('"allowMissing" argument must be a boolean');
+	}
+
+	if ($exec(/^%?[^%]*%?$/, name) === null) {
+		throw new $SyntaxError('`%` may not be present anywhere but at the beginning and end of the intrinsic name');
+	}
+	var parts = stringToPath(name);
+	var intrinsicBaseName = parts.length > 0 ? parts[0] : '';
+
+	var intrinsic = getBaseIntrinsic('%' + intrinsicBaseName + '%', allowMissing);
+	var intrinsicRealName = intrinsic.name;
+	var value = intrinsic.value;
+	var skipFurtherCaching = false;
+
+	var alias = intrinsic.alias;
+	if (alias) {
+		intrinsicBaseName = alias[0];
+		$spliceApply(parts, $concat([0, 1], alias));
+	}
+
+	for (var i = 1, isOwn = true; i < parts.length; i += 1) {
+		var part = parts[i];
+		var first = $strSlice(part, 0, 1);
+		var last = $strSlice(part, -1);
+		if (
+			(
+				(first === '"' || first === "'" || first === '`')
+				|| (last === '"' || last === "'" || last === '`')
+			)
+			&& first !== last
+		) {
+			throw new $SyntaxError('property names with quotes must have matching quotes');
+		}
+		if (part === 'constructor' || !isOwn) {
+			skipFurtherCaching = true;
+		}
+
+		intrinsicBaseName += '.' + part;
+		intrinsicRealName = '%' + intrinsicBaseName + '%';
+
+		if (hasOwn(INTRINSICS, intrinsicRealName)) {
+			value = INTRINSICS[intrinsicRealName];
+		} else if (value != null) {
+			if (!(part in value)) {
+				if (!allowMissing) {
+					throw new $TypeError('base intrinsic for ' + name + ' exists, but the property is not available.');
+				}
+				return void undefined;
+			}
+			if ($gOPD && (i + 1) >= parts.length) {
+				var desc = $gOPD(value, part);
+				isOwn = !!desc;
+
+				// By convention, when a data property is converted to an accessor
+				// property to emulate a data property that does not suffer from
+				// the override mistake, that accessor's getter is marked with
+				// an `originalValue` property. Here, when we detect this, we
+				// uphold the illusion by pretending to see that original data
+				// property, i.e., returning the value rather than the getter
+				// itself.
+				if (isOwn && 'get' in desc && !('originalValue' in desc.get)) {
+					value = desc.get;
+				} else {
+					value = value[part];
+				}
+			} else {
+				isOwn = hasOwn(value, part);
+				value = value[part];
+			}
+
+			if (isOwn && !skipFurtherCaching) {
+				INTRINSICS[intrinsicRealName] = value;
+			}
+		}
+	}
+	return value;
+};
+
+
+/***/ }),
+
+/***/ 91311:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $Object = __webpack_require__(95399);
+
+/** @type {import('./Object.getPrototypeOf')} */
+module.exports = $Object.getPrototypeOf || null;
+
+
+/***/ }),
+
+/***/ 48681:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./Reflect.getPrototypeOf')} */
+module.exports = (typeof Reflect !== 'undefined' && Reflect.getPrototypeOf) || null;
+
+
+/***/ }),
+
+/***/ 81967:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var reflectGetProto = __webpack_require__(48681);
+var originalGetProto = __webpack_require__(91311);
+
+var getDunderProto = __webpack_require__(26669);
+
+/** @type {import('.')} */
+module.exports = reflectGetProto
+	? function getProto(O) {
+		// @ts-expect-error TS can't narrow inside a closure, for some reason
+		return reflectGetProto(O);
+	}
+	: originalGetProto
+		? function getProto(O) {
+			if (!O || (typeof O !== 'object' && typeof O !== 'function')) {
+				throw new TypeError('getProto: not an object');
+			}
+			// @ts-expect-error TS can't narrow inside a closure, for some reason
+			return originalGetProto(O);
+		}
+		: getDunderProto
+			? function getProto(O) {
+				// @ts-expect-error TS can't narrow inside a closure, for some reason
+				return getDunderProto(O);
+			}
+			: null;
+
+
+/***/ }),
+
+/***/ 68497:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+var balanced = __webpack_require__(59380);
+
+module.exports = expandTop;
+
+var escSlash = '\0SLASH'+Math.random()+'\0';
+var escOpen = '\0OPEN'+Math.random()+'\0';
+var escClose = '\0CLOSE'+Math.random()+'\0';
+var escComma = '\0COMMA'+Math.random()+'\0';
+var escPeriod = '\0PERIOD'+Math.random()+'\0';
+
+var EXPANSION_MAX = 100000
+
+// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
+// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
+// truncated to 100k results - while making every result ~1500 characters
+// long. The result set, and the intermediate arrays built while combining
+// brace sets, then grow large enough to exhaust memory and crash the process
+// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
+// characters the accumulator may hold at any point, so memory stays flat no
+// matter how many brace groups are chained. The limit sits well above any
+// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+// characters) so legitimate input is unaffected.
+var EXPANSION_MAX_LENGTH = 4000000
+
+// `expand` recurses once per level of brace *nesting* - both when expanding a
+// set's comma members and when re-wrapping a set whose body is a single part.
+// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+// level per chained group), which left nesting depth unbounded: about 3,100
+// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+// will follow nesting. It sits far above any realistic pattern and well below
+// the depth at which the stack runs out.
+var EXPANSION_MAX_DEPTH = 1000
+
+// Bash keeps a quirk where a brace group followed by a comma set still expands
+// (`{a},b}`). The parser implements it by rewriting the string and restarting
+// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+// full passes over a string that itself grows by one `escClose` sentinel each
+// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+// times the scan may restart. Real `{a},b}` input needs a handful.
+var EXPANSION_MAX_REWRITES = 1000
+
+function numeric(str) {
+  return parseInt(str, 10) == str
+    ? parseInt(str, 10)
+    : str.charCodeAt(0);
+}
+
+function escapeBraces(str) {
+  return str.split('\\\\').join(escSlash)
+            .split('\\{').join(escOpen)
+            .split('\\}').join(escClose)
+            .split('\\,').join(escComma)
+            .split('\\.').join(escPeriod);
+}
+
+function unescapeBraces(str) {
+  return str.split(escSlash).join('\\')
+            .split(escOpen).join('{')
+            .split(escClose).join('}')
+            .split(escComma).join(',')
+            .split(escPeriod).join('.');
+}
+
+
+// Like `target.push(...items)` but doesn't overflow the stack
+function pushAll(target, items) {
+  for (var i = 0; i < items.length; i++) {
+    target.push(items[i]);
+  }
+}
+
+// Basically just str.split(","), but handling cases
+// where we have nested braced sections, which should be
+// treated as individual members, like {a,{b,c},d}
+function parseCommaParts(str) {
+  var parts = [];
+
+  // Walk the brace groups iteratively. Recursing on `post` once per group let a
+  // chain of them exhaust the stack - the parsing-side counterpart to
+  // the `expand` overflow fixed for CVE-2026-14257, and not something `max` or
+  // `maxLength` can bound, since it happens before expansion.
+  //
+  // The part the next chunk continues
+  var carry = '';
+
+  for (;;) {
+    var m = balanced('{', '}', str);
+
+    if (!m) {
+      var tail = str.split(',');
+      tail[0] = carry + tail[0];
+      pushAll(parts, tail);
+      return parts;
+    }
+
+    var pre = m.pre;
+    var body = m.body;
+    var post = m.post;
+    var p = pre.split(',');
+
+    p[0] = carry + p[0];
+    p[p.length-1] += '{' + body + '}';
+
+    if (!post.length) {
+      pushAll(parts, p);
+      return parts;
+    }
+
+    carry = p.pop();
+    pushAll(parts, p);
+    str = post;
+  }
+}
+
+function expandTop(str, options) {
+  if (!str)
+    return [];
+
+  options = options || {};
+  var max = options.max == null ? EXPANSION_MAX : options.max;
+  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
+
+  // I don't know why Bash 4.3 does this, but it does.
+  // Anything starting with {} will have the first two bytes preserved
+  // but *only* at the top level, so {},a}b will not expand to anything,
+  // but a{},b}c will be expanded to [a}c,abc].
+  // One could argue that this is a bug in Bash, but since the goal of
+  // this module is to match Bash's rules, we escape a leading {}
+  if (str.substr(0, 2) === '{}') {
+    str = '\\{\\}' + str.substr(2);
+  }
+
+  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
+}
+
+function embrace(str) {
+  return '{' + str + '}';
+}
+function isPadded(el) {
+  return /^-?0\d/.test(el);
+}
+
+function lte(i, y) {
+  return i <= y;
+}
+function gte(i, y) {
+  return i >= y;
+}
+
+// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
+// number of results at `max` and the total number of characters at `maxLength`.
+// This is the one place output grows, so bounding it here keeps the single
+// accumulator - and therefore memory - flat regardless of how many brace groups
+// are combined (CVE-2026-14257).
+function combine(
+  acc,
+  pre,
+  values,
+  max,
+  maxLength,
+  dropEmpties
+) {
+  var out = []
+  var length = 0
+  for (var a = 0; a < acc.length; a++) {
+    for (var v = 0; v < values.length; v++) {
+      if (out.length >= max) return out
+      var expansion = acc[a] + pre + values[v]
+      // Bash drops empty results at the top level. Skip them before they count
+      // against `max`, so `max` bounds the number of *kept* results.
+      if (dropEmpties && !expansion) continue
+      if (length + expansion.length > maxLength) return out
+      out.push(expansion)
+      length += expansion.length
+    }
+  }
+  return out
+}
+
+// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
+// sequence body.
+function expandSequence(
+  body,
+  isAlphaSequence,
+  max,
+  maxLength
+) {
+  var n = body.split(/\.\./)
+  var N = []
+  // A sequence body always splits into two or three parts, but the compiler
+  // can't know that.
+  /* c8 ignore start */
+  if (n[0] === undefined || n[1] === undefined) {
+    return N
+  }
+  /* c8 ignore stop */
+  var x = numeric(n[0])
+  var y = numeric(n[1])
+  var width = Math.max(n[0].length, n[1].length)
+  var incr =
+    n.length === 3 && n[2] !== undefined ?
+      Math.max(Math.abs(numeric(n[2])), 1)
+    : 1
+  var test = lte
+  var reverse = y < x
+  if (reverse) {
+    incr *= -1
+    test = gte
+  }
+  var pad = n.some(isPadded)
+
+  var length = 0
+  for (var i = x; test(i, y) && N.length < max; i += incr) {
+    var c
+    if (isAlphaSequence) {
+      c = String.fromCharCode(i)
+      if (c === '\\') {
+        c = ''
+      }
+    } else {
+      c = String(i)
+      if (pad) {
+        var need = width - c.length
+        if (need > 0) {
+          var z = new Array(need + 1).join('0')
+          if (i < 0) {
+            c = '-' + z + c.slice(1)
+          } else {
+            c = z + c
+          }
+        }
+      }
+    }
+    if (length + c.length > maxLength) break
+    N.push(c)
+    length += c.length
+  }
+  return N
+}
+
+function expand(
+  str,
+  max,
+  maxLength,
+  maxDepth,
+  depth,
+  maxRewrites,
+  isTop
+) {
+  // Too deeply nested to keep following: treat the rest as literal, the same
+  // way a group that cannot expand is already handled. Truncating rather than
+  // throwing keeps expansion total, matching `max` and `maxLength`.
+  if (depth > maxDepth) {
+    return [str];
+  }
+
+  // Consume the string's top-level brace groups left to right, threading a
+  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
+  // rather than recursing on `m.post` once per group - keeps the native stack
+  // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
+  // longer overflow the stack, and leaves a single accumulator whose size
+  // `maxLength` bounds directly (CVE-2026-14257).
+  var acc = ['']
+
+  // Bash drops empty results, but only when the *first* top-level group is a
+  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
+  // is on the final strings, so it is applied to whichever `combine` produces
+  // them (the one with no brace set left in the tail).
+  // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+  // re-reads the whole string, so leaving this unbounded is quadratic.
+  var rewrites = 0
+  var dropEmpties = false
+  var firstGroup = true
+
+  for (;;) {
+    const m = balanced('{', '}', str)
+
+    // No brace set left: the rest of the string is literal.
+    if (!m) {
+      return combine(acc, str, [''], max, maxLength, dropEmpties)
+    }
+
+    // no need to expand pre, since it is guaranteed to be free of brace-sets
+    const pre = m.pre
+
+    if (/\$$/.test(pre)) {
+      acc = combine(
+        acc,
+        pre + '{' + m.body + '}',
+        [''],
+        max,
+        maxLength,
+        dropEmpties && !m.post.length
+      )
+      firstGroup = false
+      if (!m.post.length) break
+      str = m.post
+      continue
+    }
+
+    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
+    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
+    var isSequence = isNumericSequence || isAlphaSequence;
+    var isOptions = m.body.indexOf(',') >= 0;
+    if (!isSequence && !isOptions) {
+      // {a},b}
+      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+        rewrites++;
+        str = m.pre + '{' + m.body + escClose + m.post;
+        isTop = true;
+        continue;
+      }
+      // Nothing here expands, so the whole remaining string is literal.
+      return combine(
+        acc,
+        pre + '{' + m.body + '}' + m.post,
+        [''],
+        max,
+        maxLength,
+        dropEmpties
+      )
+    }
+
+    if (firstGroup) {
+      dropEmpties = isTop && !isSequence
+      firstGroup = false
+    }
+
+    var values;
+    if (isSequence) {
+      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+    } else {
+      var n = parseCommaParts(m.body);
+      if (n.length === 1 && n[0] !== undefined) {
+        // x{{a,b}}y ==> x{a}y x{b}y
+        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+        //XXX is this necessary? Can't seem to hit it in tests.
+        /* c8 ignore start */
+        if (n.length === 1) {
+          acc = combine(
+            acc,
+            pre + n[0],
+            [''],
+            max,
+            maxLength,
+            dropEmpties && !m.post.length
+          )
+          if (!m.post.length) break
+          str = m.post
+          continue
+        }
+        /* c8 ignore stop */
+      }
+
+      // Values that `combine` is going to drop as empty produce no result, so
+      // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
+      // would stop at `['a', '']` and yield one result instead of two. Skipping
+      // them outright keeps `values` bounded while leaving `max` a bound on
+      // *kept* results.
+      var dropsEmpties = dropEmpties && !m.post.length && !pre
+      for (var d = 0; dropsEmpties && d < acc.length; d++) {
+        if (acc[d]) {
+          dropsEmpties = false
+        }
+      }
+
+      values = []
+      var valuesLength = 0
+      outer: for (var j = 0; j < n.length; j++) {
+        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false)
+        for (var k = 0; k < expanded.length; k++) {
+          var v = expanded[k]
+          if (dropsEmpties && !v) continue
+          if (values.length >= max || valuesLength + v.length > maxLength) {
+            break outer
+          }
+          values.push(v)
+          valuesLength += v.length
+        }
+      }
+    }
+
+    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length)
+    if (!m.post.length) break
+    str = m.post
+  }
+
+  return acc
+}
+
+
+/***/ }),
+
+/***/ 1174:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./gOPD')} */
+module.exports = Object.getOwnPropertyDescriptor;
+
+
+/***/ }),
+
+/***/ 33170:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+var $gOPD = __webpack_require__(1174);
+
+if ($gOPD) {
+	try {
+		$gOPD([], 'length');
+	} catch (e) {
+		// IE 8 has a broken gOPD
+		$gOPD = null;
+	}
+}
+
+module.exports = $gOPD;
+
+
+/***/ }),
+
 /***/ 73964:
 /***/ ((module) => {
 
@@ -23666,6 +25284,162 @@ function patch (fs) {
 
 /***/ }),
 
+/***/ 36629:
+/***/ ((module) => {
+
+"use strict";
+
+
+var $BigInt = typeof BigInt !== 'undefined' && BigInt;
+
+/** @type {import('.')} */
+module.exports = function hasNativeBigInts() {
+	return typeof $BigInt === 'function'
+		&& typeof BigInt === 'function'
+		&& typeof $BigInt(42) === 'bigint' // eslint-disable-line no-magic-numbers
+		&& typeof BigInt(42) === 'bigint'; // eslint-disable-line no-magic-numbers
+};
+
+
+/***/ }),
+
+/***/ 60497:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $defineProperty = __webpack_require__(79094);
+
+var hasPropertyDescriptors = function hasPropertyDescriptors() {
+	return !!$defineProperty;
+};
+
+hasPropertyDescriptors.hasArrayLengthDefineBug = function hasArrayLengthDefineBug() {
+	// node v0.6 has a bug where array lengths can be Set but not Defined
+	if (!$defineProperty) {
+		return null;
+	}
+	try {
+		return $defineProperty([], 'length', { value: 1 }).length !== 1;
+	} catch (e) {
+		// In Firefox 4-22, defining length on an array throws an exception.
+		return true;
+	}
+};
+
+module.exports = hasPropertyDescriptors;
+
+
+/***/ }),
+
+/***/ 23336:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var origSymbol = typeof Symbol !== 'undefined' && Symbol;
+var hasSymbolSham = __webpack_require__(61114);
+
+/** @type {import('.')} */
+module.exports = function hasNativeSymbols() {
+	if (typeof origSymbol !== 'function') { return false; }
+	if (typeof Symbol !== 'function') { return false; }
+	if (typeof origSymbol('foo') !== 'symbol') { return false; }
+	if (typeof Symbol('bar') !== 'symbol') { return false; }
+
+	return hasSymbolSham();
+};
+
+
+/***/ }),
+
+/***/ 61114:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./shams')} */
+/* eslint complexity: [2, 18], max-statements: [2, 33] */
+module.exports = function hasSymbols() {
+	if (typeof Symbol !== 'function' || typeof Object.getOwnPropertySymbols !== 'function') { return false; }
+	if (typeof Symbol.iterator === 'symbol') { return true; }
+
+	/** @type {{ [k in symbol]?: unknown }} */
+	var obj = {};
+	var sym = Symbol('test');
+	var symObj = Object(sym);
+	if (typeof sym === 'string') { return false; }
+
+	if (Object.prototype.toString.call(sym) !== '[object Symbol]') { return false; }
+	if (Object.prototype.toString.call(symObj) !== '[object Symbol]') { return false; }
+
+	// temp disabled per https://github.com/ljharb/object.assign/issues/17
+	// if (sym instanceof Symbol) { return false; }
+	// temp disabled per https://github.com/WebReflection/get-own-property-symbols/issues/4
+	// if (!(symObj instanceof Symbol)) { return false; }
+
+	// if (typeof Symbol.prototype.toString !== 'function') { return false; }
+	// if (String(sym) !== Symbol.prototype.toString.call(sym)) { return false; }
+
+	var symVal = 42;
+	obj[sym] = symVal;
+	for (var _ in obj) { return false; } // eslint-disable-line no-restricted-syntax, no-unreachable-loop
+	if (typeof Object.keys === 'function' && Object.keys(obj).length !== 0) { return false; }
+
+	if (typeof Object.getOwnPropertyNames === 'function' && Object.getOwnPropertyNames(obj).length !== 0) { return false; }
+
+	var syms = Object.getOwnPropertySymbols(obj);
+	if (syms.length !== 1 || syms[0] !== sym) { return false; }
+
+	if (!Object.prototype.propertyIsEnumerable.call(obj, sym)) { return false; }
+
+	if (typeof Object.getOwnPropertyDescriptor === 'function') {
+		// eslint-disable-next-line no-extra-parens
+		var descriptor = /** @type {PropertyDescriptor} */ (Object.getOwnPropertyDescriptor(obj, sym));
+		if (descriptor.value !== symVal || descriptor.enumerable !== true) { return false; }
+	}
+
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 85479:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasSymbols = __webpack_require__(61114);
+
+/** @type {import('.')} */
+module.exports = function hasToStringTagShams() {
+	return hasSymbols() && !!Symbol.toStringTag;
+};
+
+
+/***/ }),
+
+/***/ 54076:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var call = Function.prototype.call;
+var $hasOwn = Object.prototype.hasOwnProperty;
+var bind = __webpack_require__(37564);
+
+/** @type {import('.')} */
+module.exports = bind.call(call, $hasOwn);
+
+
+/***/ }),
+
 /***/ 39598:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
@@ -23716,6 +25490,698 @@ if (typeof Object.create === 'function') {
 
 /***/ }),
 
+/***/ 96429:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBind = __webpack_require__(53844);
+var callBound = __webpack_require__(23105);
+var GetIntrinsic = __webpack_require__(60470);
+
+var $ArrayBuffer = GetIntrinsic('%ArrayBuffer%', true);
+/** @type {undefined | ((receiver: ArrayBuffer) => number) | ((receiver: unknown) => never)} */
+var $byteLength = callBound('ArrayBuffer.prototype.byteLength', true);
+var $toString = callBound('Object.prototype.toString');
+
+// in node 0.10, ArrayBuffers have no prototype methods, but have an own slot-checking `slice` method
+var abSlice = !!$ArrayBuffer && !$byteLength && new $ArrayBuffer(0).slice;
+var $abSlice = !!abSlice && callBind(abSlice);
+
+/** @type {import('.')} */
+module.exports = $byteLength || $abSlice
+	? function isArrayBuffer(obj) {
+		if (!obj || typeof obj !== 'object') {
+			return false;
+		}
+		try {
+			if ($byteLength) {
+				// @ts-expect-error no idea why TS can't handle the overload
+				$byteLength(obj);
+			} else {
+				// @ts-expect-error TS chooses not to type-narrow inside a closure
+				$abSlice(obj, 0);
+			}
+			return true;
+		} catch (e) {
+			return false;
+		}
+	}
+	: $ArrayBuffer
+		// in node 0.8, ArrayBuffers have no prototype or own methods, but also no Symbol.toStringTag
+		? function isArrayBuffer(obj) {
+			return $toString(obj) === '[object ArrayBuffer]';
+		}
+		// @ts-expect-error
+		: function isArrayBuffer(obj) { // eslint-disable-line no-unused-vars
+			return false;
+		};
+
+
+/***/ }),
+
+/***/ 14856:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var safeRegexTest = __webpack_require__(93470);
+
+var toStr = callBound('Object.prototype.toString');
+var fnToStr = callBound('Function.prototype.toString');
+var isFnRegex = safeRegexTest(/^\s*async(?:\s+function(?:\s+|\()|\s*\()/);
+
+var hasToStringTag = __webpack_require__(85479)();
+var getProto = __webpack_require__(81967);
+
+var getAsyncFunc = __webpack_require__(51491);
+
+/** @type {import('.')} */
+module.exports = function isAsyncFunction(fn) {
+	if (typeof fn !== 'function') {
+		return false;
+	}
+	if (isFnRegex(fnToStr(fn))) {
+		return true;
+	}
+	if (!hasToStringTag) {
+		var str = toStr(fn);
+		return str === '[object AsyncFunction]';
+	}
+	if (!getProto) {
+		return false;
+	}
+	var asyncFunc = getAsyncFunc();
+	return asyncFunc && asyncFunc.prototype === getProto(fn);
+};
+
+
+/***/ }),
+
+/***/ 17788:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasBigInts = __webpack_require__(36629)();
+
+if (hasBigInts) {
+	var bigIntValueOf = BigInt.prototype.valueOf;
+	/** @type {(value: object) => value is BigInt} */
+	var tryBigInt = function tryBigIntObject(value) {
+		try {
+			bigIntValueOf.call(value);
+			return true;
+		} catch (e) {
+		}
+		return false;
+	};
+
+	/** @type {import('.')} */
+	module.exports = function isBigInt(value) {
+		if (
+			value === null
+			|| typeof value === 'undefined'
+			|| typeof value === 'boolean'
+			|| typeof value === 'string'
+			|| typeof value === 'number'
+			|| typeof value === 'symbol'
+			|| typeof value === 'function'
+		) {
+			return false;
+		}
+		if (typeof value === 'bigint') {
+			return true;
+		}
+
+		return tryBigInt(value);
+	};
+} else {
+	/** @type {import('.')} */
+	module.exports = function isBigInt(value) {
+		return  false && 0;
+	};
+}
+
+
+/***/ }),
+
+/***/ 10823:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var $boolToStr = callBound('Boolean.prototype.toString');
+var $toString = callBound('Object.prototype.toString');
+
+/** @type {import('.')} */
+var tryBooleanObject = function booleanBrandCheck(value) {
+	try {
+		$boolToStr(value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+};
+var boolClass = '[object Boolean]';
+var hasToStringTag = __webpack_require__(85479)();
+
+/** @type {import('.')} */
+module.exports = function isBoolean(value) {
+	if (typeof value === 'boolean') {
+		return true;
+	}
+	if (value === null || typeof value !== 'object') {
+		return false;
+	}
+	return hasToStringTag ? tryBooleanObject(value) : $toString(value) === boolClass;
+};
+
+
+/***/ }),
+
+/***/ 69203:
+/***/ ((module) => {
+
+"use strict";
+
+
+var fnToStr = Function.prototype.toString;
+var reflectApply = typeof Reflect === 'object' && Reflect !== null && Reflect.apply;
+var badArrayLike;
+var isCallableMarker;
+if (typeof reflectApply === 'function' && typeof Object.defineProperty === 'function') {
+	try {
+		badArrayLike = Object.defineProperty({}, 'length', {
+			get: function () {
+				throw isCallableMarker;
+			}
+		});
+		isCallableMarker = {};
+		// eslint-disable-next-line no-throw-literal
+		reflectApply(function () { throw 42; }, null, badArrayLike);
+	} catch (_) {
+		if (_ !== isCallableMarker) {
+			reflectApply = null;
+		}
+	}
+} else {
+	reflectApply = null;
+}
+
+var constructorRegex = /^\s*class\b/;
+var isES6ClassFn = function isES6ClassFunction(value) {
+	try {
+		var fnStr = fnToStr.call(value);
+		return constructorRegex.test(fnStr);
+	} catch (e) {
+		return false; // not a function
+	}
+};
+
+var tryFunctionObject = function tryFunctionToStr(value) {
+	try {
+		if (isES6ClassFn(value)) { return false; }
+		fnToStr.call(value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+};
+var toStr = Object.prototype.toString;
+var objectClass = '[object Object]';
+var fnClass = '[object Function]';
+var genClass = '[object GeneratorFunction]';
+var ddaClass = '[object HTMLAllCollection]'; // IE 11
+var ddaClass2 = '[object HTML document.all class]';
+var ddaClass3 = '[object HTMLCollection]'; // IE 9-10
+var hasToStringTag = typeof Symbol === 'function' && !!Symbol.toStringTag; // better: use `has-tostringtag`
+
+var isIE68 = !(0 in [,]); // eslint-disable-line no-sparse-arrays, comma-spacing
+
+var isDDA = function isDocumentDotAll() { return false; };
+if (typeof document === 'object') {
+	// Firefox 3 canonicalizes DDA to undefined when it's not accessed directly
+	var all = document.all;
+	if (toStr.call(all) === toStr.call(document.all)) {
+		isDDA = function isDocumentDotAll(value) {
+			/* globals document: false */
+			// in IE 6-8, typeof document.all is "object" and it's truthy
+			if ((isIE68 || !value) && (typeof value === 'undefined' || typeof value === 'object')) {
+				try {
+					var str = toStr.call(value);
+					return (
+						str === ddaClass
+						|| str === ddaClass2
+						|| str === ddaClass3 // opera 12.16
+						|| str === objectClass // IE 6-8
+					) && value('') == null; // eslint-disable-line eqeqeq
+				} catch (e) { /**/ }
+			}
+			return false;
+		};
+	}
+}
+
+module.exports = reflectApply
+	? function isCallable(value) {
+		if (isDDA(value)) { return true; }
+		if (!value) { return false; }
+		if (typeof value !== 'function' && typeof value !== 'object') { return false; }
+		try {
+			reflectApply(value, null, badArrayLike);
+		} catch (e) {
+			if (e !== isCallableMarker) { return false; }
+		}
+		return !isES6ClassFn(value) && tryFunctionObject(value);
+	}
+	: function isCallable(value) {
+		if (isDDA(value)) { return true; }
+		if (!value) { return false; }
+		if (typeof value !== 'function' && typeof value !== 'object') { return false; }
+		if (hasToStringTag) { return tryFunctionObject(value); }
+		if (isES6ClassFn(value)) { return false; }
+		var strClass = toStr.call(value);
+		if (strClass !== fnClass && strClass !== genClass && !(/^\[object HTML/).test(strClass)) { return false; }
+		return tryFunctionObject(value);
+	};
+
+
+/***/ }),
+
+/***/ 86253:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+var getDay = callBound('Date.prototype.getDay');
+/** @type {import('.')} */
+var tryDateObject = function tryDateGetDayCall(value) {
+	try {
+		getDay(value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+};
+
+/** @type {(value: unknown) => string} */
+var toStr = callBound('Object.prototype.toString');
+var dateClass = '[object Date]';
+var hasToStringTag = __webpack_require__(85479)();
+
+/** @type {import('.')} */
+module.exports = function isDateObject(value) {
+	if (typeof value !== 'object' || value === null) {
+		return false;
+	}
+	return hasToStringTag ? tryDateObject(value) : toStr(value) === dateClass;
+};
+
+
+/***/ }),
+
+/***/ 10647:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+var toStr = callBound('Object.prototype.toString');
+
+var isIE68 = !(0 in [,]); // eslint-disable-line no-sparse-arrays, no-magic-numbers
+
+var objectClass = '[object Object]';
+var ddaClass = '[object HTMLAllCollection]';
+
+/** @type {(() => false) | ((value: unknown) => value is HTMLAllCollection)} */
+var isDDA = function isDocumentDotAll() {
+	return /** @type {const} */ (false);
+};
+if (typeof document === 'object') {
+	// Firefox 3 canonicalizes DDA to undefined when it's not accessed directly
+	var all = document.all;
+	if (toStr(all) === toStr(document.all)) {
+		isDDA = /** @type {import('.')} */ (function isDocumentDotAll(value) {
+			/* globals document: false */
+			// in IE 6-8, typeof document.all is "object" and it's truthy
+			if ((isIE68 || !value) && (typeof value === 'undefined' || typeof value === 'object')) {
+				try {
+					// @ts-expect-error nullish will throw
+					var str = toStr(value);
+					// IE 6-8 uses `objectClass`
+					return (str === ddaClass || str === objectClass)
+						&& /** @type {Function} */ (value)('') == null; // eslint-disable-line eqeqeq
+				} catch (e) { /**/ }
+			}
+			return false;
+		});
+	}
+}
+
+module.exports = isDDA;
+
+
+/***/ }),
+
+/***/ 93816:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+/** @type {undefined | ((value: ThisParameterType<typeof FinalizationRegistry.prototype.register>, ...args: Parameters<typeof FinalizationRegistry.prototype.register>) => ReturnType<typeof FinalizationRegistry.prototype.register>)} */
+var $register = callBound('FinalizationRegistry.prototype.register', true);
+
+/** @type {import('.')} */
+module.exports = $register
+	? function isFinalizationRegistry(value) {
+		if (!value || typeof value !== 'object') {
+			return false;
+		}
+		try {
+			// @ts-expect-error TS can't figure out that it's always truthy here
+			$register(value, {}, null);
+			return true;
+		} catch (e) {
+			return false;
+		}
+	}
+	// @ts-ignore unused var
+	: function isFinalizationRegistry(value) { // eslint-disable-line no-unused-vars
+		return false;
+	};
+
+
+/***/ }),
+
+/***/ 55659:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var safeRegexTest = __webpack_require__(93470);
+var isFnRegex = safeRegexTest(/^\s*(?:function)?\*/);
+var hasToStringTag = __webpack_require__(85479)();
+var getProto = __webpack_require__(81967);
+
+var toStr = callBound('Object.prototype.toString');
+var fnToStr = callBound('Function.prototype.toString');
+
+var getGeneratorFunction = __webpack_require__(47228);
+
+/** @type {import('.')} */
+module.exports = function isGeneratorFunction(fn) {
+	if (typeof fn !== 'function') {
+		return false;
+	}
+	if (isFnRegex(fnToStr(fn))) {
+		return true;
+	}
+	if (!hasToStringTag) {
+		var str = toStr(fn);
+		return str === '[object GeneratorFunction]';
+	}
+	if (!getProto) {
+		return false;
+	}
+	var GeneratorFunction = getGeneratorFunction();
+	return GeneratorFunction && getProto(fn) === GeneratorFunction.prototype;
+};
+
+
+/***/ }),
+
+/***/ 69311:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @const */
+var $Map = typeof Map === 'function' && Map.prototype ? Map : null;
+var $Set = typeof Set === 'function' && Set.prototype ? Set : null;
+
+var exported;
+
+if (!$Map) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isMap(x) {
+		// `Map` is not present in this environment.
+		return false;
+	};
+}
+
+var $mapHas = $Map ? Map.prototype.has : null;
+var $setHas = $Set ? Set.prototype.has : null;
+if (!exported && !$mapHas) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isMap(x) {
+		// `Map` does not have a `has` method
+		return false;
+	};
+}
+
+/** @type {import('.')} */
+module.exports = exported || function isMap(x) {
+	if (!x || typeof x !== 'object') {
+		return false;
+	}
+	try {
+		$mapHas.call(x);
+		if ($setHas) {
+			try {
+				$setHas.call(x);
+			} catch (e) {
+				return true;
+			}
+		}
+		// @ts-expect-error TS can't figure out that $Map is always truthy here
+		return x instanceof $Map; // core-js workaround, pre-v2.5.0
+	} catch (e) {}
+	return false;
+};
+
+
+/***/ }),
+
+/***/ 33670:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+var $numToStr = callBound('Number.prototype.toString');
+
+/** @type {import('.')} */
+var tryNumberObject = function tryNumberObject(value) {
+	try {
+		$numToStr(value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+};
+var $toString = callBound('Object.prototype.toString');
+var numClass = '[object Number]';
+var hasToStringTag = __webpack_require__(85479)();
+
+/** @type {import('.')} */
+module.exports = function isNumberObject(value) {
+	if (typeof value === 'number') {
+		return true;
+	}
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	return hasToStringTag ? tryNumberObject(value) : $toString(value) === numClass;
+};
+
+
+/***/ }),
+
+/***/ 86622:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var hasToStringTag = __webpack_require__(85479)();
+var hasOwn = __webpack_require__(54076);
+var gOPD = __webpack_require__(33170);
+
+/** @type {import('.')} */
+var fn;
+
+if (hasToStringTag) {
+	/** @type {(receiver: ThisParameterType<typeof RegExp.prototype.exec>, ...args: Parameters<typeof RegExp.prototype.exec>) => ReturnType<typeof RegExp.prototype.exec>} */
+	var $exec = callBound('RegExp.prototype.exec');
+	/** @type {object} */
+	var isRegexMarker = {};
+
+	var throwRegexMarker = function () {
+		throw isRegexMarker;
+	};
+	/** @type {{ toString(): never, valueOf(): never, [Symbol.toPrimitive]?(): never }} */
+	var badStringifier = {
+		toString: throwRegexMarker,
+		valueOf: throwRegexMarker
+	};
+
+	if (typeof Symbol.toPrimitive === 'symbol') {
+		badStringifier[Symbol.toPrimitive] = throwRegexMarker;
+	}
+
+	/** @type {import('.')} */
+	// @ts-expect-error TS can't figure out that the $exec call always throws
+	// eslint-disable-next-line consistent-return
+	fn = function isRegex(value) {
+		if (!value || typeof value !== 'object') {
+			return false;
+		}
+
+		// eslint-disable-next-line no-extra-parens
+		var descriptor = /** @type {NonNullable<typeof gOPD>} */ (gOPD)(/** @type {{ lastIndex?: unknown }} */ (value), 'lastIndex');
+		var hasLastIndexDataProperty = descriptor && hasOwn(descriptor, 'value');
+		if (!hasLastIndexDataProperty) {
+			return false;
+		}
+
+		try {
+			// eslint-disable-next-line no-extra-parens
+			$exec(value, /** @type {string} */ (/** @type {unknown} */ (badStringifier)));
+		} catch (e) {
+			return e === isRegexMarker;
+		}
+	};
+} else {
+	/** @type {(receiver: ThisParameterType<typeof Object.prototype.toString>, ...args: Parameters<typeof Object.prototype.toString>) => ReturnType<typeof Object.prototype.toString>} */
+	var $toString = callBound('Object.prototype.toString');
+	/** @const @type {'[object RegExp]'} */
+	var regexClass = '[object RegExp]';
+
+	/** @type {import('.')} */
+	fn = function isRegex(value) {
+		// In older browsers, typeof regex incorrectly returns 'function'
+		if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+			return false;
+		}
+
+		return $toString(value) === regexClass;
+	};
+}
+
+module.exports = fn;
+
+
+/***/ }),
+
+/***/ 6513:
+/***/ ((module) => {
+
+"use strict";
+
+
+var $Map = typeof Map === 'function' && Map.prototype ? Map : null;
+var $Set = typeof Set === 'function' && Set.prototype ? Set : null;
+
+var exported;
+
+if (!$Set) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isSet(x) {
+		// `Set` is not present in this environment.
+		return false;
+	};
+}
+
+var $mapHas = $Map ? Map.prototype.has : null;
+var $setHas = $Set ? Set.prototype.has : null;
+if (!exported && !$setHas) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isSet(x) {
+		// `Set` does not have a `has` method
+		return false;
+	};
+}
+
+/** @type {import('.')} */
+module.exports = exported || function isSet(x) {
+	if (!x || typeof x !== 'object') {
+		return false;
+	}
+	try {
+		$setHas.call(x);
+		if ($mapHas) {
+			try {
+				$mapHas.call(x);
+			} catch (e) {
+				return true;
+			}
+		}
+		// @ts-expect-error TS can't figure out that $Set is always truthy here
+		return x instanceof $Set; // core-js workaround, pre-v2.5.0
+	} catch (e) {}
+	return false;
+};
+
+
+/***/ }),
+
+/***/ 12403:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+/** @type {undefined | ((thisArg: SharedArrayBuffer) => number)} */
+var $byteLength = callBound('SharedArrayBuffer.prototype.byteLength', true);
+
+/** @type {import('.')} */
+module.exports = $byteLength
+	? function isSharedArrayBuffer(obj) {
+		if (!obj || typeof obj !== 'object') {
+			return false;
+		}
+		try {
+			// @ts-expect-error TS can't figure out this closed-over variable is non-nullable, and it's fine that `obj` might not be a SAB
+			$byteLength(obj);
+			return true;
+		} catch (e) {
+			return false;
+		}
+	}
+	: function isSharedArrayBuffer(_obj) { // eslint-disable-line no-unused-vars
+		return false;
+	};
+
+
+/***/ }),
+
 /***/ 96543:
 /***/ ((module) => {
 
@@ -23748,6 +26214,246 @@ isStream.transform = stream =>
 	typeof stream._transform === 'function';
 
 module.exports = isStream;
+
+
+/***/ }),
+
+/***/ 57970:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+/** @type {(receiver: ThisParameterType<typeof String.prototype.valueOf>, ...args: Parameters<typeof String.prototype.valueOf>) => ReturnType<typeof String.prototype.valueOf>} */
+var $strValueOf = callBound('String.prototype.valueOf');
+
+/** @type {import('.')} */
+var tryStringObject = function tryStringObject(value) {
+	try {
+		$strValueOf(value);
+		return true;
+	} catch (e) {
+		return false;
+	}
+};
+/** @type {(receiver: ThisParameterType<typeof Object.prototype.toString>, ...args: Parameters<typeof Object.prototype.toString>) => ReturnType<typeof Object.prototype.toString>} */
+var $toString = callBound('Object.prototype.toString');
+var strClass = '[object String]';
+var hasToStringTag = __webpack_require__(85479)();
+
+/** @type {import('.')} */
+module.exports = function isString(value) {
+	if (typeof value === 'string') {
+		return true;
+	}
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	return hasToStringTag ? tryStringObject(value) : $toString(value) === strClass;
+};
+
+
+/***/ }),
+
+/***/ 63927:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var $toString = callBound('Object.prototype.toString');
+var hasSymbols = __webpack_require__(23336)();
+var safeRegexTest = __webpack_require__(93470);
+
+if (hasSymbols) {
+	var $symToStr = callBound('Symbol.prototype.toString');
+	var isSymString = safeRegexTest(/^Symbol\(.*\)$/);
+
+	/** @type {(value: object) => value is Symbol} */
+	var isSymbolObject = function isRealSymbolObject(value) {
+		if (typeof value.valueOf() !== 'symbol') {
+			return false;
+		}
+		return isSymString($symToStr(value));
+	};
+
+	/** @type {import('.')} */
+	module.exports = function isSymbol(value) {
+		if (typeof value === 'symbol') {
+			return true;
+		}
+		if (!value || typeof value !== 'object' || $toString(value) !== '[object Symbol]') {
+			return false;
+		}
+		try {
+			return isSymbolObject(value);
+		} catch (e) {
+			return false;
+		}
+	};
+} else {
+	/** @type {import('.')} */
+	module.exports = function isSymbol(value) {
+		// this environment does not support Symbols.
+		return  false && 0;
+	};
+}
+
+
+/***/ }),
+
+/***/ 6405:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var whichTypedArray = __webpack_require__(54768);
+
+/** @type {import('.')} */
+module.exports = function isTypedArray(value) {
+	return !!whichTypedArray(value);
+};
+
+
+/***/ }),
+
+/***/ 33955:
+/***/ ((module) => {
+
+"use strict";
+
+
+var $WeakMap = typeof WeakMap === 'function' && WeakMap.prototype ? WeakMap : null;
+var $WeakSet = typeof WeakSet === 'function' && WeakSet.prototype ? WeakSet : null;
+
+var exported;
+
+if (!$WeakMap) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isWeakMap(x) {
+		// `WeakMap` is not present in this environment.
+		return false;
+	};
+}
+
+var $mapHas = $WeakMap ? $WeakMap.prototype.has : null;
+var $setHas = $WeakSet ? $WeakSet.prototype.has : null;
+if (!exported && !$mapHas) {
+	/** @type {import('.')} */
+	// eslint-disable-next-line no-unused-vars
+	exported = function isWeakMap(x) {
+		// `WeakMap` does not have a `has` method
+		return false;
+	};
+}
+
+/** @type {import('.')} */
+module.exports = exported || function isWeakMap(x) {
+	if (!x || typeof x !== 'object') {
+		return false;
+	}
+	try {
+		$mapHas.call(x, $mapHas);
+		if ($setHas) {
+			try {
+				$setHas.call(x, $setHas);
+			} catch (e) {
+				return true;
+			}
+		}
+		// @ts-expect-error TS can't figure out that $WeakMap is always truthy here
+		return x instanceof $WeakMap; // core-js workaround, pre-v3
+	} catch (e) {}
+	return false;
+};
+
+
+/***/ }),
+
+/***/ 92880:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+
+// eslint-disable-next-line no-extra-parens
+var $deref = /** @type {<T extends WeakKey>(thisArg: WeakRef<T>) => T | undefined} */ (callBound('WeakRef.prototype.deref', true));
+
+/** @type {import('.')} */
+module.exports = typeof WeakRef === 'undefined'
+	? function isWeakRef(_value) { // eslint-disable-line no-unused-vars
+		return false;
+	}
+	: function isWeakRef(value) {
+		if (!value || typeof value !== 'object') {
+			return false;
+		}
+		try {
+			// @ts-expect-error
+			$deref(value);
+			return true;
+		} catch (e) {
+			return false;
+		}
+	};
+
+
+/***/ }),
+
+/***/ 22237:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+var callBound = __webpack_require__(23105);
+
+var $WeakSet = GetIntrinsic('%WeakSet%', true);
+
+/** @type {undefined | (<V>(thisArg: Set<V>, value: V) => boolean)} */
+var $setHas = callBound('WeakSet.prototype.has', true);
+
+if ($setHas) {
+	/** @type {undefined | (<K extends object, V>(thisArg: WeakMap<K, V>, key: K) => boolean)} */
+	var $mapHas = callBound('WeakMap.prototype.has', true);
+
+	/** @type {import('.')} */
+	module.exports = function isWeakSet(x) {
+		if (!x || typeof x !== 'object') {
+			return false;
+		}
+		try {
+			// @ts-expect-error TS can't figure out that $setHas is always truthy here
+			$setHas(x, $setHas);
+			if ($mapHas) {
+				try {
+					// @ts-expect-error this indeed might not be a weak collection
+					$mapHas(x, $mapHas);
+				} catch (e) {
+					return true;
+				}
+			}
+			// @ts-expect-error TS can't figure out that $WeakSet is always truthy here
+			return x instanceof $WeakSet; // core-js workaround, pre-v3
+		} catch (e) {}
+		return false;
+	};
+} else {
+	/** @type {import('.')} */
+	// @ts-expect-error
+	module.exports = function isWeakSet(x) { // eslint-disable-line no-unused-vars
+		// `WeakSet` does not exist, or does not have a `has` method
+		return false;
+	};
+}
 
 
 /***/ }),
@@ -23831,6 +26537,18 @@ function Writable(fn, options) {
   this.emit('writable');
 }
 
+
+
+/***/ }),
+
+/***/ 86215:
+/***/ ((module) => {
+
+var toString = {}.toString;
+
+module.exports = Array.isArray || function (arr) {
+  return toString.call(arr) == '[object Array]';
+};
 
 
 /***/ }),
@@ -24062,7 +26780,7 @@ var pna = __webpack_require__(19183);
 module.exports = Readable;
 
 /*<replacement>*/
-var isArray = __webpack_require__(82513);
+var isArray = __webpack_require__(86215);
 /*</replacement>*/
 
 /*<replacement>*/
@@ -29592,6 +32310,186 @@ module.exports = union;
 
 /***/ }),
 
+/***/ 55641:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./abs')} */
+module.exports = Math.abs;
+
+
+/***/ }),
+
+/***/ 96171:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./floor')} */
+module.exports = Math.floor;
+
+
+/***/ }),
+
+/***/ 3766:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $isNaN = __webpack_require__(77044);
+
+/** @type {import('./isFinite')} */
+module.exports = function isFinite(x) {
+	return (typeof x === 'number' || typeof x === 'bigint')
+        && !$isNaN(x)
+        && x !== Infinity
+        && x !== -Infinity;
+};
+
+
+
+/***/ }),
+
+/***/ 3647:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $abs = __webpack_require__(55641);
+var $floor = __webpack_require__(96171);
+
+var $isNaN = __webpack_require__(77044);
+var $isFinite = __webpack_require__(3766);
+
+/** @type {import('./isInteger')} */
+module.exports = function isInteger(argument) {
+	if (typeof argument !== 'number' || $isNaN(argument) || !$isFinite(argument)) {
+		return false;
+	}
+	var absValue = $abs(argument);
+	return $floor(absValue) === absValue;
+};
+
+
+/***/ }),
+
+/***/ 77044:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./isNaN')} */
+module.exports = Number.isNaN || function isNaN(a) {
+	return a !== a;
+};
+
+
+/***/ }),
+
+/***/ 1908:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./isNegativeZero')} */
+module.exports = function isNegativeZero(x) {
+	return x === 0 && 1 / x === 1 / -0;
+};
+
+
+/***/ }),
+
+/***/ 57147:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./max')} */
+module.exports = Math.max;
+
+
+/***/ }),
+
+/***/ 41017:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./min')} */
+module.exports = Math.min;
+
+
+/***/ }),
+
+/***/ 9521:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $floor = __webpack_require__(96171);
+
+/** @type {import('./mod')} */
+module.exports = function mod(number, modulo) {
+	var remain = number % modulo;
+	return $floor(remain >= 0 ? remain : remain + modulo);
+};
+
+
+/***/ }),
+
+/***/ 56947:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./pow')} */
+module.exports = Math.pow;
+
+
+/***/ }),
+
+/***/ 42621:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./round')} */
+module.exports = Math.round;
+
+
+/***/ }),
+
+/***/ 30156:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $isNaN = __webpack_require__(77044);
+
+/** @type {import('./sign')} */
+module.exports = function sign(number) {
+	if ($isNaN(number) || number === 0) {
+		return number;
+	}
+	return number < 0 ? -1 : +1;
+};
+
+
+/***/ }),
+
 /***/ 4469:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
@@ -29743,6 +32641,760 @@ module.exports = function(path, stripTrailing) {
 
 /***/ }),
 
+/***/ 60506:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+var hasMap = typeof Map === 'function' && Map.prototype;
+var mapSizeDescriptor = Object.getOwnPropertyDescriptor && hasMap ? Object.getOwnPropertyDescriptor(Map.prototype, 'size') : null;
+var mapSize = hasMap && mapSizeDescriptor && typeof mapSizeDescriptor.get === 'function' ? mapSizeDescriptor.get : null;
+var mapForEach = hasMap && Map.prototype.forEach;
+var hasSet = typeof Set === 'function' && Set.prototype;
+var setSizeDescriptor = Object.getOwnPropertyDescriptor && hasSet ? Object.getOwnPropertyDescriptor(Set.prototype, 'size') : null;
+var setSize = hasSet && setSizeDescriptor && typeof setSizeDescriptor.get === 'function' ? setSizeDescriptor.get : null;
+var setForEach = hasSet && Set.prototype.forEach;
+var hasWeakMap = typeof WeakMap === 'function' && WeakMap.prototype;
+var weakMapHas = hasWeakMap ? WeakMap.prototype.has : null;
+var hasWeakSet = typeof WeakSet === 'function' && WeakSet.prototype;
+var weakSetHas = hasWeakSet ? WeakSet.prototype.has : null;
+var hasWeakRef = typeof WeakRef === 'function' && WeakRef.prototype;
+var weakRefDeref = hasWeakRef ? WeakRef.prototype.deref : null;
+var booleanValueOf = Boolean.prototype.valueOf;
+var objectToString = Object.prototype.toString;
+var functionToString = Function.prototype.toString;
+var $match = String.prototype.match;
+var $slice = String.prototype.slice;
+var $replace = String.prototype.replace;
+var $toUpperCase = String.prototype.toUpperCase;
+var $toLowerCase = String.prototype.toLowerCase;
+var $test = RegExp.prototype.test;
+var $concat = Array.prototype.concat;
+var $join = Array.prototype.join;
+var $arrSlice = Array.prototype.slice;
+var $floor = Math.floor;
+var bigIntValueOf = typeof BigInt === 'function' ? BigInt.prototype.valueOf : null;
+var gOPS = Object.getOwnPropertySymbols;
+var symToString = typeof Symbol === 'function' && typeof Symbol.iterator === 'symbol' ? Symbol.prototype.toString : null;
+var hasShammedSymbols = typeof Symbol === 'function' && typeof Symbol.iterator === 'object';
+// ie, `has-tostringtag/shams
+var toStringTag = typeof Symbol === 'function' && Symbol.toStringTag && (typeof Symbol.toStringTag === hasShammedSymbols ? 'object' : 'symbol')
+    ? Symbol.toStringTag
+    : null;
+var isEnumerable = Object.prototype.propertyIsEnumerable;
+
+var gPO = (typeof Reflect === 'function' ? Reflect.getPrototypeOf : Object.getPrototypeOf) || (
+    [].__proto__ === Array.prototype // eslint-disable-line no-proto
+        ? function (O) {
+            return O.__proto__; // eslint-disable-line no-proto
+        }
+        : null
+);
+
+function addNumericSeparator(num, str) {
+    if (
+        num === Infinity
+        || num === -Infinity
+        || num !== num
+        || (num && num > -1000 && num < 1000)
+        || $test.call(/e/, str)
+    ) {
+        return str;
+    }
+    var sepRegex = /[0-9](?=(?:[0-9]{3})+(?![0-9]))/g;
+    if (typeof num === 'number') {
+        var int = num < 0 ? -$floor(-num) : $floor(num); // trunc(num)
+        if (int !== num) {
+            var intStr = String(int);
+            var dec = $slice.call(str, intStr.length + 1);
+            return $replace.call(intStr, sepRegex, '$&_') + '.' + $replace.call($replace.call(dec, /([0-9]{3})/g, '$&_'), /_$/, '');
+        }
+    }
+    return $replace.call(str, sepRegex, '$&_');
+}
+
+var utilInspect = __webpack_require__(58502);
+var inspectCustom = utilInspect.custom;
+var inspectSymbol = isSymbol(inspectCustom) ? inspectCustom : null;
+
+var quotes = {
+    __proto__: null,
+    'double': '"',
+    single: "'"
+};
+var quoteREs = {
+    __proto__: null,
+    'double': /(["\\])/g,
+    single: /(['\\])/g
+};
+
+module.exports = function inspect_(obj, options, depth, seen) {
+    var opts = options || {};
+
+    if (has(opts, 'quoteStyle') && !has(quotes, opts.quoteStyle)) {
+        throw new TypeError('option "quoteStyle" must be "single" or "double"');
+    }
+    if (
+        has(opts, 'maxStringLength') && (typeof opts.maxStringLength === 'number'
+            ? opts.maxStringLength < 0 && opts.maxStringLength !== Infinity
+            : opts.maxStringLength !== null
+        )
+    ) {
+        throw new TypeError('option "maxStringLength", if provided, must be a positive integer, Infinity, or `null`');
+    }
+    var customInspect = has(opts, 'customInspect') ? opts.customInspect : true;
+    if (typeof customInspect !== 'boolean' && customInspect !== 'symbol') {
+        throw new TypeError('option "customInspect", if provided, must be `true`, `false`, or `\'symbol\'`');
+    }
+
+    if (
+        has(opts, 'indent')
+        && opts.indent !== null
+        && opts.indent !== '\t'
+        && !(parseInt(opts.indent, 10) === opts.indent && opts.indent > 0)
+    ) {
+        throw new TypeError('option "indent" must be "\\t", an integer > 0, or `null`');
+    }
+    if (has(opts, 'numericSeparator') && typeof opts.numericSeparator !== 'boolean') {
+        throw new TypeError('option "numericSeparator", if provided, must be `true` or `false`');
+    }
+    var numericSeparator = opts.numericSeparator;
+
+    if (typeof obj === 'undefined') {
+        return 'undefined';
+    }
+    if (obj === null) {
+        return 'null';
+    }
+    if (typeof obj === 'boolean') {
+        return obj ? 'true' : 'false';
+    }
+
+    if (typeof obj === 'string') {
+        return inspectString(obj, opts);
+    }
+    if (typeof obj === 'number') {
+        if (obj === 0) {
+            return Infinity / obj > 0 ? '0' : '-0';
+        }
+        var str = String(obj);
+        return numericSeparator ? addNumericSeparator(obj, str) : str;
+    }
+    if (typeof obj === 'bigint') {
+        var bigIntStr = String(obj) + 'n';
+        return numericSeparator ? addNumericSeparator(obj, bigIntStr) : bigIntStr;
+    }
+
+    var maxDepth = typeof opts.depth === 'undefined' ? 5 : opts.depth;
+    if (typeof depth === 'undefined') { depth = 0; }
+    if (depth >= maxDepth && maxDepth > 0 && typeof obj === 'object') {
+        return isArray(obj) ? '[Array]' : '[Object]';
+    }
+
+    var indent = getIndent(opts, depth);
+
+    if (typeof seen === 'undefined') {
+        seen = [];
+    } else if (indexOf(seen, obj) >= 0) {
+        return '[Circular]';
+    }
+
+    function inspect(value, from, noIndent) {
+        if (from) {
+            seen = $arrSlice.call(seen);
+            seen.push(from);
+        }
+        if (noIndent) {
+            var newOpts = {
+                depth: opts.depth
+            };
+            if (has(opts, 'quoteStyle')) {
+                newOpts.quoteStyle = opts.quoteStyle;
+            }
+            return inspect_(value, newOpts, depth + 1, seen);
+        }
+        return inspect_(value, opts, depth + 1, seen);
+    }
+
+    if (typeof obj === 'function' && !isRegExp(obj)) { // in older engines, regexes are callable
+        var name = nameOf(obj);
+        var keys = arrObjKeys(obj, inspect);
+        return '[Function' + (name ? ': ' + name : ' (anonymous)') + ']' + (keys.length > 0 ? ' { ' + $join.call(keys, ', ') + ' }' : '');
+    }
+    if (isSymbol(obj)) {
+        var symString = hasShammedSymbols ? $replace.call(String(obj), /^(Symbol\(.*\))_[^)]*$/, '$1') : symToString.call(obj);
+        return typeof obj === 'object' && !hasShammedSymbols ? markBoxed(symString) : symString;
+    }
+    if (isElement(obj)) {
+        var s = '<' + $toLowerCase.call(String(obj.nodeName));
+        var attrs = obj.attributes || [];
+        for (var i = 0; i < attrs.length; i++) {
+            s += ' ' + attrs[i].name + '=' + wrapQuotes(quote(attrs[i].value), 'double', opts);
+        }
+        s += '>';
+        if (obj.childNodes && obj.childNodes.length) { s += '...'; }
+        s += '</' + $toLowerCase.call(String(obj.nodeName)) + '>';
+        return s;
+    }
+    if (isArray(obj)) {
+        if (obj.length === 0) { return '[]'; }
+        var xs = arrObjKeys(obj, inspect);
+        if (indent && !singleLineValues(xs)) {
+            return '[' + indentedJoin(xs, indent) + ']';
+        }
+        return '[ ' + $join.call(xs, ', ') + ' ]';
+    }
+    if (isError(obj)) {
+        var parts = arrObjKeys(obj, inspect);
+        if (!('cause' in Error.prototype) && 'cause' in obj && !isEnumerable.call(obj, 'cause')) {
+            return '{ [' + String(obj) + '] ' + $join.call($concat.call('[cause]: ' + inspect(obj.cause), parts), ', ') + ' }';
+        }
+        if (parts.length === 0) { return '[' + String(obj) + ']'; }
+        return '{ [' + String(obj) + '] ' + $join.call(parts, ', ') + ' }';
+    }
+    if (typeof obj === 'object' && customInspect) {
+        if (inspectSymbol && typeof obj[inspectSymbol] === 'function' && utilInspect) {
+            return utilInspect(obj, { depth: maxDepth - depth });
+        } else if (customInspect !== 'symbol' && typeof obj.inspect === 'function') {
+            return obj.inspect();
+        }
+    }
+    if (isMap(obj)) {
+        var mapParts = [];
+        if (mapForEach) {
+            mapForEach.call(obj, function (value, key) {
+                mapParts.push(inspect(key, obj, true) + ' => ' + inspect(value, obj));
+            });
+        }
+        return collectionOf('Map', mapSize.call(obj), mapParts, indent);
+    }
+    if (isSet(obj)) {
+        var setParts = [];
+        if (setForEach) {
+            setForEach.call(obj, function (value) {
+                setParts.push(inspect(value, obj));
+            });
+        }
+        return collectionOf('Set', setSize.call(obj), setParts, indent);
+    }
+    if (isWeakMap(obj)) {
+        return weakCollectionOf('WeakMap');
+    }
+    if (isWeakSet(obj)) {
+        return weakCollectionOf('WeakSet');
+    }
+    if (isWeakRef(obj)) {
+        return weakCollectionOf('WeakRef');
+    }
+    if (isNumber(obj)) {
+        return markBoxed(inspect(Number(obj)));
+    }
+    if (isBigInt(obj)) {
+        return markBoxed(inspect(bigIntValueOf.call(obj)));
+    }
+    if (isBoolean(obj)) {
+        return markBoxed(booleanValueOf.call(obj));
+    }
+    if (isString(obj)) {
+        return markBoxed(inspect(String(obj)));
+    }
+    // note: in IE 8, sometimes `global !== window` but both are the prototypes of each other
+    /* eslint-env browser */
+    if (typeof window !== 'undefined' && obj === window) {
+        return '{ [object Window] }';
+    }
+    if (
+        (typeof globalThis !== 'undefined' && obj === globalThis)
+        || (typeof global !== 'undefined' && obj === global)
+    ) {
+        return '{ [object globalThis] }';
+    }
+    if (!isDate(obj) && !isRegExp(obj)) {
+        var ys = arrObjKeys(obj, inspect);
+        var isPlainObject = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
+        var protoTag = obj instanceof Object ? '' : 'null prototype';
+        var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? 'Object' : '';
+        var constructorTag = isPlainObject || typeof obj.constructor !== 'function' ? '' : obj.constructor.name ? obj.constructor.name + ' ' : '';
+        var tag = constructorTag + (stringTag || protoTag ? '[' + $join.call($concat.call([], stringTag || [], protoTag || []), ': ') + '] ' : '');
+        if (ys.length === 0) { return tag + '{}'; }
+        if (indent) {
+            return tag + '{' + indentedJoin(ys, indent) + '}';
+        }
+        return tag + '{ ' + $join.call(ys, ', ') + ' }';
+    }
+    return String(obj);
+};
+
+function wrapQuotes(s, defaultStyle, opts) {
+    var style = opts.quoteStyle || defaultStyle;
+    var quoteChar = quotes[style];
+    return quoteChar + s + quoteChar;
+}
+
+function quote(s) {
+    return $replace.call(String(s), /"/g, '&quot;');
+}
+
+function canTrustToString(obj) {
+    return !toStringTag || !(typeof obj === 'object' && (toStringTag in obj || typeof obj[toStringTag] !== 'undefined'));
+}
+function isArray(obj) { return toStr(obj) === '[object Array]' && canTrustToString(obj); }
+function isDate(obj) { return toStr(obj) === '[object Date]' && canTrustToString(obj); }
+function isRegExp(obj) { return toStr(obj) === '[object RegExp]' && canTrustToString(obj); }
+function isError(obj) { return toStr(obj) === '[object Error]' && canTrustToString(obj); }
+function isString(obj) { return toStr(obj) === '[object String]' && canTrustToString(obj); }
+function isNumber(obj) { return toStr(obj) === '[object Number]' && canTrustToString(obj); }
+function isBoolean(obj) { return toStr(obj) === '[object Boolean]' && canTrustToString(obj); }
+
+// Symbol and BigInt do have Symbol.toStringTag by spec, so that can't be used to eliminate false positives
+function isSymbol(obj) {
+    if (hasShammedSymbols) {
+        return obj && typeof obj === 'object' && obj instanceof Symbol;
+    }
+    if (typeof obj === 'symbol') {
+        return true;
+    }
+    if (!obj || typeof obj !== 'object' || !symToString) {
+        return false;
+    }
+    try {
+        symToString.call(obj);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+function isBigInt(obj) {
+    if (!obj || typeof obj !== 'object' || !bigIntValueOf) {
+        return false;
+    }
+    try {
+        bigIntValueOf.call(obj);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+var hasOwn = Object.prototype.hasOwnProperty || function (key) { return key in this; };
+function has(obj, key) {
+    return hasOwn.call(obj, key);
+}
+
+function toStr(obj) {
+    return objectToString.call(obj);
+}
+
+function nameOf(f) {
+    if (f.name) { return f.name; }
+    var m = $match.call(functionToString.call(f), /^function\s*([\w$]+)/);
+    if (m) { return m[1]; }
+    return null;
+}
+
+function indexOf(xs, x) {
+    if (xs.indexOf) { return xs.indexOf(x); }
+    for (var i = 0, l = xs.length; i < l; i++) {
+        if (xs[i] === x) { return i; }
+    }
+    return -1;
+}
+
+function isMap(x) {
+    if (!mapSize || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        mapSize.call(x);
+        try {
+            setSize.call(x);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof Map; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakMap(x) {
+    if (!weakMapHas || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakMapHas.call(x, weakMapHas);
+        try {
+            weakSetHas.call(x, weakSetHas);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof WeakMap; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakRef(x) {
+    if (!weakRefDeref || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakRefDeref.call(x);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+function isSet(x) {
+    if (!setSize || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        setSize.call(x);
+        try {
+            mapSize.call(x);
+        } catch (m) {
+            return true;
+        }
+        return x instanceof Set; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakSet(x) {
+    if (!weakSetHas || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakSetHas.call(x, weakSetHas);
+        try {
+            weakMapHas.call(x, weakMapHas);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof WeakSet; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isElement(x) {
+    if (!x || typeof x !== 'object') { return false; }
+    if (typeof HTMLElement !== 'undefined' && x instanceof HTMLElement) {
+        return true;
+    }
+    return typeof x.nodeName === 'string' && typeof x.getAttribute === 'function';
+}
+
+function inspectString(str, opts) {
+    if (str.length > opts.maxStringLength) {
+        var remaining = str.length - opts.maxStringLength;
+        var trailer = '... ' + remaining + ' more character' + (remaining > 1 ? 's' : '');
+        return inspectString($slice.call(str, 0, opts.maxStringLength), opts) + trailer;
+    }
+    var quoteRE = quoteREs[opts.quoteStyle || 'single'];
+    quoteRE.lastIndex = 0;
+    // eslint-disable-next-line no-control-regex
+    var s = $replace.call($replace.call(str, quoteRE, '\\$1'), /[\x00-\x1f]/g, lowbyte);
+    return wrapQuotes(s, 'single', opts);
+}
+
+function lowbyte(c) {
+    var n = c.charCodeAt(0);
+    var x = {
+        8: 'b',
+        9: 't',
+        10: 'n',
+        12: 'f',
+        13: 'r'
+    }[n];
+    if (x) { return '\\' + x; }
+    return '\\x' + (n < 0x10 ? '0' : '') + $toUpperCase.call(n.toString(16));
+}
+
+function markBoxed(str) {
+    return 'Object(' + str + ')';
+}
+
+function weakCollectionOf(type) {
+    return type + ' { ? }';
+}
+
+function collectionOf(type, size, entries, indent) {
+    var joinedEntries = indent ? indentedJoin(entries, indent) : $join.call(entries, ', ');
+    return type + ' (' + size + ') {' + joinedEntries + '}';
+}
+
+function singleLineValues(xs) {
+    for (var i = 0; i < xs.length; i++) {
+        if (indexOf(xs[i], '\n') >= 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function getIndent(opts, depth) {
+    var baseIndent;
+    if (opts.indent === '\t') {
+        baseIndent = '\t';
+    } else if (typeof opts.indent === 'number' && opts.indent > 0) {
+        baseIndent = $join.call(Array(opts.indent + 1), ' ');
+    } else {
+        return null;
+    }
+    return {
+        base: baseIndent,
+        prev: $join.call(Array(depth + 1), baseIndent)
+    };
+}
+
+function indentedJoin(xs, indent) {
+    if (xs.length === 0) { return ''; }
+    var lineJoiner = '\n' + indent.prev + indent.base;
+    return lineJoiner + $join.call(xs, ',' + lineJoiner) + '\n' + indent.prev;
+}
+
+function arrObjKeys(obj, inspect) {
+    var isArr = isArray(obj);
+    var xs = [];
+    if (isArr) {
+        xs.length = obj.length;
+        for (var i = 0; i < obj.length; i++) {
+            xs[i] = has(obj, i) ? inspect(obj[i], obj) : '';
+        }
+    }
+    var syms = typeof gOPS === 'function' ? gOPS(obj) : [];
+    var symMap;
+    if (hasShammedSymbols) {
+        symMap = {};
+        for (var k = 0; k < syms.length; k++) {
+            symMap['$' + syms[k]] = syms[k];
+        }
+    }
+
+    for (var key in obj) { // eslint-disable-line no-restricted-syntax
+        if (!has(obj, key)) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
+        if (isArr && String(Number(key)) === key && key < obj.length) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
+        if (hasShammedSymbols && symMap['$' + key] instanceof Symbol) {
+            // this is to prevent shammed Symbols, which are stored as strings, from being included in the string key section
+            continue; // eslint-disable-line no-restricted-syntax, no-continue
+        } else if ($test.call(/[^\w$]/, key)) {
+            xs.push(inspect(key, obj) + ': ' + inspect(obj[key], obj));
+        } else {
+            xs.push(key + ': ' + inspect(obj[key], obj));
+        }
+    }
+    if (typeof gOPS === 'function') {
+        for (var j = 0; j < syms.length; j++) {
+            if (isEnumerable.call(obj, syms[j])) {
+                xs.push('[' + inspect(syms[j]) + ']: ' + inspect(obj[syms[j]], obj));
+            }
+        }
+    }
+    return xs;
+}
+
+
+/***/ }),
+
+/***/ 58502:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+module.exports = __webpack_require__(39023).inspect;
+
+
+/***/ }),
+
+/***/ 70226:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var keysShim;
+if (!Object.keys) {
+	// modified from https://github.com/es-shims/es5-shim
+	var has = Object.prototype.hasOwnProperty;
+	var toStr = Object.prototype.toString;
+	var isArgs = __webpack_require__(28598); // eslint-disable-line global-require
+	var isEnumerable = Object.prototype.propertyIsEnumerable;
+	var hasDontEnumBug = !isEnumerable.call({ toString: null }, 'toString');
+	var hasProtoEnumBug = isEnumerable.call(function () {}, 'prototype');
+	var dontEnums = [
+		'toString',
+		'toLocaleString',
+		'valueOf',
+		'hasOwnProperty',
+		'isPrototypeOf',
+		'propertyIsEnumerable',
+		'constructor'
+	];
+	var equalsConstructorPrototype = function (o) {
+		var ctor = o.constructor;
+		return ctor && ctor.prototype === o;
+	};
+	var excludedKeys = {
+		$applicationCache: true,
+		$console: true,
+		$external: true,
+		$frame: true,
+		$frameElement: true,
+		$frames: true,
+		$innerHeight: true,
+		$innerWidth: true,
+		$onmozfullscreenchange: true,
+		$onmozfullscreenerror: true,
+		$outerHeight: true,
+		$outerWidth: true,
+		$pageXOffset: true,
+		$pageYOffset: true,
+		$parent: true,
+		$scrollLeft: true,
+		$scrollTop: true,
+		$scrollX: true,
+		$scrollY: true,
+		$self: true,
+		$webkitIndexedDB: true,
+		$webkitStorageInfo: true,
+		$window: true
+	};
+	var hasAutomationEqualityBug = (function () {
+		/* global window */
+		if (typeof window === 'undefined') { return false; }
+		for (var k in window) {
+			try {
+				if (!excludedKeys['$' + k] && has.call(window, k) && window[k] !== null && typeof window[k] === 'object') {
+					try {
+						equalsConstructorPrototype(window[k]);
+					} catch (e) {
+						return true;
+					}
+				}
+			} catch (e) {
+				return true;
+			}
+		}
+		return false;
+	}());
+	var equalsConstructorPrototypeIfNotBuggy = function (o) {
+		/* global window */
+		if (typeof window === 'undefined' || !hasAutomationEqualityBug) {
+			return equalsConstructorPrototype(o);
+		}
+		try {
+			return equalsConstructorPrototype(o);
+		} catch (e) {
+			return false;
+		}
+	};
+
+	keysShim = function keys(object) {
+		var isObject = object !== null && typeof object === 'object';
+		var isFunction = toStr.call(object) === '[object Function]';
+		var isArguments = isArgs(object);
+		var isString = isObject && toStr.call(object) === '[object String]';
+		var theKeys = [];
+
+		if (!isObject && !isFunction && !isArguments) {
+			throw new TypeError('Object.keys called on a non-object');
+		}
+
+		var skipProto = hasProtoEnumBug && isFunction;
+		if (isString && object.length > 0 && !has.call(object, 0)) {
+			for (var i = 0; i < object.length; ++i) {
+				theKeys.push(String(i));
+			}
+		}
+
+		if (isArguments && object.length > 0) {
+			for (var j = 0; j < object.length; ++j) {
+				theKeys.push(String(j));
+			}
+		} else {
+			for (var name in object) {
+				if (!(skipProto && name === 'prototype') && has.call(object, name)) {
+					theKeys.push(String(name));
+				}
+			}
+		}
+
+		if (hasDontEnumBug) {
+			var skipConstructor = equalsConstructorPrototypeIfNotBuggy(object);
+
+			for (var k = 0; k < dontEnums.length; ++k) {
+				if (!(skipConstructor && dontEnums[k] === 'constructor') && has.call(object, dontEnums[k])) {
+					theKeys.push(dontEnums[k]);
+				}
+			}
+		}
+		return theKeys;
+	};
+}
+module.exports = keysShim;
+
+
+/***/ }),
+
+/***/ 62682:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var slice = Array.prototype.slice;
+var isArgs = __webpack_require__(28598);
+
+var origKeys = Object.keys;
+var keysShim = origKeys ? function keys(o) { return origKeys(o); } : __webpack_require__(70226);
+
+var originalKeys = Object.keys;
+
+keysShim.shim = function shimObjectKeys() {
+	if (Object.keys) {
+		var keysWorksWithArguments = (function () {
+			// Safari 5.0 bug
+			var args = Object.keys(arguments);
+			return args && args.length === arguments.length;
+		}(1, 2));
+		if (!keysWorksWithArguments) {
+			Object.keys = function keys(object) { // eslint-disable-line func-name-matching
+				if (isArgs(object)) {
+					return originalKeys(slice.call(object));
+				}
+				return originalKeys(object);
+			};
+		}
+	} else {
+		Object.keys = keysShim;
+	}
+	return Object.keys || keysShim;
+};
+
+module.exports = keysShim;
+
+
+/***/ }),
+
+/***/ 28598:
+/***/ ((module) => {
+
+"use strict";
+
+
+var toStr = Object.prototype.toString;
+
+module.exports = function isArguments(value) {
+	var str = toStr.call(value);
+	var isArgs = str === '[object Arguments]';
+	if (!isArgs) {
+		isArgs = str !== '[object Array]' &&
+			value !== null &&
+			typeof value === 'object' &&
+			typeof value.length === 'number' &&
+			value.length >= 0 &&
+			toStr.call(value.callee) === '[object Function]';
+	}
+	return isArgs;
+};
+
+
+/***/ }),
+
 /***/ 55560:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
@@ -29788,6 +33440,31 @@ function onceStrict (fn) {
   f.called = false
   return f
 }
+
+
+/***/ }),
+
+/***/ 18879:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+module.exports = [
+	'Float16Array',
+	'Float32Array',
+	'Float64Array',
+	'Int8Array',
+	'Int16Array',
+	'Int32Array',
+	'Uint8Array',
+	'Uint8ClampedArray',
+	'Uint16Array',
+	'Uint32Array',
+	'BigInt64Array',
+	'BigUint64Array'
+];
 
 
 /***/ }),
@@ -29850,6 +33527,33 @@ function nextTick(fn, arg1, arg2, arg3) {
 
 // for now just expose the builtin process global from node.js
 module.exports = global.process;
+
+
+/***/ }),
+
+/***/ 76417:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+/* wraps the internal process module, circumventing issues with some polyfills (see #539) */
+const process = ((base, esmKey, keys, isValid) => {
+  if (esmKey in base && base[esmKey] === true) {
+    let candidate
+    for (const key of keys) {
+      if (!(key in base)) {
+        continue
+      }
+      candidate = base[key]
+      if (isValid(candidate)) {
+        return candidate
+      }
+    }
+  }
+  return base
+})(__webpack_require__(7945), '__esModule', ['default', 'process'], (candidate) => 'nextTick' in candidate)
+module.exports = process
 
 
 /***/ }),
@@ -30289,7 +33993,7 @@ module.exports = function compose(...streams) {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -30735,7 +34439,7 @@ Duplex.from = function (body) {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -31126,7 +34830,7 @@ function _duplexify(pair) {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -31417,7 +35121,7 @@ module.exports.finished = finished
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -31563,8 +35267,13 @@ Stream.prototype.pipe = function (dest, options) {
 
   // Don't leave dangling pipes when there are errors.
   function onerror(er) {
+    var _this$listenerCount
     cleanup()
-    if (EE.listenerCount(this, 'error') === 0) {
+    if (
+      ((_this$listenerCount = this.listenerCount) === null || _this$listenerCount === undefined
+        ? undefined
+        : _this$listenerCount.call(this, 'error')) === 0
+    ) {
       this.emit('error', er)
     }
   }
@@ -32129,7 +35838,7 @@ PassThrough.prototype._transform = function (chunk, encoding, cb) {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 // Ported from https://github.com/mafintosh/pump with
@@ -32631,7 +36340,7 @@ module.exports = {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -34503,7 +38212,7 @@ module.exports = {
 
 /* replacement start */
 
-const process = __webpack_require__(7945)
+const process = __webpack_require__(76417)
 
 /* replacement end */
 
@@ -37061,6 +40770,407 @@ readdirGlob.ReaddirGlob = ReaddirGlob;
 
 /***/ }),
 
+/***/ 33967:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+var balanced = __webpack_require__(59380);
+
+module.exports = expandTop;
+
+var escSlash = '\0SLASH'+Math.random()+'\0';
+var escOpen = '\0OPEN'+Math.random()+'\0';
+var escClose = '\0CLOSE'+Math.random()+'\0';
+var escComma = '\0COMMA'+Math.random()+'\0';
+var escPeriod = '\0PERIOD'+Math.random()+'\0';
+
+var EXPANSION_MAX = 100000
+
+// `EXPANSION_MAX` caps the *number* of expansions, but not their length. An
+// input like `'{a,b}'.repeat(1500)` stays under that count - its output is
+// truncated to 100k results - while making every result ~1500 characters
+// long. The result set, and the intermediate arrays built while combining
+// brace sets, then grow large enough to exhaust memory and crash the process
+// (CVE-2026-14257). `EXPANSION_MAX_LENGTH` bounds the total number of
+// characters the accumulator may hold at any point, so memory stays flat no
+// matter how many brace groups are chained. The limit sits well above any
+// realistic expansion (100k results hitting `EXPANSION_MAX` measure ~1M
+// characters) so legitimate input is unaffected.
+var EXPANSION_MAX_LENGTH = 4000000
+
+// `expand` recurses once per level of brace *nesting* - both when expanding a
+// set's comma members and when re-wrapping a set whose body is a single part.
+// The CVE-2026-14257 fix made the *tail* iterative (recursion on `m.post`, one
+// level per chained group), which left nesting depth unbounded: about 3,100
+// levels of `{{{...a,b...}}}` - only ~6KB of input - exhausted the native stack
+// and crashed the process. `EXPANSION_MAX_DEPTH` bounds how deep the parser
+// will follow nesting. It sits far above any realistic pattern and well below
+// the depth at which the stack runs out.
+var EXPANSION_MAX_DEPTH = 1000
+
+// Bash keeps a quirk where a brace group followed by a comma set still expands
+// (`{a},b}`). The parser implements it by rewriting the string and restarting
+// the scan, absorbing one `}` per pass. `n` trailing braces therefore cost `n`
+// full passes over a string that itself grows by one `escClose` sentinel each
+// time - quadratic in `n`, with a ~26x constant from the sentinel's length.
+// 128KB of `'{a}' + '}'.repeat(n) + ',z}'` blocked the event loop for 27
+// seconds to produce two results. `EXPANSION_MAX_REWRITES` bounds how many
+// times the scan may restart. Real `{a},b}` input needs a handful.
+var EXPANSION_MAX_REWRITES = 1000
+
+function numeric(str) {
+  return parseInt(str, 10) == str
+    ? parseInt(str, 10)
+    : str.charCodeAt(0);
+}
+
+function escapeBraces(str) {
+  return str.split('\\\\').join(escSlash)
+            .split('\\{').join(escOpen)
+            .split('\\}').join(escClose)
+            .split('\\,').join(escComma)
+            .split('\\.').join(escPeriod);
+}
+
+function unescapeBraces(str) {
+  return str.split(escSlash).join('\\')
+            .split(escOpen).join('{')
+            .split(escClose).join('}')
+            .split(escComma).join(',')
+            .split(escPeriod).join('.');
+}
+
+
+// Like `target.push(...items)` but doesn't overflow the stack
+function pushAll(target, items) {
+  for (var i = 0; i < items.length; i++) {
+    target.push(items[i]);
+  }
+}
+
+// Basically just str.split(","), but handling cases
+// where we have nested braced sections, which should be
+// treated as individual members, like {a,{b,c},d}
+function parseCommaParts(str) {
+  var parts = [];
+
+  // Walk the brace groups iteratively. Recursing on `post` once per group let a
+  // chain of them exhaust the stack - the parsing-side counterpart to
+  // the `expand` overflow fixed for CVE-2026-14257, and not something `max` or
+  // `maxLength` can bound, since it happens before expansion.
+  //
+  // The part the next chunk continues
+  var carry = '';
+
+  for (;;) {
+    var m = balanced('{', '}', str);
+
+    if (!m) {
+      var tail = str.split(',');
+      tail[0] = carry + tail[0];
+      pushAll(parts, tail);
+      return parts;
+    }
+
+    var pre = m.pre;
+    var body = m.body;
+    var post = m.post;
+    var p = pre.split(',');
+
+    p[0] = carry + p[0];
+    p[p.length-1] += '{' + body + '}';
+
+    if (!post.length) {
+      pushAll(parts, p);
+      return parts;
+    }
+
+    carry = p.pop();
+    pushAll(parts, p);
+    str = post;
+  }
+}
+
+function expandTop(str, options) {
+  if (!str)
+    return [];
+
+  options = options || {};
+  var max = options.max == null ? EXPANSION_MAX : options.max;
+  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
+
+  // I don't know why Bash 4.3 does this, but it does.
+  // Anything starting with {} will have the first two bytes preserved
+  // but *only* at the top level, so {},a}b will not expand to anything,
+  // but a{},b}c will be expanded to [a}c,abc].
+  // One could argue that this is a bug in Bash, but since the goal of
+  // this module is to match Bash's rules, we escape a leading {}
+  if (str.substr(0, 2) === '{}') {
+    str = '\\{\\}' + str.substr(2);
+  }
+
+  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
+}
+
+function embrace(str) {
+  return '{' + str + '}';
+}
+function isPadded(el) {
+  return /^-?0\d/.test(el);
+}
+
+function lte(i, y) {
+  return i <= y;
+}
+function gte(i, y) {
+  return i >= y;
+}
+
+// Build `{ acc[a] + pre + values[v] }` for every combination, capping the
+// number of results at `max` and the total number of characters at `maxLength`.
+// This is the one place output grows, so bounding it here keeps the single
+// accumulator - and therefore memory - flat regardless of how many brace groups
+// are combined (CVE-2026-14257).
+function combine(
+  acc,
+  pre,
+  values,
+  max,
+  maxLength,
+  dropEmpties
+) {
+  var out = []
+  var length = 0
+  for (var a = 0; a < acc.length; a++) {
+    for (var v = 0; v < values.length; v++) {
+      if (out.length >= max) return out
+      var expansion = acc[a] + pre + values[v]
+      // Bash drops empty results at the top level. Skip them before they count
+      // against `max`, so `max` bounds the number of *kept* results.
+      if (dropEmpties && !expansion) continue
+      if (length + expansion.length > maxLength) return out
+      out.push(expansion)
+      length += expansion.length
+    }
+  }
+  return out
+}
+
+// The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
+// sequence body.
+function expandSequence(
+  body,
+  isAlphaSequence,
+  max,
+  maxLength
+) {
+  var n = body.split(/\.\./)
+  var N = []
+  // A sequence body always splits into two or three parts, but the compiler
+  // can't know that.
+  /* c8 ignore start */
+  if (n[0] === undefined || n[1] === undefined) {
+    return N
+  }
+  /* c8 ignore stop */
+  var x = numeric(n[0])
+  var y = numeric(n[1])
+  var width = Math.max(n[0].length, n[1].length)
+  var incr =
+    n.length === 3 && n[2] !== undefined ?
+      Math.max(Math.abs(numeric(n[2])), 1)
+    : 1
+  var test = lte
+  var reverse = y < x
+  if (reverse) {
+    incr *= -1
+    test = gte
+  }
+  var pad = n.some(isPadded)
+
+  var length = 0
+  for (var i = x; test(i, y) && N.length < max; i += incr) {
+    var c
+    if (isAlphaSequence) {
+      c = String.fromCharCode(i)
+      if (c === '\\') {
+        c = ''
+      }
+    } else {
+      c = String(i)
+      if (pad) {
+        var need = width - c.length
+        if (need > 0) {
+          var z = new Array(need + 1).join('0')
+          if (i < 0) {
+            c = '-' + z + c.slice(1)
+          } else {
+            c = z + c
+          }
+        }
+      }
+    }
+    if (length + c.length > maxLength) break
+    N.push(c)
+    length += c.length
+  }
+  return N
+}
+
+function expand(
+  str,
+  max,
+  maxLength,
+  maxDepth,
+  depth,
+  maxRewrites,
+  isTop
+) {
+  // Too deeply nested to keep following: treat the rest as literal, the same
+  // way a group that cannot expand is already handled. Truncating rather than
+  // throwing keeps expansion total, matching `max` and `maxLength`.
+  if (depth > maxDepth) {
+    return [str];
+  }
+
+  // Consume the string's top-level brace groups left to right, threading a
+  // running set of combined prefixes (`acc`). Expanding the tail iteratively -
+  // rather than recursing on `m.post` once per group - keeps the native stack
+  // depth constant, so deeply chained input (`'{a,b}'.repeat(3000)`) can no
+  // longer overflow the stack, and leaves a single accumulator whose size
+  // `maxLength` bounds directly (CVE-2026-14257).
+  var acc = ['']
+
+  // Bash drops empty results, but only when the *first* top-level group is a
+  // comma set - a sequence like `{a..\}` may legitimately yield ''. The drop
+  // is on the final strings, so it is applied to whichever `combine` produces
+  // them (the one with no brace set left in the tail).
+  // How many times the `{a},b}` rewrite below has restarted the scan. Each pass
+  // re-reads the whole string, so leaving this unbounded is quadratic.
+  var rewrites = 0
+  var dropEmpties = false
+  var firstGroup = true
+
+  for (;;) {
+    const m = balanced('{', '}', str)
+
+    // No brace set left: the rest of the string is literal.
+    if (!m) {
+      return combine(acc, str, [''], max, maxLength, dropEmpties)
+    }
+
+    // no need to expand pre, since it is guaranteed to be free of brace-sets
+    const pre = m.pre
+
+    if (/\$$/.test(pre)) {
+      acc = combine(
+        acc,
+        pre + '{' + m.body + '}',
+        [''],
+        max,
+        maxLength,
+        dropEmpties && !m.post.length
+      )
+      firstGroup = false
+      if (!m.post.length) break
+      str = m.post
+      continue
+    }
+
+    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
+    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
+    var isSequence = isNumericSequence || isAlphaSequence;
+    var isOptions = m.body.indexOf(',') >= 0;
+    if (!isSequence && !isOptions) {
+      // {a},b}
+      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+        rewrites++;
+        str = m.pre + '{' + m.body + escClose + m.post;
+        isTop = true;
+        continue;
+      }
+      // Nothing here expands, so the whole remaining string is literal.
+      return combine(
+        acc,
+        pre + '{' + m.body + '}' + m.post,
+        [''],
+        max,
+        maxLength,
+        dropEmpties
+      )
+    }
+
+    if (firstGroup) {
+      dropEmpties = isTop && !isSequence
+      firstGroup = false
+    }
+
+    var values;
+    if (isSequence) {
+      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+    } else {
+      var n = parseCommaParts(m.body);
+      if (n.length === 1 && n[0] !== undefined) {
+        // x{{a,b}}y ==> x{a}y x{b}y
+        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+        //XXX is this necessary? Can't seem to hit it in tests.
+        /* c8 ignore start */
+        if (n.length === 1) {
+          acc = combine(
+            acc,
+            pre + n[0],
+            [''],
+            max,
+            maxLength,
+            dropEmpties && !m.post.length
+          )
+          if (!m.post.length) break
+          str = m.post
+          continue
+        }
+        /* c8 ignore stop */
+      }
+
+      // Values that `combine` is going to drop as empty produce no result, so
+      // they must not count against `max` - otherwise `{a,,b}` with `max: 2`
+      // would stop at `['a', '']` and yield one result instead of two. Skipping
+      // them outright keeps `values` bounded while leaving `max` a bound on
+      // *kept* results.
+      var dropsEmpties = dropEmpties && !m.post.length && !pre
+      for (var d = 0; dropsEmpties && d < acc.length; d++) {
+        if (acc[d]) {
+          dropsEmpties = false
+        }
+      }
+
+      values = []
+      var valuesLength = 0
+      outer: for (var j = 0; j < n.length; j++) {
+        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false)
+        for (var k = 0; k < expanded.length; k++) {
+          var v = expanded[k]
+          if (dropsEmpties && !v) continue
+          if (values.length >= max || valuesLength + v.length > maxLength) {
+            break outer
+          }
+          values.push(v)
+          valuesLength += v.length
+        }
+      }
+    }
+
+    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length)
+    if (!m.post.length) break
+    str = m.post
+  }
+
+  return acc
+}
+
+
+/***/ }),
+
 /***/ 63669:
 /***/ ((module) => {
 
@@ -37093,7 +41203,7 @@ minimatch.sep = path.sep
 
 const GLOBSTAR = Symbol('globstar **')
 minimatch.GLOBSTAR = GLOBSTAR
-const expand = __webpack_require__(94691)
+const expand = __webpack_require__(33967)
 
 const plTypes = {
   '!': { open: '(?:(?!(?:', close: '))[^/]*?)'},
@@ -38075,6 +42185,57 @@ minimatch.Minimatch = Minimatch
 
 /***/ }),
 
+/***/ 22524:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+var $concat = GetIntrinsic('%Array.prototype.concat%');
+
+var callBind = __webpack_require__(53844);
+
+var callBound = __webpack_require__(23105);
+var $slice = callBound('Array.prototype.slice');
+
+var hasSymbols = __webpack_require__(61114)();
+var isConcatSpreadable = hasSymbols && Symbol.isConcatSpreadable;
+
+/** @type {never[]} */ var empty = [];
+var $concatApply = isConcatSpreadable ? callBind.apply($concat, empty) : null;
+
+// eslint-disable-next-line no-extra-parens
+var isArray = isConcatSpreadable ? /** @type {(value: unknown) => value is unknown[]} */ (__webpack_require__(82513)) : null;
+
+/** @type {import('.')} */
+module.exports = isConcatSpreadable
+	// eslint-disable-next-line no-unused-vars
+	? function safeArrayConcat(item) {
+		for (var i = 0; i < arguments.length; i += 1) {
+			/** @type {typeof item} */ var arg = arguments[i];
+			// @ts-expect-error ts(2538) see https://github.com/microsoft/TypeScript/issues/9998#issuecomment-1890787975; works if `const`
+			if (arg && typeof arg === 'object' && typeof arg[isConcatSpreadable] === 'boolean') {
+				// @ts-expect-error ts(7015) TS doesn't yet support Symbol indexing
+				if (!empty[isConcatSpreadable]) {
+					// @ts-expect-error ts(7015) TS doesn't yet support Symbol indexing
+					empty[isConcatSpreadable] = true;
+				}
+				// @ts-expect-error ts(2721) ts(18047) not sure why TS can't figure out this can't be null
+				var arr = isArray(arg) ? $slice(arg) : [arg];
+				// @ts-expect-error ts(7015) TS can't handle expandos on an array
+				arr[isConcatSpreadable] = true; // shadow the property. TODO: use [[Define]]
+				arguments[i] = arr;
+			}
+		}
+		// @ts-expect-error ts(2345) https://github.com/microsoft/TypeScript/issues/57164 TS doesn't understand that apply can take an arguments object
+		return $concatApply(arguments);
+	}
+	: callBind($concat, empty);
+
+
+/***/ }),
+
 /***/ 93058:
 /***/ ((module, exports, __webpack_require__) => {
 
@@ -38143,6 +42304,81 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   }
   return buffer.SlowBuffer(size)
 }
+
+
+/***/ }),
+
+/***/ 93470:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBound = __webpack_require__(23105);
+var isRegex = __webpack_require__(86622);
+
+var $exec = callBound('RegExp.prototype.exec');
+var $TypeError = __webpack_require__(73314);
+
+/** @type {import('.')} */
+module.exports = function regexTester(regex) {
+	if (!isRegex(regex)) {
+		throw new $TypeError('`regex` must be a RegExp');
+	}
+	return function test(s) {
+		return $exec(regex, s) !== null;
+	};
+};
+
+
+/***/ }),
+
+/***/ 49346:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+var define = __webpack_require__(31316);
+var hasDescriptors = __webpack_require__(60497)();
+var gOPD = __webpack_require__(33170);
+
+var $TypeError = __webpack_require__(73314);
+var $floor = GetIntrinsic('%Math.floor%');
+
+/** @type {import('.')} */
+module.exports = function setFunctionLength(fn, length) {
+	if (typeof fn !== 'function') {
+		throw new $TypeError('`fn` is not a function');
+	}
+	if (typeof length !== 'number' || length < 0 || length > 0xFFFFFFFF || $floor(length) !== length) {
+		throw new $TypeError('`length` must be a positive 32-bit integer');
+	}
+
+	var loose = arguments.length > 2 && !!arguments[2];
+
+	var functionLengthIsConfigurable = true;
+	var functionLengthIsWritable = true;
+	if ('length' in fn && gOPD) {
+		var desc = gOPD(fn, 'length');
+		if (desc && !desc.configurable) {
+			functionLengthIsConfigurable = false;
+		}
+		if (desc && !desc.writable) {
+			functionLengthIsWritable = false;
+		}
+	}
+
+	if (functionLengthIsConfigurable || functionLengthIsWritable || !loose) {
+		if (hasDescriptors) {
+			define(/** @type {Parameters<define>[0]} */ (fn), 'length', length, true, true);
+		} else {
+			define(/** @type {Parameters<define>[0]} */ (fn), 'length', length);
+		}
+	}
+	return fn;
+};
 
 
 /***/ }),
@@ -39518,6 +43754,130 @@ module.exports = class StreamError extends Error {
     return new StreamError(msg, 'BAD_ARGUMENT', StreamError.BAD_ARGUMENT)
   }
 }
+
+
+/***/ }),
+
+/***/ 49651:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var RequireObjectCoercible = __webpack_require__(19601);
+var ToString = __webpack_require__(35038);
+var callBound = __webpack_require__(23105);
+var safeRegexTester = __webpack_require__(93470);
+
+var $replace = callBound('String.prototype.replace');
+var $charAt = callBound('String.prototype.charAt');
+var $slice = callBound('String.prototype.slice');
+
+var mvsIsWS = (/^\s$/).test('\u180E');
+/* eslint-disable no-control-regex */
+var leftWhitespace = mvsIsWS
+	? /^[\x09\x0A\x0B\x0C\x0D\x20\xA0\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\u2028\u2029\uFEFF]+/
+	: /^[\x09\x0A\x0B\x0C\x0D\x20\xA0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\u2028\u2029\uFEFF]+/;
+var isWhitespace = safeRegexTester(mvsIsWS
+	? /[\x09\x0A\x0B\x0C\x0D\x20\xA0\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\u2028\u2029\uFEFF]$/
+	: /[\x09\x0A\x0B\x0C\x0D\x20\xA0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000\u2028\u2029\uFEFF]$/);
+/* eslint-enable no-control-regex */
+
+module.exports = function trim() {
+	var S = $replace(ToString(RequireObjectCoercible(this)), leftWhitespace, '');
+	// scan back for the trailing whitespace boundary; a `$`-anchored regexp is quadratic on large internal whitespace runs
+	var end = S.length;
+	while (end > 0 && isWhitespace($charAt(S, end - 1))) {
+		end -= 1;
+	}
+	return $slice(S, 0, end);
+};
+
+
+/***/ }),
+
+/***/ 20941:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var callBind = __webpack_require__(53844);
+var define = __webpack_require__(50191);
+var RequireObjectCoercible = __webpack_require__(19601);
+
+var implementation = __webpack_require__(49651);
+var getPolyfill = __webpack_require__(58698);
+var shim = __webpack_require__(4872);
+
+var bound = callBind(getPolyfill());
+var boundMethod = function trim(receiver) {
+	RequireObjectCoercible(receiver);
+	return bound(receiver);
+};
+
+define(boundMethod, {
+	getPolyfill: getPolyfill,
+	implementation: implementation,
+	shim: shim
+});
+
+module.exports = boundMethod;
+
+
+/***/ }),
+
+/***/ 58698:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(49651);
+
+var zeroWidthSpace = '\u200b';
+var mongolianVowelSeparator = '\u180E';
+
+module.exports = function getPolyfill() {
+	if (
+		String.prototype.trim
+		&& zeroWidthSpace.trim() === zeroWidthSpace
+		&& mongolianVowelSeparator.trim() === mongolianVowelSeparator
+		&& ('_' + mongolianVowelSeparator).trim() === ('_' + mongolianVowelSeparator)
+		&& (mongolianVowelSeparator + '_').trim() === (mongolianVowelSeparator + '_')
+	) {
+		return String.prototype.trim;
+	}
+	return implementation;
+};
+
+
+/***/ }),
+
+/***/ 4872:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var supportsDescriptors = __webpack_require__(60497)();
+var defineDataProperty = __webpack_require__(31316);
+
+var getPolyfill = __webpack_require__(58698);
+
+module.exports = function shimStringTrim() {
+	var polyfill = getPolyfill();
+
+	if (String.prototype.trim !== polyfill) {
+		if (supportsDescriptors) {
+			defineDataProperty(String.prototype, 'trim', polyfill, true);
+		} else {
+			defineDataProperty(String.prototype, 'trim', polyfill);
+		}
+	}
+
+	return polyfill;
+};
 
 
 /***/ }),
@@ -41193,330 +45553,1039 @@ function trailingBytesSeen(data) {
 /***/ }),
 
 /***/ 62958:
-/***/ ((module) => {
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
-module.exports = Traverse;
-function Traverse (obj) {
-    if (!(this instanceof Traverse)) return new Traverse(obj);
-    this.value = obj;
+var whichTypedArray = __webpack_require__(54768);
+var taSlice = __webpack_require__(39013);
+var gopd = __webpack_require__(33170);
+var defineDataProperty = __webpack_require__(31316);
+var ToPrimitive = __webpack_require__(75604);
+
+// TODO: use call-bind, is-date, is-regex, is-string, is-boolean-object, is-number-object
+function toS(obj) { return Object.prototype.toString.call(obj); }
+function isDate(obj) { return toS(obj) === '[object Date]'; }
+function isRegExp(obj) { return toS(obj) === '[object RegExp]'; }
+function isError(obj) { return toS(obj) === '[object Error]'; }
+function isBoolean(obj) { return toS(obj) === '[object Boolean]'; }
+function isNumber(obj) { return toS(obj) === '[object Number]'; }
+function isString(obj) { return toS(obj) === '[object String]'; }
+
+// TODO: use isarray
+var isArray = Array.isArray || function isArray(xs) {
+	return Object.prototype.toString.call(xs) === '[object Array]';
+};
+
+// TODO: use for-each?
+function forEach(xs, fn) {
+	if (xs.forEach) { return xs.forEach(fn); }
+	for (var i = 0; i < xs.length; i++) {
+		fn(xs[i], i, xs);
+	}
+	return void undefined;
 }
 
+// TODO: use object-keys
+var objectKeys = Object.keys || function keys(obj) {
+	var res = [];
+	for (var key in obj) { res[res.length] = key; } // eslint-disable-line no-restricted-syntax
+	return res;
+};
+
+var propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+var getOwnPropertySymbols = Object.getOwnPropertySymbols; // eslint-disable-line id-length
+
+// TODO: use reflect.ownkeys and filter out non-enumerables
+function ownEnumerableKeys(obj) {
+	var res = objectKeys(obj);
+
+	// Include enumerable symbol properties.
+	if (getOwnPropertySymbols) {
+		var symbols = getOwnPropertySymbols(obj);
+		for (var i = 0; i < symbols.length; i++) {
+			if (propertyIsEnumerable.call(obj, symbols[i])) {
+				res[res.length] = symbols[i];
+			}
+		}
+	}
+	return res;
+}
+
+// TODO: use object.hasown
+var hasOwnProperty = Object.prototype.hasOwnProperty || function (obj, key) {
+	return key in obj;
+};
+
+function isWritable(object, key) {
+	if (typeof gopd !== 'function') {
+		return true;
+	}
+
+	var desc = gopd(object, key);
+	return !desc || !desc.writable;
+}
+
+var maxArrayLength = 4294967295;
+
+function isIndex(key) {
+	if (typeof key === 'symbol') {
+		return false;
+	}
+	var index = Number(key);
+	return index >= 0
+		&& index < maxArrayLength
+		&& index % 1 === 0
+		&& String(index) === String(key);
+}
+
+function countBelow(ascending, index) {
+	var low = 0;
+	var high = ascending.length;
+	while (low < high) {
+		var middle = Math.floor((low + high) / 2);
+		if (ascending[middle] < index) {
+			low = middle + 1;
+		} else {
+			high = middle;
+		}
+	}
+	return low;
+}
+
+// While an array's children are walked, `spliced` holds, in ascending order, the index that each
+// child spliced out of it so far had when that walk began. This is enough to tell which children
+// are gone, and where each remaining one is now, however many went away and in whatever order.
+// Nothing but a splice moves a child, so for every other kind of parent `spliced` stays empty.
+function wasSpliced(key, spliced) {
+	return spliced.length > 0
+		&& isIndex(key)
+		&& spliced[countBelow(spliced, Number(key))] === Number(key);
+}
+
+function shiftedKey(key, spliced) {
+	if (spliced.length === 0 || !isIndex(key)) {
+		return key;
+	}
+	var shifted = Number(key) - countBelow(spliced, Number(key));
+	return typeof key === 'number' ? shifted : String(shifted);
+}
+
+// where `__proto__` is an accessor on Object.prototype, assigning it on an object
+// that lacks it as an own property replaces the [[Prototype]], instead of creating it.
+// in older engines it is magic on every object, so there is no own `__proto__` to preserve.
+var hasProtoAccessor = typeof gopd === 'function' && !!gopd(Object.prototype, '__proto__');
+
+function setProperty(object, key, value) {
+	if (hasProtoAccessor && key === '__proto__' && !hasOwnProperty.call(object, key)) {
+		defineDataProperty(object, key, value);
+	} else {
+		object[key] = value; // eslint-disable-line no-param-reassign
+	}
+}
+
+// where `__proto__` is magic, reading or assigning it only ever reaches the [[Prototype]],
+// even on an object that has it as an own property.
+var hasMagicProto = !hasProtoAccessor && {}.__proto__ === Object.prototype;
+
+// TODO: use es-abstract's ToPropertyKey semantics
+function toSettableKey(segment) {
+	// a segment that is an object would otherwise be coerced anew on every use, and need not produce the same key each time
+	var primitive = ToPrimitive(segment, String);
+	var key = typeof primitive === 'symbol' ? primitive : String(primitive);
+	if (hasMagicProto && key === '__proto__') {
+		throw new TypeError('`__proto__` can not be set as a property in this engine');
+	}
+	return key;
+}
+
+function setOwnProperty(object, key, value) {
+	'use strict';
+
+	// this file is sloppy, so the assignment is repeated here, where a failed one throws
+	if (hasProtoAccessor && key === '__proto__' && !hasOwnProperty.call(object, key)) {
+		defineDataProperty(object, key, value);
+	} else {
+		object[key] = value; // eslint-disable-line no-param-reassign
+	}
+	// a primitive can not gain an own property; when assigning one does not throw,
+	// the property would be read from, or written to, a built-in prototype
+	if (Object(object) !== object) {
+		throw new TypeError('Cannot create property `' + String(key) + '` on a ' + typeof object);
+	}
+}
+
+var gPO = Object.getPrototypeOf;
+// TODO: use get-proto
+function getProto(obj) {
+	return gPO ? gPO(obj) : obj.__proto__;
+}
+
+var sPO = Object.setPrototypeOf;
+// TODO: use set-proto
+function setProto(obj, proto) {
+	if (sPO) {
+		sPO(obj, proto);
+	} else {
+		obj.__proto__ = proto; // eslint-disable-line no-param-reassign
+	}
+}
+
+function copyBoxed(src, valueOf) {
+	var primitive;
+	try {
+		primitive = valueOf.call(src);
+	} catch (e) {
+		// an object that only claims to be a boxed primitive, via Symbol.toStringTag, is handled as before
+		return Object(src);
+	}
+	var dst = Object(primitive);
+	var proto = getProto(src);
+	if (proto && proto !== getProto(dst)) {
+		setProto(dst, proto);
+	}
+	return dst;
+}
+
+// a String object's characters are its own read-only properties, which a copy made from its value already has
+function isStringCharacter(obj, key) {
+	return isString(obj) && isIndex(key) && Number(key) < obj.length;
+}
+
+function copy(src, options) {
+	if (typeof src === 'object' && src !== null) {
+		var dst;
+
+		if (isArray(src)) {
+			dst = [];
+		} else if (isDate(src)) {
+			dst = new Date(src.getTime ? src.getTime() : src);
+		} else if (isRegExp(src)) {
+			dst = new RegExp(src);
+		} else if (isBoolean(src)) {
+			dst = copyBoxed(src, Boolean.prototype.valueOf);
+		} else if (isNumber(src)) {
+			dst = copyBoxed(src, Number.prototype.valueOf);
+		} else if (isString(src)) {
+			dst = copyBoxed(src, String.prototype.valueOf);
+		} else {
+			var ta = whichTypedArray(src);
+			if (ta) {
+				return taSlice(src);
+			} else if (Object.create && Object.getPrototypeOf) {
+				dst = Object.create(Object.getPrototypeOf(src));
+			} else if (src.constructor === Object) {
+				dst = {};
+			} else {
+				var proto = (src.constructor && src.constructor.prototype)
+					|| src.__proto__
+					|| {};
+				var T = function T() {}; // eslint-disable-line func-style, func-name-matching
+				T.prototype = proto;
+				dst = new T();
+			}
+		}
+
+		// an Error's message is usually its own non-enumerable property,
+		// so the keys below leave it out
+		if (isError(src)) { defineDataProperty(dst, 'message', src.message); }
+
+		var iteratorFunction = options.includeSymbols ? ownEnumerableKeys : objectKeys;
+		forEach(iteratorFunction(src), function (key) {
+			if (!isStringCharacter(dst, key)) {
+				setProperty(dst, key, src[key]);
+			}
+		});
+		return dst;
+	}
+	return src;
+}
+
+/** @type {TraverseOptions} */
+var emptyNull = { __proto__: null };
+
+/** @type {(options: TraverseOptions | null | undefined) => TraverseOptions} */
+function getOptions(options) {
+	return options == null ? emptyNull : options;
+}
+
+function walk(root, cb) {
+	var path = [];
+	var parents = [];
+	var alive = true;
+	var options = arguments.length > 2 ? arguments[2] : emptyNull;
+	var iteratorFunction = options.includeSymbols ? ownEnumerableKeys : objectKeys;
+	var immutable = !!options.immutable;
+
+	return (function walker(node_, splicedSiblings, originalKey) {
+		var node = immutable ? copy(node_, options) : node_;
+		var modifiers = { __proto__: null };
+
+		var keepGoing = true;
+
+		var state = {
+			node: node,
+			node_: node_,
+			path: [].concat(path),
+			parent: parents[parents.length - 1],
+			parents: parents,
+			key: path[path.length - 1],
+			removedKeys: { __proto__: null },
+			isRoot: path.length === 0,
+			level: path.length,
+			circular: null,
+			update: function (x, stopHere) {
+				// once this node is spliced out, its key belongs to whichever sibling took its place
+				if (!state.isRoot && !wasSpliced(originalKey, splicedSiblings)) {
+					setProperty(state.parent.node, state.key, x);
+				}
+				state.node = x;
+				if (stopHere) { keepGoing = false; }
+			},
+			delete: function (stopHere) {
+				if (!wasSpliced(originalKey, splicedSiblings)) {
+					delete state.parent.node[state.key];
+					state.parent.removedKeys[state.key] = true;
+				}
+				if (stopHere) { keepGoing = false; }
+			},
+			remove: function (stopHere) {
+				if (isArray(state.parent.node) && isIndex(originalKey)) {
+					var index = Number(originalKey);
+					var at = countBelow(splicedSiblings, index);
+					// once this node is spliced out, its slot holds the next sibling still there,
+					// and removing again removes that one, as it always has
+					while (splicedSiblings[at] === index) {
+						index += 1;
+						at += 1;
+					}
+					if (index - at < state.parent.node.length) {
+						state.parent.node.splice(index - at, 1);
+						splicedSiblings.splice(at, 0, index);
+						state.parent.removedKeys[state.key] = true;
+					}
+					if (stopHere) { keepGoing = false; }
+				} else {
+					state.delete(stopHere);
+				}
+			},
+			keys: null,
+			before: function (f) { modifiers.before = f; },
+			after: function (f) { modifiers.after = f; },
+			pre: function (f) { modifiers.pre = f; },
+			post: function (f) { modifiers.post = f; },
+			stop: function () { alive = false; },
+			block: function () { keepGoing = false; },
+		};
+
+		if (!alive) { return state; }
+
+		function updateState() {
+			if (typeof state.node === 'object' && state.node !== null) {
+				var nodeKeys = iteratorFunction(state.node);
+				// keys assigned by the callback are kept unless it replaced the node with a new object
+				if (!state.keys || (state.node !== node && state.node !== node_)) {
+					state.keys = nodeKeys;
+				}
+
+				// a node whose children the callback chose not to visit is still not a leaf
+				state.isLeaf = nodeKeys.length === 0;
+
+				for (var i = 0; i < parents.length; i++) {
+					if (parents[i].node_ === node_) {
+						state.circular = parents[i];
+						break; // eslint-disable-line no-restricted-syntax
+					}
+				}
+			} else {
+				state.isLeaf = true;
+				state.keys = null;
+			}
+
+			state.notLeaf = !state.isLeaf;
+			state.notRoot = !state.isRoot;
+		}
+
+		updateState();
+
+		// use return values to update if defined
+		var ret = cb.call(state, state.node);
+		if (ret !== undefined && state.update) { state.update(ret); }
+
+		if (modifiers.before) { modifiers.before.call(state, state.node); }
+
+		if (!keepGoing) { return state; }
+
+		if (
+			typeof state.node === 'object'
+			&& state.node !== null
+			&& !state.circular
+		) {
+			// before this node is among the parents, so it is not its own circular
+			updateState();
+
+			parents[parents.length] = state;
+
+			var splicedChildren = [];
+
+			forEach(state.keys, function (listedKey, i) {
+				// a child can only be gone before its turn if custom `keys` list it more than once
+				if (wasSpliced(listedKey, splicedChildren)) { return; }
+
+				var key = shiftedKey(listedKey, splicedChildren);
+
+				path[path.length] = (key);
+
+				if (modifiers.pre) { modifiers.pre.call(state, state.node[key], key); }
+
+				var child = walker(state.node[key], splicedChildren, listedKey);
+
+				if (immutable && !wasSpliced(listedKey, splicedChildren)) {
+					// not `key`: a sibling spliced during this child's walk will have moved it
+					var writeKey = shiftedKey(listedKey, splicedChildren);
+					if (
+						hasOwnProperty.call(state.node, writeKey)
+						&& !isWritable(state.node, writeKey)
+					) {
+						state.node[writeKey] = child.node;
+					}
+				}
+
+				child.isLast = i === state.keys.length - 1;
+				child.isFirst = i === 0;
+
+				if (modifiers.post) { modifiers.post.call(state, child); }
+
+				path.pop();
+			});
+			parents.pop();
+		}
+
+		if (modifiers.after) { modifiers.after.call(state, state.node); }
+
+		return state;
+	}(root, [])).node;
+}
+
+/** @typedef {{ immutable?: boolean, includeSymbols?: boolean }} TraverseOptions */
+
+/**
+ * A traverse constructor
+ * @param {object} obj - the object to traverse
+ * @param {TraverseOptions | null | undefined} [options] - options for the traverse
+ * @constructor
+ */
+function Traverse(obj) {
+	if (!(this instanceof Traverse)) {
+		return new Traverse(obj, getOptions(arguments.length > 1 ? arguments[1] : null));
+	}
+	/** @type {TraverseOptions} */
+	this.options = getOptions(arguments.length > 1 ? arguments[1] : null);
+	this.value = obj;
+}
+
+/** @type {(ps: PropertyKey[]) => Traverse['value']} */
 Traverse.prototype.get = function (ps) {
-    var node = this.value;
-    for (var i = 0; i < ps.length; i ++) {
-        var key = ps[i];
-        if (!Object.hasOwnProperty.call(node, key)) {
-            node = undefined;
-            break;
-        }
-        node = node[key];
-    }
-    return node;
+	var node = this.value;
+	for (var i = 0; i < ps.length; i++) {
+		var key = ps[i];
+		// a symbol path segment is looked up whether or not `includeSymbols` is set
+		if (
+			node == null
+			|| !hasOwnProperty.call(node, key)
+		) {
+			return void undefined;
+		}
+		node = node[key];
+	}
+	return node;
+};
+
+/** @type {(ps: PropertyKey[]) => boolean} */
+Traverse.prototype.has = function (ps) {
+	var node = this.value;
+	// TODO: remove ps.length check
+	if (!node && ps.length > 0) {
+		return false;
+	}
+	for (var i = 0; i < ps.length; i++) {
+		var key = ps[i];
+		if (
+			node == null
+			|| !hasOwnProperty.call(node, key)
+		) {
+			return false;
+		}
+		node = node[key];
+	}
+	return true;
 };
 
 Traverse.prototype.set = function (ps, value) {
-    var node = this.value;
-    for (var i = 0; i < ps.length - 1; i ++) {
-        var key = ps[i];
-        if (!Object.hasOwnProperty.call(node, key)) node[key] = {};
-        node = node[key];
-    }
-    node[ps[i]] = value;
-    return value;
+	var node = this.value;
+	for (var i = 0; i < ps.length - 1; i++) {
+		var key = toSettableKey(ps[i]);
+		if (!hasOwnProperty.call(node, key)) {
+			setOwnProperty(node, key, {});
+			// an inherited setter, or a Proxy, can accept the assignment without creating the property;
+			// the next node would then be read from wherever the key is inherited from
+			if (!hasOwnProperty.call(node, key)) {
+				throw new TypeError('Cannot create property `' + String(key) + '` as an own property');
+			}
+		}
+		node = node[key];
+	}
+	setOwnProperty(node, toSettableKey(ps[i]), value);
+	return value;
 };
 
 Traverse.prototype.map = function (cb) {
-    return walk(this.value, cb, true);
+	return walk(this.value, cb, { __proto__: null, immutable: true, includeSymbols: !!this.options.includeSymbols });
 };
 
 Traverse.prototype.forEach = function (cb) {
-    this.value = walk(this.value, cb, false);
-    return this.value;
+	this.value = walk(this.value, cb, this.options);
+	return this.value;
 };
 
 Traverse.prototype.reduce = function (cb, init) {
-    var skip = arguments.length === 1;
-    var acc = skip ? this.value : init;
-    this.forEach(function (x) {
-        if (!this.isRoot || !skip) {
-            acc = cb.call(this, acc, x);
-        }
-    });
-    return acc;
+	var skip = arguments.length === 1;
+	var acc = skip ? this.value : init;
+	this.forEach(function (x) {
+		if (!this.isRoot || !skip) {
+			acc = cb.call(this, acc, x);
+		}
+	});
+	return acc;
 };
 
 Traverse.prototype.deepEqual = function (obj) {
-    if (arguments.length !== 1) {
-        throw new Error(
-            'deepEqual requires exactly one object to compare against'
-        );
-    }
-    
-    var equal = true;
-    var node = obj;
-    
-    this.forEach(function (y) {
-        var notEqual = (function () {
-            equal = false;
-            //this.stop();
-            return undefined;
-        }).bind(this);
-        
-        //if (node === undefined || node === null) return notEqual();
-        
-        if (!this.isRoot) {
-        /*
+	if (arguments.length !== 1) {
+		throw new Error('deepEqual requires exactly one object to compare against');
+	}
+
+	var equal = true;
+	function notEqual() {
+		equal = false;
+		// this.stop();
+		return undefined;
+	}
+
+	var node = obj;
+
+	this.forEach(function (y) { // eslint-disable-line consistent-return, max-statements
+
+		// if (node === undefined || node === null) return notEqual();
+
+		if (!this.isRoot) {
+			/*
             if (!Object.hasOwnProperty.call(node, this.key)) {
                 return notEqual();
             }
         */
-            if (typeof node !== 'object') return notEqual();
-            node = node[this.key];
-        }
-        
-        var x = node;
-        
-        this.post(function () {
-            node = x;
-        });
-        
-        var toS = function (o) {
-            return Object.prototype.toString.call(o);
-        };
-        
-        if (this.circular) {
-            if (Traverse(obj).get(this.circular.path) !== x) notEqual();
-        }
-        else if (typeof x !== typeof y) {
-            notEqual();
-        }
-        else if (x === null || y === null || x === undefined || y === undefined) {
-            if (x !== y) notEqual();
-        }
-        else if (x.__proto__ !== y.__proto__) {
-            notEqual();
-        }
-        else if (x === y) {
-            // nop
-        }
-        else if (typeof x === 'function') {
-            if (x instanceof RegExp) {
-                // both regexps on account of the __proto__ check
-                if (x.toString() != y.toString()) notEqual();
-            }
-            else if (x !== y) notEqual();
-        }
-        else if (typeof x === 'object') {
-            if (toS(y) === '[object Arguments]'
+			if (typeof node !== 'object') { return notEqual(); }
+			node = node[this.key];
+		}
+
+		var x = node;
+
+		this.post(function () {
+			node = x;
+		});
+
+		if (this.circular) {
+			if (new Traverse(obj).get(this.circular.path) !== x) { notEqual(); }
+		} else if (typeof x !== typeof y) {
+			notEqual();
+		} else if (x === null || y === null || x === undefined || y === undefined) {
+			if (x !== y) { notEqual(); }
+		} else if (x.__proto__ !== y.__proto__) {
+			notEqual();
+		} else if (x === y) {
+			// nop
+		} else if (typeof x === 'function') {
+			if (x instanceof RegExp) {
+				// both regexps on account of the __proto__ check
+				if (String(x) !== String(y)) { notEqual(); }
+			} else if (x !== y) { notEqual(); }
+		} else if (typeof x === 'object') {
+			if (toS(y) === '[object Arguments]'
             || toS(x) === '[object Arguments]') {
-                if (toS(x) !== toS(y)) {
-                    notEqual();
-                }
-            }
-            else if (x instanceof Date || y instanceof Date) {
-                if (!(x instanceof Date) || !(y instanceof Date)
+				if (toS(x) !== toS(y)) {
+					notEqual();
+				}
+			} else if (toS(y) === '[object RegExp]'
+            || toS(x) === '[object RegExp]') {
+				if (!x || !y || x.toString() !== y.toString()) { notEqual(); }
+			} else if (x instanceof Date || y instanceof Date) {
+				if (!(x instanceof Date) || !(y instanceof Date)
                 || x.getTime() !== y.getTime()) {
-                    notEqual();
-                }
-            }
-            else {
-                var kx = Object.keys(x);
-                var ky = Object.keys(y);
-                if (kx.length !== ky.length) return notEqual();
-                for (var i = 0; i < kx.length; i++) {
-                    var k = kx[i];
-                    if (!Object.hasOwnProperty.call(y, k)) {
-                        notEqual();
-                    }
-                }
-            }
-        }
-    });
-    
-    return equal;
+					notEqual();
+				}
+			} else {
+				var kx = Object.keys(x);
+				var ky = Object.keys(y);
+				if (kx.length !== ky.length) { return notEqual(); }
+				for (var i = 0; i < kx.length; i++) {
+					var k = kx[i];
+					if (!Object.hasOwnProperty.call(y, k)) {
+						notEqual();
+					}
+				}
+			}
+		}
+	});
+
+	return equal;
 };
 
 Traverse.prototype.paths = function () {
-    var acc = [];
-    this.forEach(function (x) {
-        acc.push(this.path); 
-    });
-    return acc;
+	var acc = [];
+	this.forEach(function () {
+		acc[acc.length] = this.path;
+	});
+	return acc;
 };
 
 Traverse.prototype.nodes = function () {
-    var acc = [];
-    this.forEach(function (x) {
-        acc.push(this.node);
-    });
-    return acc;
+	var acc = [];
+	this.forEach(function () {
+		acc[acc.length] = this.node;
+	});
+	return acc;
 };
 
 Traverse.prototype.clone = function () {
-    var parents = [], nodes = [];
-    
-    return (function clone (src) {
-        for (var i = 0; i < parents.length; i++) {
-            if (parents[i] === src) {
-                return nodes[i];
-            }
-        }
-        
-        if (typeof src === 'object' && src !== null) {
-            var dst = copy(src);
-            
-            parents.push(src);
-            nodes.push(dst);
-            
-            Object.keys(src).forEach(function (key) {
-                dst[key] = clone(src[key]);
-            });
-            
-            parents.pop();
-            nodes.pop();
-            return dst;
-        }
-        else {
-            return src;
-        }
-    })(this.value);
+	var parents = [];
+	var nodes = [];
+	var options = this.options;
+
+	if (whichTypedArray(this.value)) {
+		return taSlice(this.value);
+	}
+
+	return (function clone(src) {
+		for (var i = 0; i < parents.length; i++) {
+			if (parents[i] === src) {
+				return nodes[i];
+			}
+		}
+
+		if (typeof src === 'object' && src !== null) {
+			var dst = copy(src, options);
+
+			parents[parents.length] = (src);
+			nodes[nodes.length] = (dst);
+
+			var iteratorFunction = options.includeSymbols ? ownEnumerableKeys : objectKeys;
+			forEach(iteratorFunction(src), function (key) {
+				if (!isStringCharacter(dst, key)) {
+					setProperty(dst, key, clone(src[key]));
+				}
+			});
+
+			parents.pop();
+			nodes.pop();
+			return dst;
+		}
+
+		return src;
+
+	}(this.value));
 };
 
-function walk (root, cb, immutable) {
-    var path = [];
-    var parents = [];
-    var alive = true;
-    
-    return (function walker (node_) {
-        var node = immutable ? copy(node_) : node_;
-        var modifiers = {};
-        
-        var state = {
-            node : node,
-            node_ : node_,
-            path : [].concat(path),
-            parent : parents.slice(-1)[0],
-            key : path.slice(-1)[0],
-            isRoot : path.length === 0,
-            level : path.length,
-            circular : null,
-            update : function (x) {
-                if (!state.isRoot) {
-                    state.parent.node[state.key] = x;
-                }
-                state.node = x;
-            },
-            'delete' : function () {
-                delete state.parent.node[state.key];
-            },
-            remove : function () {
-                if (Array.isArray(state.parent.node)) {
-                    state.parent.node.splice(state.key, 1);
-                }
-                else {
-                    delete state.parent.node[state.key];
-                }
-            },
-            before : function (f) { modifiers.before = f },
-            after : function (f) { modifiers.after = f },
-            pre : function (f) { modifiers.pre = f },
-            post : function (f) { modifiers.post = f },
-            stop : function () { alive = false }
-        };
-        
-        if (!alive) return state;
-        
-        if (typeof node === 'object' && node !== null) {
-            state.isLeaf = Object.keys(node).length == 0;
-            
-            for (var i = 0; i < parents.length; i++) {
-                if (parents[i].node_ === node_) {
-                    state.circular = parents[i];
-                    break;
-                }
-            }
-        }
-        else {
-            state.isLeaf = true;
-        }
-        
-        state.notLeaf = !state.isLeaf;
-        state.notRoot = !state.isRoot;
-        
-        // use return values to update if defined
-        var ret = cb.call(state, state.node);
-        if (ret !== undefined && state.update) state.update(ret);
-        if (modifiers.before) modifiers.before.call(state, state.node);
-        
-        if (typeof state.node == 'object'
-        && state.node !== null && !state.circular) {
-            parents.push(state);
-            
-            var keys = Object.keys(state.node);
-            keys.forEach(function (key, i) {
-                path.push(key);
-                
-                if (modifiers.pre) modifiers.pre.call(state, state.node[key], key);
-                
-                var child = walker(state.node[key]);
-                if (immutable && Object.hasOwnProperty.call(state.node, key)) {
-                    state.node[key] = child.node;
-                }
-                
-                child.isLast = i == keys.length - 1;
-                child.isFirst = i == 0;
-                
-                if (modifiers.post) modifiers.post.call(state, child);
-                
-                path.pop();
-            });
-            parents.pop();
-        }
-        
-        if (modifiers.after) modifiers.after.call(state, state.node);
-        
-        return state;
-    })(root).node;
-}
-
-Object.keys(Traverse.prototype).forEach(function (key) {
-    Traverse[key] = function (obj) {
-        var args = [].slice.call(arguments, 1);
-        var t = Traverse(obj);
-        return t[key].apply(t, args);
-    };
+// TODO: replace with object.assign?
+forEach(ownEnumerableKeys(Traverse.prototype), function (key) {
+	Traverse[key] = function (obj) {
+		var args = [].slice.call(arguments, 1);
+		var t = new Traverse(obj);
+		return t[key].apply(t, args);
+	};
 });
 
-function copy (src) {
-    if (typeof src === 'object' && src !== null) {
-        var dst;
-        
-        if (Array.isArray(src)) {
-            dst = [];
-        }
-        else if (src instanceof Date) {
-            dst = new Date(src);
-        }
-        else if (src instanceof Boolean) {
-            dst = new Boolean(src);
-        }
-        else if (src instanceof Number) {
-            dst = new Number(src);
-        }
-        else if (src instanceof String) {
-            dst = new String(src);
-        }
-        else {
-            dst = Object.create(Object.getPrototypeOf(src));
-        }
-        
-        Object.keys(src).forEach(function (key) {
-            dst[key] = src[key];
-        });
-        return dst;
-    }
-    else return src;
+module.exports = Traverse;
+
+
+/***/ }),
+
+/***/ 58489:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var callBound = __webpack_require__(23105);
+
+/** @type {undefined | ((thisArg: import('.').TypedArray) => Buffer<ArrayBufferLike>)} */
+var $typedArrayBuffer = callBound('TypedArray.prototype.buffer', true);
+
+var isTypedArray = __webpack_require__(6405);
+
+/** @type {import('.')} */
+// node <= 0.10, < 0.11.4 has a nonconfigurable own property instead of a prototype getter
+module.exports = $typedArrayBuffer || function typedArrayBuffer(x) {
+	if (!isTypedArray(x)) {
+		throw new $TypeError('Not a Typed Array');
+	}
+	return x.buffer;
+};
+
+
+/***/ }),
+
+/***/ 23363:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var forEach = __webpack_require__(14963);
+var callBind = __webpack_require__(53844);
+var gPO = __webpack_require__(31360)();
+
+var typedArrays = __webpack_require__(51506)();
+
+/** @import { TypedArrayName, ByteOffsetGetter, Implementation } from '.' */
+
+/** @type {Record<TypedArrayName, ByteOffsetGetter>} */
+var getters = {
+	// @ts-expect-error TS can't handle __proto__ or `satisfies` in jsdoc
+	__proto__: null
+};
+
+var gOPD = __webpack_require__(33170);
+var oDP = Object.defineProperty;
+if (gOPD) {
+	/** @type {ByteOffsetGetter} */
+	var getByteOffset = function (x) {
+		return x.byteOffset;
+	};
+	forEach(typedArrays, function (typedArray) {
+		// In Safari 7, Typed Array constructors are typeof object
+		if (typeof global[typedArray] === 'function' || typeof global[typedArray] === 'object') {
+			var Proto = global[typedArray].prototype;
+			// @ts-expect-error TS can't guarantee the callback is invoked sync
+			var descriptor = gOPD(Proto, 'byteOffset');
+			if (!descriptor) {
+				var superProto = gPO(Proto);
+				// @ts-expect-error TS can't guarantee the callback is invoked sync
+				descriptor = gOPD(superProto, 'byteOffset');
+			}
+			// Opera 12.16 has a magic byteOffset data property on instances AND on Proto
+			if (descriptor && descriptor.get) {
+				getters[typedArray] = callBind(descriptor.get);
+			} else if (oDP) {
+				// this is likely an engine where instances have a magic byteOffset data property
+				var arr = new global[typedArray](2);
+				// @ts-expect-error TS can't guarantee the callback is invoked sync
+				descriptor = gOPD(arr, 'byteOffset');
+				if (descriptor && descriptor.configurable) {
+					oDP(arr, 'length', { value: 3 });
+				}
+				if (arr.length === 2) {
+					getters[typedArray] = getByteOffset;
+				}
+			}
+		}
+	});
 }
+
+/** @type {ByteOffsetGetter} */
+var tryTypedArrays = function tryAllTypedArrays(value) {
+	/** @type {number} */ var foundOffset;
+	forEach(getters, function (getter) {
+		if (typeof foundOffset !== 'number') {
+			try {
+				var offset = getter(value);
+				if (typeof offset === 'number') {
+					foundOffset = offset;
+				}
+			} catch (e) {}
+		}
+	});
+	// @ts-expect-error TS can't guarantee the callback is invoked sync
+	return foundOffset;
+};
+
+var isTypedArray = __webpack_require__(6405);
+
+/** @type {Implementation} */
+module.exports = function typedArrayByteOffset(value) {
+	if (!isTypedArray(value)) {
+		return false;
+	}
+	return tryTypedArrays(value);
+};
+
+
+/***/ }),
+
+/***/ 53655:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// / <reference types="node" />
+
+var callBind = __webpack_require__(53844);
+var forEach = __webpack_require__(14963);
+var gOPD = __webpack_require__(33170);
+var isTypedArray = __webpack_require__(6405);
+var typedArrays = __webpack_require__(18879);
+var gPO = __webpack_require__(31360)();
+
+/** @typedef {(value: import('.').TypedArray) => number} TypedArrayLengthGetter */
+/** @typedef {{ [k in `$${import('.').TypedArrayName}` | '__proto__']: k extends '__proto__' ? null : TypedArrayLengthGetter }} Cache */
+
+/** @type {Cache} */
+// @ts-expect-error TS `satisfies` doesn't work in jsdoc
+var getters = { __proto__: null };
+var oDP = Object.defineProperty;
+if (gOPD) {
+	var getLength = /** @type {TypedArrayLengthGetter} */ function (x) {
+		return x.length;
+	};
+	forEach(typedArrays, /** @type {(typedArray: import('.').TypedArrayName) => void} */ function (typedArray) {
+		var TA = global[typedArray];
+		// In Safari 7, Typed Array constructors are typeof object
+		if (typeof TA === 'function' || typeof TA === 'object') {
+			var Proto = TA.prototype;
+			// @ts-expect-error TS doesn't narrow types inside callbacks, which is weird
+			var descriptor = gOPD(Proto, 'length');
+			if (!descriptor) {
+				var superProto = gPO(Proto);
+				// @ts-expect-error TS doesn't narrow types inside callbacks, which is weird
+				descriptor = gOPD(superProto, 'length');
+			}
+			// Opera 12.16 has a magic length data property on instances AND on Proto
+			if (descriptor && descriptor.get) {
+				// eslint-disable-next-line no-extra-parens
+				getters[/** @type {`$${import('.').TypedArrayName}`} */ ('$' + typedArray)] = callBind(descriptor.get);
+			} else if (oDP) {
+				// this is likely an engine where instances have a magic length data property
+				var arr = new global[typedArray](2);
+				// @ts-expect-error TS doesn't narrow types inside callbacks, which is weird
+				descriptor = gOPD(arr, 'length');
+				if (descriptor && descriptor.configurable) {
+					oDP(arr, 'length', { value: 3 });
+				}
+				if (arr.length === 2) {
+				// eslint-disable-next-line no-extra-parens
+					getters[/** @type {`$${import('.').TypedArrayName}`} */ ('$' + typedArray)] = getLength;
+				}
+			}
+		}
+	});
+}
+
+/** @type {TypedArrayLengthGetter} */
+var tryTypedArrays = function tryAllTypedArrays(value) {
+	/** @type {number} */ var foundLength;
+	// @ts-expect-error not sure why this won't work
+	forEach(getters, /** @type {(getter: TypedArrayLengthGetter) => void} */ function (getter) {
+		if (typeof foundLength !== 'number') {
+			try {
+				var length = getter(value);
+				if (typeof length === 'number') {
+					foundLength = length;
+				}
+			} catch (e) {}
+		}
+	});
+	// @ts-expect-error TS can't guarantee the above callback is invoked sync
+	return foundLength;
+};
+
+/** @type {import('.')} */
+module.exports = function typedArrayLength(value) {
+	if (!isTypedArray(value)) {
+		return false;
+	}
+	return tryTypedArrays(value);
+};
+
+
+/***/ }),
+
+/***/ 4587:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var Get = __webpack_require__(68036);
+var GetValueFromBuffer = __webpack_require__(18329);
+var IsDetachedBuffer = __webpack_require__(26650);
+var max = __webpack_require__(57147);
+var min = __webpack_require__(41017);
+var Set = __webpack_require__(51328);
+var SetValueInBuffer = __webpack_require__(85758);
+var ToIntegerOrInfinity = __webpack_require__(57568);
+var ToString = __webpack_require__(35038);
+var TypedArrayElementSize = __webpack_require__(18866);
+var TypedArrayElementType = __webpack_require__(19927);
+var TypedArraySpeciesCreate = __webpack_require__(49733);
+var ValidateTypedArray = __webpack_require__(77425);
+
+var typedArrayBuffer = __webpack_require__(58489);
+var typedArrayByteOffset = __webpack_require__(23363);
+
+// https://tc39.es/ecma262/#sec-%typedarray%.prototype.slice
+
+module.exports = function slice(start, end) {
+	var O = this; // step 1
+
+	ValidateTypedArray(O, 'SEQ-CST'); // step 2
+
+	// 3. Let len be O.[[ArrayLength]].
+	var len = O.length; // steps 3
+
+	var relativeStart = ToIntegerOrInfinity(start); // step 4
+
+	var k;
+	if (relativeStart === -Infinity) {
+		k = 0; // step 5
+	} else if (relativeStart < 0) {
+		k = max(len + relativeStart, 0); // step 6
+	} else {
+		k = min(relativeStart, len); // step 7
+	}
+
+	var relativeEnd = typeof end === 'undefined' ? len : ToIntegerOrInfinity(end); // step 8
+
+	var final;
+	if (relativeEnd === -Infinity) {
+		final = 0; // step 9
+	} else if (relativeEnd < 0) {
+		final = max(len + relativeEnd, 0); // step 10
+	} else {
+		final = min(relativeEnd, len); // step 11
+	}
+
+	var count = max(final - k, 0); // step 12
+
+	var A = TypedArraySpeciesCreate(O, [count]); // step 13
+
+	if (count > 0) { // step 14
+		if (IsDetachedBuffer(typedArrayBuffer(O))) {
+			throw new $TypeError('Cannot use a Typed Array with an underlying ArrayBuffer that is detached'); // step 14.a
+		}
+		var srcType = TypedArrayElementType(O); // step 14.b
+		var targetType = TypedArrayElementType(A); // step 14.c
+		if (srcType === targetType) { // step 14.d
+			//  1. NOTE: The transfer must be performed in a manner that preserves the bit-level encoding of the source data.
+			var srcBuffer = typedArrayBuffer(O); // step 14.d.ii
+			var targetBuffer = typedArrayBuffer(A); // step 14.d.iii
+			var elementSize = TypedArrayElementSize(O); // step 14.d.iv
+			var srcByteOffset = typedArrayByteOffset(O); // step 14.d.v
+			var srcByteIndex = (k * elementSize) + srcByteOffset; // step 14.d.vi
+			var targetByteIndex = typedArrayByteOffset(A); // step 14.d.vii
+			var limit = targetByteIndex + (count * elementSize); // step 14.d.viii
+			while (targetByteIndex < limit) { // step 14.d.ix
+				var value = GetValueFromBuffer(srcBuffer, srcByteIndex, 'UINT8', true, 'UNORDERED'); // step 14.d.ix.1
+				SetValueInBuffer(targetBuffer, targetByteIndex, 'UINT8', value, true, 'UNORDERED'); // step 14.d.ix.2
+				srcByteIndex += 1; // step 14.d.ix.3
+				targetByteIndex += 1; // step 14.d.ix.4
+			}
+		} else { // step 14.e
+			var n = 0; // step 14.e.i
+			while (k < final) { // step 14.e.ii
+				var Pk = ToString(k); // step 14.e.ii.1
+				var kValue = Get(O, Pk); // step 14.e.ii.2
+				Set(A, ToString(n), kValue, true); // step 14.e.ii.3
+				k += 1; // step 14.e.ii.4
+				n += 1; // step 14.e.ii.5
+			}
+		}
+	}
+
+	return A; // step 15
+};
+
+
+/***/ }),
+
+/***/ 39013:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var define = __webpack_require__(50191);
+var callBind = __webpack_require__(53844);
+
+var implementation = __webpack_require__(4587);
+var getPolyfill = __webpack_require__(25762);
+var shim = __webpack_require__(27248);
+
+var bound = callBind(getPolyfill());
+
+define(bound, {
+	getPolyfill: getPolyfill,
+	implementation: implementation,
+	shim: shim
+});
+
+module.exports = bound;
+
+
+/***/ }),
+
+/***/ 25762:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(4587);
+
+module.exports = function getPolyfill() {
+	if (typeof Uint8Array === 'function' && Uint8Array.prototype.slice) {
+		// V8 4.5 and 4.6 (node 4 and 5) throw when `this.constructor` is not a Typed Array constructor, which includes every Buffer
+		var ta = new Uint8Array(1);
+		ta.constructor = function (length) {
+			return new Uint8Array(length);
+		};
+		try {
+			ta.slice();
+		} catch (e) {
+			return implementation;
+		}
+		return Uint8Array.prototype.slice;
+	}
+	return implementation;
+};
+
+
+/***/ }),
+
+/***/ 27248:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var define = __webpack_require__(50191);
+var getProto = __webpack_require__(81967);
+
+var getPolyfill = __webpack_require__(25762);
+
+module.exports = function shimTypedArraySlice() {
+	if (typeof Uint8Array === 'function') {
+		var polyfill = getPolyfill();
+		var proto = getProto(Uint8Array.prototype);
+		define(
+			proto,
+			{ slice: polyfill },
+			{ slice: function () { return proto.slice !== polyfill; } }
+		);
+	}
+
+	return polyfill;
+};
 
 
 /***/ }),
@@ -42611,6 +47680,360 @@ module.exports = __webpack_require__(39023).deprecate;
 
 /***/ }),
 
+/***/ 70516:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var isString = __webpack_require__(57970);
+var isNumber = __webpack_require__(33670);
+var isBoolean = __webpack_require__(10823);
+var isSymbol = __webpack_require__(63927);
+var isBigInt = __webpack_require__(17788);
+
+/** @type {import('.')} */
+// eslint-disable-next-line consistent-return
+module.exports = function whichBoxedPrimitive(value) {
+	// eslint-disable-next-line eqeqeq
+	if (value == null || (typeof value !== 'object' && typeof value !== 'function')) {
+		return null;
+	}
+	if (isString(value)) {
+		return 'String';
+	}
+	if (isNumber(value)) {
+		return 'Number';
+	}
+	if (isBoolean(value)) {
+		return 'Boolean';
+	}
+	if (isSymbol(value)) {
+		return 'Symbol';
+	}
+	if (isBigInt(value)) {
+		return 'BigInt';
+	}
+};
+
+
+/***/ }),
+
+/***/ 45330:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var whichBoxedPrimitive = __webpack_require__(70516);
+var whichCollection = __webpack_require__(16260);
+var whichTypedArray = __webpack_require__(54768);
+var isArray = __webpack_require__(82513);
+var isDate = __webpack_require__(86253);
+var isRegex = __webpack_require__(86622);
+var isWeakRef = __webpack_require__(92880);
+var isFinalizationRegistry = __webpack_require__(93816);
+var name = __webpack_require__(82069);
+var isGeneratorFunction = __webpack_require__(55659);
+var isAsyncFunction = __webpack_require__(14856);
+var callBound = __webpack_require__(23105);
+var hasToStringTag = __webpack_require__(85479)();
+var toStringTag = hasToStringTag && Symbol.toStringTag;
+
+var $Object = Object;
+
+/** @type {undefined | ((value: ThisParameterType<typeof Promise.prototype.then>, ...args: Parameters<typeof Promise.prototype.then>) => ReturnType<typeof Promise.prototype.then>)} */
+var promiseThen = callBound('Promise.prototype.then', true);
+/** @type {<T = unknown>(value: unknown) => value is Promise<T>} */
+var isPromise = function isPromise(value) {
+	if (!value || typeof value !== 'object' || !promiseThen) {
+		return false;
+	}
+	try {
+		promiseThen(value, null, function () {});
+		return true;
+	} catch (e) {}
+	return false;
+};
+
+/** @type {(builtinName: unknown) => boolean} */
+var isKnownBuiltin = function isKnownBuiltin(builtinName) {
+	return !!builtinName
+		// primitives
+		&& builtinName !== 'BigInt'
+		&& builtinName !== 'Boolean'
+		&& builtinName !== 'Null'
+		&& builtinName !== 'Number'
+		&& builtinName !== 'String'
+		&& builtinName !== 'Symbol'
+		&& builtinName !== 'Undefined'
+		// namespaces
+		&& builtinName !== 'Math'
+		&& builtinName !== 'JSON'
+		&& builtinName !== 'Reflect'
+		&& builtinName !== 'Atomics'
+		// collections
+		&& builtinName !== 'Map'
+		&& builtinName !== 'Set'
+		&& builtinName !== 'WeakMap'
+		&& builtinName !== 'WeakSet'
+		// typed arrays
+		&& builtinName !== 'BigInt64Array'
+		&& builtinName !== 'BigUint64Array'
+		&& builtinName !== 'Float32Array'
+		&& builtinName !== 'Float64Array'
+		&& builtinName !== 'Int16Array'
+		&& builtinName !== 'Int32Array'
+		&& builtinName !== 'Int8Array'
+		&& builtinName !== 'Uint16Array'
+		&& builtinName !== 'Uint32Array'
+		&& builtinName !== 'Uint8Array'
+		&& builtinName !== 'Uint8ClampedArray'
+		// checked explicitly
+		&& builtinName !== 'Array'
+		&& builtinName !== 'Date'
+		&& builtinName !== 'FinalizationRegistry'
+		&& builtinName !== 'Promise'
+		&& builtinName !== 'RegExp'
+		&& builtinName !== 'WeakRef'
+		// functions
+		&& builtinName !== 'Function'
+		&& builtinName !== 'GeneratorFunction'
+		&& builtinName !== 'AsyncFunction';
+};
+
+/** @type {import('.')} */
+module.exports = function whichBuiltinType(value) {
+	if (value == null) {
+		return value;
+	}
+	// covers: primitives, {,Weak}Map/Set, typed arrays
+	var which = whichBoxedPrimitive($Object(value)) || whichCollection(value) || whichTypedArray(value);
+	if (which) {
+		return which;
+	}
+	if (isArray(value)) {
+		return 'Array';
+	}
+	if (isDate(value)) {
+		return 'Date';
+	}
+	if (isRegex(value)) {
+		return 'RegExp';
+	}
+	if (isWeakRef(value)) {
+		return 'WeakRef';
+	}
+	if (isFinalizationRegistry(value)) {
+		return 'FinalizationRegistry';
+	}
+	if (typeof value === 'function') {
+		if (isGeneratorFunction(value)) {
+			return 'GeneratorFunction';
+		}
+		if (isAsyncFunction(value)) {
+			return 'AsyncFunction';
+		}
+		return 'Function';
+	}
+	if (isPromise(value)) {
+		return 'Promise';
+	}
+	// @ts-expect-error TS can't figure out that `value` is an `object` after the `which` check above
+	if (toStringTag && toStringTag in value) {
+		var tag = value[toStringTag];
+		if (isKnownBuiltin(tag)) {
+			return tag;
+		}
+	}
+	if (typeof value.constructor === 'function') {
+		// eslint-disable-next-line no-extra-parens
+		var constructorName = name(/** @type {Parameters<name>[0]} */ (value.constructor));
+		if (isKnownBuiltin(constructorName)) {
+			return constructorName;
+		}
+	}
+	return 'Object';
+};
+
+
+/***/ }),
+
+/***/ 16260:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var isMap = __webpack_require__(69311);
+var isSet = __webpack_require__(6513);
+var isWeakMap = __webpack_require__(33955);
+var isWeakSet = __webpack_require__(22237);
+
+/** @type {import('.')} */
+module.exports = function whichCollection(/** @type {unknown} */ value) {
+	if (value && typeof value === 'object') {
+		if (isMap(value)) {
+			return 'Map';
+		}
+		if (isSet(value)) {
+			return 'Set';
+		}
+		if (isWeakMap(value)) {
+			return 'WeakMap';
+		}
+		if (isWeakSet(value)) {
+			return 'WeakSet';
+		}
+	}
+	return false;
+};
+
+
+/***/ }),
+
+/***/ 54768:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var forEach = __webpack_require__(14963);
+var availableTypedArrays = __webpack_require__(51506);
+var callBind = __webpack_require__(53844);
+var callBound = __webpack_require__(23105);
+var gOPD = __webpack_require__(33170);
+var getProto = __webpack_require__(81967);
+
+var $toString = callBound('Object.prototype.toString');
+var hasToStringTag = __webpack_require__(85479)();
+
+var g = typeof globalThis === 'undefined' ? global : globalThis;
+var typedArrays = availableTypedArrays();
+
+var $slice = callBound('String.prototype.slice');
+
+/** @import { BoundSet, BoundSlice, Cache, Getter } from './types' */
+/** @import { TypedArrayName } from '.' */
+
+/** @type {<T = unknown>(array: readonly T[], value: unknown) => number} */
+var $indexOf = callBound('Array.prototype.indexOf', true) || function indexOf(array, value) {
+	for (var i = 0; i < array.length; i += 1) {
+		if (array[i] === value) {
+			return i;
+		}
+	}
+	return -1;
+};
+
+/** @type {Cache} */
+var cache = { __proto__: null };
+if (hasToStringTag && gOPD && getProto) {
+	forEach(typedArrays, function (typedArray) {
+		var arr = new g[typedArray]();
+		if (Symbol.toStringTag in arr && getProto) {
+			var proto = getProto(arr);
+			// @ts-expect-error TS won't narrow inside a closure
+			var descriptor = gOPD(proto, Symbol.toStringTag);
+			if (!descriptor && proto) {
+				var superProto = getProto(proto);
+				// @ts-expect-error TS won't narrow inside a closure
+				descriptor = gOPD(superProto, Symbol.toStringTag);
+			}
+			if (descriptor && descriptor.get) {
+				var bound = callBind(descriptor.get);
+				cache[
+					/** @type {`$${TypedArrayName}`} */
+					('$' + typedArray)
+				] = bound;
+			}
+		}
+	});
+} else {
+	forEach(typedArrays, function (typedArray) {
+		var arr = new g[typedArray]();
+		var fn = arr.slice || arr.set;
+		if (fn) {
+			var bound = /** @type {typeof BoundSlice | typeof BoundSet} */ (
+				// @ts-expect-error TODO FIXME
+				callBind(fn)
+			);
+			cache[
+				/** @type {`$${TypedArrayName}`} */
+				('$' + typedArray)
+			] = bound;
+		}
+	});
+}
+
+/** @type {(value: object) => false | TypedArrayName} */
+function tryTypedArrays(value) {
+	/** @type {ReturnType<typeof tryTypedArrays>} */ var found = false;
+	forEach(
+		/** @type {Record<`$${TypedArrayName}`, Getter>} */ (cache),
+		/** @param {Getter} getter @param {`$${TypedArrayName}`} typedArray */
+		function (getter, typedArray) {
+			if (!found) {
+				try {
+					// @ts-expect-error a throw is fine here
+					if ('$' + getter(value) === typedArray) {
+						found = /** @type {TypedArrayName} */ ($slice(typedArray, 1));
+					}
+				} catch (e) { /**/ }
+			}
+		}
+	);
+	return found;
+}
+
+/** @type {(value: object) => false | TypedArrayName} */
+function trySlices(value) {
+	/** @type {ReturnType<typeof trySlices>} */ var found = false;
+	forEach(
+		/** @type {Record<`$${TypedArrayName}`, Getter>} */(cache),
+		/** @param {Getter} getter @param {`$${TypedArrayName}`} name */ function (getter, name) {
+			if (!found) {
+				try {
+					// @ts-expect-error a throw is fine here
+					getter(value);
+					found = /** @type {TypedArrayName} */ ($slice(name, 1));
+				} catch (e) { /**/ }
+			}
+		}
+	);
+	return found;
+}
+
+/** @type {(tag: unknown) => tag is typeof typedArrays[number]} */
+function isTATag(tag) {
+	return $indexOf(typedArrays, tag) > -1;
+}
+
+/** @type {(value: unknown) => ReturnType<typeof import('.')>} */
+function whichTypedArray(value) {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	if (!hasToStringTag) {
+		var tag = $slice($toString(value), 8, -1);
+		if (isTATag(tag)) {
+			return tag;
+		}
+		if (tag !== 'Object') {
+			return false;
+		}
+		// node < 0.6 hits here on real Typed Arrays
+		return trySlices(value);
+	}
+	if (!gOPD) { return null; } // unknown engine
+	return tryTypedArrays(value);
+}
+
+module.exports = whichTypedArray;
+
+
+/***/ }),
+
 /***/ 58264:
 /***/ ((module) => {
 
@@ -42845,6 +48268,2959 @@ ZipStream.prototype.finalize = function() {
 
 /***/ }),
 
+/***/ 51506:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var possibleNames = __webpack_require__(18879);
+
+var g = typeof globalThis === 'undefined' ? global : globalThis;
+
+/** @type {import('.')} */
+module.exports = function availableTypedArrays() {
+	var /** @type {ReturnType<typeof availableTypedArrays>} */ out = [];
+	for (var i = 0; i < possibleNames.length; i++) {
+		if (typeof g[possibleNames[i]] === 'function') {
+			// @ts-expect-error
+			out[out.length] = possibleNames[i];
+		}
+	}
+	return out;
+};
+
+
+/***/ }),
+
+/***/ 57187:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// http://262.ecma-international.org/5.1/#sec-9.11
+
+module.exports = __webpack_require__(69203);
+
+
+/***/ }),
+
+/***/ 90265:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+// https://262.ecma-international.org/15.0/#sec-arraybufferbytelength
+
+var IsDetachedBuffer = __webpack_require__(26650);
+
+var isArrayBuffer = __webpack_require__(96429);
+var isSharedArrayBuffer = __webpack_require__(12403);
+var arrayBufferByteLength = __webpack_require__(49290);
+
+var callBound = __webpack_require__(23105);
+var $sabByteLength = callBound('SharedArrayBuffer.prototype.byteLength', true);
+
+var isGrowable = false; // TODO: support this
+
+module.exports = function ArrayBufferByteLength(arrayBuffer, order) {
+	var isSAB = isSharedArrayBuffer(arrayBuffer);
+	if (!isArrayBuffer(arrayBuffer) && !isSAB) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must be an ArrayBuffer or a SharedArrayBuffer');
+	}
+	if (order !== 'SEQ-CST' && order !== 'UNORDERED') {
+		throw new $TypeError('Assertion failed: `order` must be ~SEQ-CST~ or ~UNORDERED~');
+	}
+
+	// 1. If IsSharedArrayBuffer(arrayBuffer) is true and arrayBuffer has an [[ArrayBufferByteLengthData]] internal slot, then
+	// TODO: see if IsFixedLengthArrayBuffer can be used here in the spec instead
+	if (isSAB && isGrowable) { // step 1
+		// a. Let bufferByteLengthBlock be arrayBuffer.[[ArrayBufferByteLengthData]].
+		// b. Let rawLength be GetRawBytesFromSharedBlock(bufferByteLengthBlock, 0, BIGUINT64, true, order).
+		// c. Let isLittleEndian be the value of the [[LittleEndian]] field of the surrounding agent's Agent Record.
+		// d. Return ℝ(RawBytesToNumeric(BIGUINT64, rawLength, isLittleEndian)).
+	}
+
+	if (IsDetachedBuffer(arrayBuffer)) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must not be detached'); // step 2
+	}
+
+	return isSAB ? $sabByteLength(arrayBuffer) : arrayBufferByteLength(arrayBuffer);
+};
+
+
+/***/ }),
+
+/***/ 4597:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $BigInt = GetIntrinsic('%BigInt%', true);
+var $RangeError = __webpack_require__(14585);
+var $TypeError = __webpack_require__(73314);
+
+var zero = $BigInt && $BigInt(0);
+
+// https://262.ecma-international.org/11.0/#sec-numeric-types-bigint-remainder
+
+module.exports = function BigIntRemainder(n, d) {
+	if (typeof n !== 'bigint' || typeof d !== 'bigint') {
+		throw new $TypeError('Assertion failed: `n` and `d` arguments must be BigInts');
+	}
+
+	if (d === zero) {
+		throw new $RangeError('Division by zero');
+	}
+
+	if (n === zero) {
+		return zero;
+	}
+
+	// shortcut for the actual spec mechanics
+	return n % d;
+};
+
+
+/***/ }),
+
+/***/ 64273:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+var isObject = __webpack_require__(21040);
+
+var isPropertyDescriptor = __webpack_require__(2612);
+var DefineOwnProperty = __webpack_require__(62652);
+
+var FromPropertyDescriptor = __webpack_require__(1154);
+var IsDataDescriptor = __webpack_require__(21423);
+var isPropertyKey = __webpack_require__(7084);
+var SameValue = __webpack_require__(7311);
+var ToPropertyDescriptor = __webpack_require__(54679);
+
+// https://262.ecma-international.org/6.0/#sec-definepropertyorthrow
+
+module.exports = function DefinePropertyOrThrow(O, P, desc) {
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: Type(O) is not Object');
+	}
+
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: P is not a Property Key');
+	}
+
+	var Desc = isPropertyDescriptor(desc) ? desc : ToPropertyDescriptor(desc);
+	if (!isPropertyDescriptor(Desc)) {
+		throw new $TypeError('Assertion failed: Desc is not a valid Property Descriptor');
+	}
+
+	return DefineOwnProperty(
+		IsDataDescriptor,
+		SameValue,
+		FromPropertyDescriptor,
+		O,
+		P,
+		Desc
+	);
+};
+
+
+/***/ }),
+
+/***/ 1154:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var isPropertyDescriptor = __webpack_require__(2612);
+var fromPropertyDescriptor = __webpack_require__(29890);
+
+// https://262.ecma-international.org/6.0/#sec-frompropertydescriptor
+
+module.exports = function FromPropertyDescriptor(Desc) {
+	if (typeof Desc !== 'undefined' && !isPropertyDescriptor(Desc)) {
+		throw new $TypeError('Assertion failed: `Desc` must be a Property Descriptor');
+	}
+
+	return fromPropertyDescriptor(Desc);
+};
+
+
+/***/ }),
+
+/***/ 68036:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var inspect = __webpack_require__(60506);
+
+var isPropertyKey = __webpack_require__(7084);
+
+var isObject = __webpack_require__(21040);
+
+// https://262.ecma-international.org/6.0/#sec-get-o-p
+
+module.exports = function Get(O, P) {
+	// 7.3.1.1
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: Type(O) is not Object');
+	}
+	// 7.3.1.2
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: P is not a Property Key, got ' + inspect(P));
+	}
+	// 7.3.1.3
+	return O[P];
+};
+
+
+/***/ }),
+
+/***/ 18329:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+var callBound = __webpack_require__(23105);
+var isInteger = __webpack_require__(3647);
+var $Uint8Array = GetIntrinsic('%Uint8Array%', true);
+
+var $slice = callBound('Array.prototype.slice');
+
+var IsDetachedBuffer = __webpack_require__(26650);
+var RawBytesToNumeric = __webpack_require__(27011);
+
+var isArrayBuffer = __webpack_require__(96429);
+var isSharedArrayBuffer = __webpack_require__(12403);
+var safeConcat = __webpack_require__(22524);
+
+var tableTAO = __webpack_require__(41821);
+
+var defaultEndianness = __webpack_require__(19289);
+
+// https://262.ecma-international.org/15.0/#sec-getvaluefrombuffer
+
+module.exports = function GetValueFromBuffer(arrayBuffer, byteIndex, type, isTypedArray, order) {
+	var isSAB = isSharedArrayBuffer(arrayBuffer);
+	if (!isArrayBuffer(arrayBuffer) && !isSAB) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must be an ArrayBuffer or a SharedArrayBuffer');
+	}
+
+	if (!isInteger(byteIndex)) {
+		throw new $TypeError('Assertion failed: `byteIndex` must be an integer');
+	}
+
+	if (typeof type !== 'string' || typeof tableTAO.size['$' + type] !== 'number') {
+		throw new $TypeError('Assertion failed: `type` must be one of ' + tableTAO.choices);
+	}
+
+	if (typeof isTypedArray !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isTypedArray` must be a boolean');
+	}
+
+	if (order !== 'SEQ-CST' && order !== 'UNORDERED') {
+		throw new $TypeError('Assertion failed: `order` must be either `SEQ-CST` or `UNORDERED`');
+	}
+
+	if (arguments.length > 5 && typeof arguments[5] !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isLittleEndian` must be a boolean, if present');
+	}
+
+	if (IsDetachedBuffer(arrayBuffer)) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` is detached'); // step 1
+	}
+
+	// 2. Assert: There are sufficient bytes in arrayBuffer starting at byteIndex to represent a value of type.
+
+	if (byteIndex < 0) {
+		throw new $TypeError('Assertion failed: `byteIndex` must be non-negative'); // step 3
+	}
+
+	// 4. Let block be arrayBuffer.[[ArrayBufferData]].
+
+	var elementSize = tableTAO.size['$' + type]; // step 5
+	if (!elementSize) {
+		throw new $TypeError('Assertion failed: `type` must be one of ' + tableTAO.choices);
+	}
+
+	var rawValue;
+	if (isSAB) { // step 6
+		/*
+		a. Let execution be the [[CandidateExecution]] field of the surrounding agent's Agent Record.
+		b. Let eventList be the [[EventList]] field of the element in execution.[[EventLists]] whose [[AgentSignifier]] is AgentSignifier().
+		c. If isTypedArray is true and type is "Int8", "Uint8", "Int16", "Uint16", "Int32", or "Uint32", let noTear be true; otherwise let noTear be false.
+		d. Let rawValue be a List of length elementSize of nondeterministically chosen byte values.
+		e. NOTE: In implementations, rawValue is the result of a non-atomic or atomic read instruction on the underlying hardware. The nondeterminism is a semantic prescription of the memory model to describe observable behaviour of hardware with weak consistency.
+		f. Let readEvent be ReadSharedMemory{ [[Order]]: order, [[NoTear]]: noTear, [[Block]]: block, [[ByteIndex]]: byteIndex, [[ElementSize]]: elementSize }.
+		g. Append readEvent to eventList.
+		h. Append Chosen Value Record { [[Event]]: readEvent, [[ChosenValue]]: rawValue } to execution.[[ChosenValues]].
+		*/
+		throw new $SyntaxError('SharedArrayBuffer is not supported by this implementation');
+	} else {
+		// 7. Let rawValue be a List of elementSize containing, in order, the elementSize sequence of bytes starting with block[byteIndex].
+		rawValue = $slice(new $Uint8Array(arrayBuffer, byteIndex), 0, elementSize); // step 6
+	}
+
+	// 8. If isLittleEndian is not present, set isLittleEndian to either true or false. The choice is implementation dependent and should be the alternative that is most efficient for the implementation. An implementation must use the same value each time this step is executed and the same value must be used for the corresponding step in the SetValueInBuffer abstract operation.
+	var isLittleEndian = arguments.length > 5 ? arguments[5] : defaultEndianness === 'little'; // step 8
+
+	var bytes = isLittleEndian
+		? $slice(safeConcat([0, 0, 0, 0, 0, 0, 0, 0], rawValue), -elementSize)
+		: $slice(safeConcat(rawValue, [0, 0, 0, 0, 0, 0, 0, 0]), 0, elementSize);
+
+	return RawBytesToNumeric(type, bytes, isLittleEndian);
+};
+
+
+/***/ }),
+
+/***/ 94327:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var hasOwn = __webpack_require__(54076);
+var isObject = __webpack_require__(21040);
+
+var isPropertyKey = __webpack_require__(7084);
+
+// https://262.ecma-international.org/6.0/#sec-hasownproperty
+
+module.exports = function HasOwnProperty(O, P) {
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: `O` must be an Object');
+	}
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: `P` must be a Property Key');
+	}
+	return hasOwn(O, P);
+};
+
+
+/***/ }),
+
+/***/ 94041:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// https://262.ecma-international.org/6.0/#sec-isarray
+module.exports = __webpack_require__(30233);
+
+
+/***/ }),
+
+/***/ 99757:
+/***/ ((module) => {
+
+"use strict";
+
+
+// https://262.ecma-international.org/15.0/#sec-isbigintelementtype
+
+module.exports = function IsBigIntElementType(type) {
+	return type === 'BIGUINT64' || type === 'BIGINT64';
+};
+
+
+/***/ }),
+
+/***/ 30114:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// http://262.ecma-international.org/5.1/#sec-9.11
+
+module.exports = __webpack_require__(69203);
+
+
+/***/ }),
+
+/***/ 69028:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(82043);
+
+var $construct = GetIntrinsic('%Reflect.construct%', true);
+
+var DefinePropertyOrThrow = __webpack_require__(64273);
+try {
+	DefinePropertyOrThrow({}, '', { '[[Get]]': function () {} });
+} catch (e) {
+	// Accessor properties aren't supported
+	DefinePropertyOrThrow = null;
+}
+
+// https://262.ecma-international.org/6.0/#sec-isconstructor
+
+if (DefinePropertyOrThrow && $construct) {
+	var isConstructorMarker = {};
+	var badArrayLike = {};
+	DefinePropertyOrThrow(badArrayLike, 'length', {
+		'[[Get]]': function () {
+			throw isConstructorMarker;
+		},
+		'[[Enumerable]]': true
+	});
+
+	module.exports = function IsConstructor(argument) {
+		try {
+			// `Reflect.construct` invokes `IsConstructor(target)` before `Get(args, 'length')`:
+			$construct(argument, badArrayLike);
+		} catch (err) {
+			return err === isConstructorMarker;
+		}
+	};
+} else {
+	module.exports = function IsConstructor(argument) {
+		// unfortunately there's no way to truly check this without try/catch `new argument` in old environments
+		return typeof argument === 'function' && !!argument.prototype;
+	};
+}
+
+
+/***/ }),
+
+/***/ 21423:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var hasOwn = __webpack_require__(54076);
+
+var isPropertyDescriptor = __webpack_require__(2612);
+
+// https://262.ecma-international.org/5.1/#sec-8.10.2
+
+module.exports = function IsDataDescriptor(Desc) {
+	if (typeof Desc === 'undefined') {
+		return false;
+	}
+
+	if (!isPropertyDescriptor(Desc)) {
+		throw new $TypeError('Assertion failed: `Desc` must be a Property Descriptor');
+	}
+
+	if (!hasOwn(Desc, '[[Value]]') && !hasOwn(Desc, '[[Writable]]')) {
+		return false;
+	}
+
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 26650:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var $byteLength = __webpack_require__(49290);
+var availableTypedArrays = __webpack_require__(51506)();
+var callBound = __webpack_require__(23105);
+var isArrayBuffer = __webpack_require__(96429);
+var isSharedArrayBuffer = __webpack_require__(12403);
+
+var $sabByteLength = callBound('SharedArrayBuffer.prototype.byteLength', true);
+
+// https://262.ecma-international.org/8.0/#sec-isdetachedbuffer
+
+module.exports = function IsDetachedBuffer(arrayBuffer) {
+	var isSAB = isSharedArrayBuffer(arrayBuffer);
+	if (!isArrayBuffer(arrayBuffer) && !isSAB) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must be an Object with an [[ArrayBufferData]] internal slot');
+	}
+	if ((isSAB ? $sabByteLength : $byteLength)(arrayBuffer) === 0) {
+		try {
+			new global[availableTypedArrays[0]](arrayBuffer); // eslint-disable-line no-new
+		} catch (error) {
+			return !!error && error.name === 'TypeError';
+		}
+	}
+	return false;
+};
+
+
+/***/ }),
+
+/***/ 91643:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var callBound = __webpack_require__(23105);
+
+var $arrayBufferResizable = callBound('%ArrayBuffer.prototype.resizable%', true);
+var $sharedArrayGrowable = callBound('%SharedArrayBuffer.prototype.growable%', true);
+
+var isArrayBuffer = __webpack_require__(96429);
+var isSharedArrayBuffer = __webpack_require__(12403);
+
+// https://262.ecma-international.org/15.0/#sec-isfixedlengtharraybuffer
+
+module.exports = function IsFixedLengthArrayBuffer(arrayBuffer) {
+	var isAB = isArrayBuffer(arrayBuffer);
+	var isSAB = isSharedArrayBuffer(arrayBuffer);
+	if (!isAB && !isSAB) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must be an ArrayBuffer or SharedArrayBuffer');
+	}
+
+	if (isAB && $arrayBufferResizable) {
+		return !$arrayBufferResizable(arrayBuffer); // step 1
+	}
+	if (isSAB && $sharedArrayGrowable) {
+		return !$sharedArrayGrowable(arrayBuffer); // step 1
+	}
+	return true; // step 2
+};
+
+
+/***/ }),
+
+/***/ 12223:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var IsDetachedBuffer = __webpack_require__(26650);
+var IsFixedLengthArrayBuffer = __webpack_require__(91643);
+var TypedArrayElementSize = __webpack_require__(18866);
+
+var isTypedArrayWithBufferWitnessRecord = __webpack_require__(53937);
+
+var typedArrayBuffer = __webpack_require__(58489);
+var typedArrayByteOffset = __webpack_require__(23363);
+var typedArrayLength = __webpack_require__(53655);
+
+// https://262.ecma-international.org/15.0/#sec-istypedarrayoutofbounds
+
+module.exports = function IsTypedArrayOutOfBounds(taRecord) {
+	if (!isTypedArrayWithBufferWitnessRecord(taRecord)) {
+		throw new $TypeError('Assertion failed: `taRecord` must be a TypedArray With Buffer Witness Record');
+	}
+
+	var O = taRecord['[[Object]]']; // step 1
+
+	var bufferByteLength = taRecord['[[CachedBufferByteLength]]']; // step 2
+
+	if (IsDetachedBuffer(typedArrayBuffer(O)) && bufferByteLength !== 'DETACHED') {
+		throw new $TypeError('Assertion failed: typed array is detached only if the byte length is ~DETACHED~'); // step 3
+	}
+
+	if (bufferByteLength === 'DETACHED') {
+		return true; // step 4
+	}
+
+	var byteOffsetStart = typedArrayByteOffset(O); // step 5
+
+	var isFixed = IsFixedLengthArrayBuffer(typedArrayBuffer(O));
+
+	var byteOffsetEnd;
+	var length = isFixed ? typedArrayLength(O) : 'AUTO';
+	// TODO: probably use package for array length
+	// seems to apply when TA is backed by a resizable/growable AB
+	if (length === 'AUTO') { // step 6
+		byteOffsetEnd = bufferByteLength; // step 6.a
+	} else {
+		var elementSize = TypedArrayElementSize(O); // step 7.a
+
+		byteOffsetEnd = byteOffsetStart + (length * elementSize); // step 7.b
+	}
+
+	if (byteOffsetStart > bufferByteLength || byteOffsetEnd > bufferByteLength) {
+		return true; // step 8
+	}
+
+	// 9. NOTE: 0-length TypedArrays are not considered out-of-bounds.
+
+	return false; // step 10
+};
+
+
+/***/ }),
+
+/***/ 52297:
+/***/ ((module) => {
+
+"use strict";
+
+
+// https://262.ecma-international.org/15.0/#sec-isunsignedelementtype
+
+module.exports = function IsUnsignedElementType(type) {
+	return type === 'UINT8'
+		|| type === 'UINT8C'
+		|| type === 'UINT16'
+		|| type === 'UINT32'
+		|| type === 'BIGUINT64';
+};
+
+
+/***/ }),
+
+/***/ 93117:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var ArrayBufferByteLength = __webpack_require__(90265);
+var IsDetachedBuffer = __webpack_require__(26650);
+
+var isTypedArray = __webpack_require__(6405);
+var typedArrayBuffer = __webpack_require__(58489);
+
+// https://262.ecma-international.org/15.0/#sec-maketypedarraywithbufferwitnessrecord
+
+module.exports = function MakeTypedArrayWithBufferWitnessRecord(obj, order) {
+	if (!isTypedArray(obj)) {
+		throw new $TypeError('Assertion failed: `obj` must be a Typed Array');
+	}
+	if (order !== 'SEQ-CST' && order !== 'UNORDERED') {
+		throw new $TypeError('Assertion failed: `order` must be ~SEQ-CST~ or ~UNORDERED~');
+	}
+
+	var buffer = typedArrayBuffer(obj); // step 1
+
+	var byteLength = IsDetachedBuffer(buffer) ? 'DETACHED' : ArrayBufferByteLength(buffer, order); // steps 2 - 3
+
+	return { '[[Object]]': obj, '[[CachedBufferByteLength]]': byteLength }; // step 4
+};
+
+
+/***/ }),
+
+/***/ 53795:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var hasOwnProperty = __webpack_require__(94327);
+var ToBigInt64 = __webpack_require__(88586);
+var ToBigUint64 = __webpack_require__(82531);
+var ToInt16 = __webpack_require__(25089);
+var ToInt32 = __webpack_require__(64543);
+var ToInt8 = __webpack_require__(63836);
+var ToUint16 = __webpack_require__(32712);
+var ToUint32 = __webpack_require__(89942);
+var ToUint8 = __webpack_require__(41075);
+var ToUint8Clamp = __webpack_require__(26304);
+
+var valueToFloat16Bytes = __webpack_require__(15592);
+var valueToFloat32Bytes = __webpack_require__(44558);
+var valueToFloat64Bytes = __webpack_require__(66951);
+var integerToNBytes = __webpack_require__(27854);
+
+var tableTAO = __webpack_require__(41821);
+
+// https://262.ecma-international.org/15.0/#table-the-typedarray-constructors
+var TypeToAO = {
+	__proto__: null,
+	$INT8: ToInt8,
+	$UINT8: ToUint8,
+	$UINT8C: ToUint8Clamp,
+	$INT16: ToInt16,
+	$UINT16: ToUint16,
+	$INT32: ToInt32,
+	$UINT32: ToUint32,
+	$BIGINT64: ToBigInt64,
+	$BIGUINT64: ToBigUint64
+};
+
+// https://262.ecma-international.org/16.0/#sec-numerictorawbytes
+
+module.exports = function NumericToRawBytes(type, value, isLittleEndian) {
+	if (typeof type !== 'string' || !hasOwnProperty(tableTAO.size, '$' + type)) {
+		throw new $TypeError('Assertion failed: `type` must be a TypedArray element type');
+	}
+	if (typeof value !== 'number' && typeof value !== 'bigint') {
+		throw new $TypeError('Assertion failed: `value` must be a Number or a BigInt');
+	}
+	if (typeof isLittleEndian !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isLittleEndian` must be a Boolean');
+	}
+
+	if (type === 'FLOAT16') { // step 1
+		return valueToFloat16Bytes(value, isLittleEndian);
+	} else if (type === 'FLOAT32') { // step 2
+		return valueToFloat32Bytes(value, isLittleEndian);
+	} else if (type === 'FLOAT64') { // step 3
+		return valueToFloat64Bytes(value, isLittleEndian);
+	} // step 4
+
+	var n = tableTAO.size['$' + type]; // step 4.a
+
+	var convOp = TypeToAO['$' + type]; // step 4.b
+
+	var intValue = convOp(value); // step 4.c
+
+	return integerToNBytes(intValue, n, isLittleEndian); // step 4.d, 4.e, 5
+};
+
+
+/***/ }),
+
+/***/ 27011:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+var callBound = __webpack_require__(23105);
+
+var $RangeError = __webpack_require__(14585);
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+var $BigInt = GetIntrinsic('%BigInt%', true);
+
+var hasOwnProperty = __webpack_require__(94327);
+var IsArray = __webpack_require__(94041);
+var IsBigIntElementType = __webpack_require__(99757);
+var IsUnsignedElementType = __webpack_require__(52297);
+
+var bytesAsFloat16 = __webpack_require__(91914);
+var bytesAsFloat32 = __webpack_require__(77524);
+var bytesAsFloat64 = __webpack_require__(86051);
+var bytesAsInteger = __webpack_require__(74593);
+var every = __webpack_require__(89835);
+var isByteValue = __webpack_require__(51315);
+
+var $reverse = callBound('Array.prototype.reverse');
+var $slice = callBound('Array.prototype.slice');
+
+var tableTAO = __webpack_require__(41821);
+
+// https://262.ecma-international.org/15.0/#sec-rawbytestonumeric
+
+module.exports = function RawBytesToNumeric(type, rawBytes, isLittleEndian) {
+	if (!hasOwnProperty(tableTAO.size, '$' + type)) {
+		throw new $TypeError('Assertion failed: `type` must be a TypedArray element type');
+	}
+	if (!IsArray(rawBytes) || !every(rawBytes, isByteValue)) {
+		throw new $TypeError('Assertion failed: `rawBytes` must be an Array of bytes');
+	}
+	if (typeof isLittleEndian !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isLittleEndian` must be a Boolean');
+	}
+
+	var elementSize = tableTAO.size['$' + type]; // step 1
+
+	if (rawBytes.length !== elementSize) {
+		// this assertion is not in the spec, but it'd be an editorial error if it were ever violated
+		throw new $RangeError('Assertion failed: `rawBytes` must have a length of ' + elementSize + ' for type ' + type);
+	}
+
+	var isBigInt = IsBigIntElementType(type);
+	if (isBigInt && !$BigInt) {
+		throw new $SyntaxError('this environment does not support BigInts');
+	}
+
+	// eslint-disable-next-line no-param-reassign
+	rawBytes = $slice(rawBytes, 0, elementSize);
+	if (!isLittleEndian) {
+		$reverse(rawBytes); // step 2
+	}
+
+	if (type === 'FLOAT16') { // step 3
+		return bytesAsFloat16(rawBytes);
+	}
+
+	if (type === 'FLOAT32') { // step 4
+		return bytesAsFloat32(rawBytes);
+	}
+
+	if (type === 'FLOAT64') { // step 5
+		return bytesAsFloat64(rawBytes);
+	}
+
+	return bytesAsInteger(rawBytes, elementSize, IsUnsignedElementType(type), isBigInt);
+};
+
+
+/***/ }),
+
+/***/ 7311:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $isNaN = __webpack_require__(77044);
+
+// http://262.ecma-international.org/5.1/#sec-9.12
+
+module.exports = function SameValue(x, y) {
+	if (x === y) { // 0 === -0, but they are not identical.
+		if (x === 0) { return 1 / x === 1 / y; }
+		return true;
+	}
+	return $isNaN(x) && $isNaN(y);
+};
+
+
+/***/ }),
+
+/***/ 51328:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+var isObject = __webpack_require__(21040);
+
+var isPropertyKey = __webpack_require__(7084);
+var SameValue = __webpack_require__(7311);
+
+// IE 9 does not throw in strict mode when writability/configurability/extensibility is violated
+var noThrowOnStrictViolation = (function () {
+	try {
+		delete [].length;
+		return true;
+	} catch (e) {
+		return false;
+	}
+}());
+
+// https://262.ecma-international.org/6.0/#sec-set-o-p-v-throw
+
+module.exports = function Set(O, P, V, Throw) {
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: `O` must be an Object');
+	}
+	if (!isPropertyKey(P)) {
+		throw new $TypeError('Assertion failed: `P` must be a Property Key');
+	}
+	if (typeof Throw !== 'boolean') {
+		throw new $TypeError('Assertion failed: `Throw` must be a Boolean');
+	}
+	if (Throw) {
+		O[P] = V; // eslint-disable-line no-param-reassign
+		if (noThrowOnStrictViolation && !SameValue(O[P], V)) {
+			throw new $TypeError('Attempted to assign to readonly property.');
+		}
+		return true;
+	}
+	try {
+		O[P] = V; // eslint-disable-line no-param-reassign
+		return noThrowOnStrictViolation ? SameValue(O[P], V) : true;
+	} catch (e) {
+		return false;
+	}
+
+};
+
+
+/***/ }),
+
+/***/ 85758:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+var isInteger = __webpack_require__(3647);
+var $Uint8Array = GetIntrinsic('%Uint8Array%', true);
+
+var IsBigIntElementType = __webpack_require__(99757);
+var IsDetachedBuffer = __webpack_require__(26650);
+var NumericToRawBytes = __webpack_require__(53795);
+
+var isArrayBuffer = __webpack_require__(96429);
+var isSharedArrayBuffer = __webpack_require__(12403);
+var hasOwn = __webpack_require__(54076);
+
+var tableTAO = __webpack_require__(41821);
+
+var defaultEndianness = __webpack_require__(19289);
+var forEach = __webpack_require__(64930);
+
+// https://262.ecma-international.org/15.0/#sec-setvalueinbuffer
+
+/* eslint max-params: 0 */
+
+module.exports = function SetValueInBuffer(arrayBuffer, byteIndex, type, value, isTypedArray, order) {
+	var isSAB = isSharedArrayBuffer(arrayBuffer);
+	if (!isArrayBuffer(arrayBuffer) && !isSAB) {
+		throw new $TypeError('Assertion failed: `arrayBuffer` must be an ArrayBuffer or a SharedArrayBuffer');
+	}
+
+	if (!isInteger(byteIndex) || byteIndex < 0) {
+		throw new $TypeError('Assertion failed: `byteIndex` must be a non-negative integer');
+	}
+
+	if (typeof type !== 'string' || !hasOwn(tableTAO.size, '$' + type)) {
+		throw new $TypeError('Assertion failed: `type` must be one of ' + tableTAO.choices);
+	}
+
+	if (typeof value !== 'number' && typeof value !== 'bigint') {
+		throw new $TypeError('Assertion failed: `value` must be a Number or a BigInt');
+	}
+
+	if (typeof isTypedArray !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isTypedArray` must be a boolean');
+	}
+	if (order !== 'SEQ-CST' && order !== 'UNORDERED' && order !== 'INIT') {
+		throw new $TypeError('Assertion failed: `order` must be `"SEQ-CST"`, `"UNORDERED"`, or `"INIT"`');
+	}
+
+	if (arguments.length > 6 && typeof arguments[6] !== 'boolean') {
+		throw new $TypeError('Assertion failed: `isLittleEndian` must be a boolean, if present');
+	}
+
+	if (IsDetachedBuffer(arrayBuffer)) {
+		throw new $TypeError('Assertion failed: ArrayBuffer is detached'); // step 1
+	}
+
+	// 2. Assert: There are sufficient bytes in arrayBuffer starting at byteIndex to represent a value of type.
+
+	if (IsBigIntElementType(type) ? typeof value !== 'bigint' : typeof value !== 'number') { // step 3
+		throw new $TypeError('Assertion failed: `value` must be a BigInt if type is ~BIGINT64~ or ~BIGUINT64~, otherwise a Number');
+	}
+
+	// 4. Let block be arrayBuffer’s [[ArrayBufferData]] internal slot.
+
+	var elementSize = tableTAO.size['$' + type]; // step 5
+
+	// 6. If isLittleEndian is not present, set isLittleEndian to either true or false. The choice is implementation dependent and should be the alternative that is most efficient for the implementation. An implementation must use the same value each time this step is executed and the same value must be used for the corresponding step in the GetValueFromBuffer abstract operation.
+	var isLittleEndian = arguments.length > 6 ? arguments[6] : defaultEndianness === 'little'; // step 6
+
+	var rawBytes = NumericToRawBytes(type, value, isLittleEndian); // step 7
+
+	if (isSAB) { // step 8
+		/*
+			Let execution be the [[CandidateExecution]] field of the surrounding agent's Agent Record.
+			Let eventList be the [[EventList]] field of the element in execution.[[EventsRecords]] whose [[AgentSignifier]] is AgentSignifier().
+			If isTypedArray is true and IsNoTearConfiguration(type, order) is true, let noTear be true; otherwise let noTear be false.
+			Append WriteSharedMemory { [[Order]]: order, [[NoTear]]: noTear, [[Block]]: block, [[ByteIndex]]: byteIndex, [[ElementSize]]: elementSize, [[Payload]]: rawBytes } to eventList.
+		*/
+		throw new $SyntaxError('SharedArrayBuffer is not supported by this implementation');
+	} else {
+		// 9. Store the individual bytes of rawBytes into block, in order, starting at block[byteIndex].
+		var arr = new $Uint8Array(arrayBuffer, byteIndex, elementSize);
+		forEach(rawBytes, function (rawByte, i) {
+			arr[i] = rawByte;
+		});
+	}
+
+	// 10. Return NormalCompletion(undefined).
+};
+
+
+/***/ }),
+
+/***/ 98080:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $species = GetIntrinsic('%Symbol.species%', true);
+var $TypeError = __webpack_require__(73314);
+var isObject = __webpack_require__(21040);
+
+var IsConstructor = __webpack_require__(69028);
+
+// https://262.ecma-international.org/6.0/#sec-speciesconstructor
+
+module.exports = function SpeciesConstructor(O, defaultConstructor) {
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: Type(O) is not Object');
+	}
+	var C = O.constructor;
+	if (typeof C === 'undefined') {
+		return defaultConstructor;
+	}
+	if (!isObject(C)) {
+		throw new $TypeError('O.constructor is not an Object');
+	}
+	var S = $species ? C[$species] : void 0;
+	if (S == null) {
+		return defaultConstructor;
+	}
+	if (IsConstructor(S)) {
+		return S;
+	}
+	throw new $TypeError('no constructor found');
+};
+
+
+/***/ }),
+
+/***/ 69510:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $BigInt = GetIntrinsic('%BigInt%', true);
+var $TypeError = __webpack_require__(73314);
+var $SyntaxError = __webpack_require__(80105);
+
+// https://262.ecma-international.org/14.0/#sec-stringtobigint
+
+module.exports = function StringToBigInt(argument) {
+	if (typeof argument !== 'string') {
+		throw new $TypeError('`argument` must be a string');
+	}
+	if (!$BigInt) {
+		throw new $SyntaxError('BigInts are not supported in this environment');
+	}
+	try {
+		return $BigInt(argument);
+	} catch (e) {
+		return void undefined;
+	}
+};
+
+
+/***/ }),
+
+/***/ 5819:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $RegExp = GetIntrinsic('%RegExp%');
+var $TypeError = __webpack_require__(73314);
+var $parseInteger = GetIntrinsic('%parseInt%');
+
+var callBound = __webpack_require__(23105);
+var regexTester = __webpack_require__(93470);
+
+var $strSlice = callBound('String.prototype.slice');
+var isBinary = regexTester(/^0b[01]+$/i);
+var isOctal = regexTester(/^0o[0-7]+$/i);
+var isInvalidHexLiteral = regexTester(/^[-+]0x[0-9a-f]+$/i);
+var nonWS = ['\u0085', '\u200b', '\ufffe'].join('');
+var nonWSregex = new $RegExp('[' + nonWS + ']', 'g');
+var hasNonWS = regexTester(nonWSregex);
+
+var $trim = __webpack_require__(20941);
+
+// https://262.ecma-international.org/13.0/#sec-stringtonumber
+
+module.exports = function StringToNumber(argument) {
+	if (typeof argument !== 'string') {
+		throw new $TypeError('Assertion failed: `argument` is not a String');
+	}
+	if (isBinary(argument)) {
+		return +$parseInteger($strSlice(argument, 2), 2);
+	}
+	if (isOctal(argument)) {
+		return +$parseInteger($strSlice(argument, 2), 8);
+	}
+	if (hasNonWS(argument) || isInvalidHexLiteral(argument)) {
+		return NaN;
+	}
+	var trimmed = $trim(argument);
+	if (trimmed !== argument) {
+		return StringToNumber(trimmed);
+	}
+	return +argument;
+};
+
+
+/***/ }),
+
+/***/ 7512:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $BigInt = GetIntrinsic('%BigInt%', true);
+var $Number = GetIntrinsic('%Number%');
+var $TypeError = __webpack_require__(73314);
+var $SyntaxError = __webpack_require__(80105);
+
+var StringToBigInt = __webpack_require__(69510);
+var ToPrimitive = __webpack_require__(42678);
+
+// https://262.ecma-international.org/13.0/#sec-tobigint
+
+module.exports = function ToBigInt(argument) {
+	if (!$BigInt) {
+		throw new $SyntaxError('BigInts are not supported in this environment');
+	}
+
+	var prim = ToPrimitive(argument, $Number);
+
+	if (prim == null) {
+		throw new $TypeError('Cannot convert null or undefined to a BigInt');
+	}
+
+	if (typeof prim === 'boolean') {
+		return prim ? $BigInt(1) : $BigInt(0);
+	}
+
+	if (typeof prim === 'number') {
+		throw new $TypeError('Cannot convert a Number value to a BigInt');
+	}
+
+	if (typeof prim === 'string') {
+		var n = StringToBigInt(prim);
+		if (typeof n === 'undefined') {
+			throw new $TypeError('Failed to parse String to BigInt');
+		}
+		return n;
+	}
+
+	if (typeof prim === 'symbol') {
+		throw new $TypeError('Cannot convert a Symbol value to a BigInt');
+	}
+
+	if (typeof prim !== 'bigint') {
+		throw new $SyntaxError('Assertion failed: unknown primitive type');
+	}
+
+	return prim;
+};
+
+
+/***/ }),
+
+/***/ 88586:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $BigInt = GetIntrinsic('%BigInt%', true);
+var $pow = __webpack_require__(56947);
+
+var ToBigInt = __webpack_require__(7512);
+var BigIntRemainder = __webpack_require__(4597);
+
+var modBigInt = __webpack_require__(49843);
+
+// BigInt(2**63), but node v10.4-v10.8 have a bug where you can't `BigInt(x)` anything larger than MAX_SAFE_INTEGER
+var twoSixtyThree = $BigInt && (BigInt($pow(2, 32)) * BigInt($pow(2, 31)));
+
+// BigInt(2**64), but node v10.4-v10.8 have a bug where you can't `BigInt(x)` anything larger than MAX_SAFE_INTEGER
+var twoSixtyFour = $BigInt && (BigInt($pow(2, 32)) * BigInt($pow(2, 32)));
+
+// https://262.ecma-international.org/11.0/#sec-tobigint64
+
+module.exports = function ToBigInt64(argument) {
+	var n = ToBigInt(argument);
+	var int64bit = modBigInt(BigIntRemainder, n, twoSixtyFour);
+	return int64bit >= twoSixtyThree ? int64bit - twoSixtyFour : int64bit;
+};
+
+
+/***/ }),
+
+/***/ 82531:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $BigInt = GetIntrinsic('%BigInt%', true);
+
+var $pow = __webpack_require__(56947);
+
+var ToBigInt = __webpack_require__(7512);
+var BigIntRemainder = __webpack_require__(4597);
+
+var modBigInt = __webpack_require__(49843);
+
+// BigInt(2**64), but node v10.4-v10.8 have a bug where you can't `BigInt(x)` anything larger than MAX_SAFE_INTEGER
+var twoSixtyFour = $BigInt && (BigInt($pow(2, 32)) * BigInt($pow(2, 32)));
+
+// https://262.ecma-international.org/11.0/#sec-tobiguint64
+
+module.exports = function ToBigUint64(argument) {
+	var n = ToBigInt(argument);
+	var int64bit = modBigInt(BigIntRemainder, n, twoSixtyFour);
+	return int64bit;
+};
+
+
+/***/ }),
+
+/***/ 11967:
+/***/ ((module) => {
+
+"use strict";
+
+
+// http://262.ecma-international.org/5.1/#sec-9.2
+
+module.exports = function ToBoolean(value) { return !!value; };
+
+
+/***/ }),
+
+/***/ 25089:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-toint16
+
+var two16 = 0x10000; // Math.pow(2, 16);
+
+module.exports = function ToInt16(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int16bit = modulo(int, two16);
+	return int16bit >= 0x8000 ? int16bit - two16 : int16bit;
+};
+
+
+/***/ }),
+
+/***/ 64543:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-toint32
+
+var two31 = 0x80000000; // Math.pow(2, 31);
+var two32 = 0x100000000; // Math.pow(2, 32);
+
+module.exports = function ToInt32(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int32bit = modulo(int, two32);
+	var result = int32bit >= two31 ? int32bit - two32 : int32bit;
+	return result === 0 ? 0 : result; // in the spec, these are math values, so we filter out -0 here
+};
+
+
+/***/ }),
+
+/***/ 63836:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-toint8
+
+module.exports = function ToInt8(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int8bit = modulo(int, 0x100);
+	return int8bit >= 0x80 ? int8bit - 0x100 : int8bit;
+};
+
+
+/***/ }),
+
+/***/ 57568:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var $isNaN = __webpack_require__(77044);
+var $isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-tointegerorinfinity
+
+module.exports = function ToIntegerOrInfinity(value) {
+	var number = ToNumber(value);
+	if ($isNaN(number) || number === 0) { return 0; }
+	if (!$isFinite(number)) { return number; }
+	return truncate(number);
+};
+
+
+/***/ }),
+
+/***/ 49094:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $TypeError = __webpack_require__(73314);
+var $Number = GetIntrinsic('%Number%');
+var isPrimitive = __webpack_require__(67369);
+
+var ToPrimitive = __webpack_require__(42678);
+var StringToNumber = __webpack_require__(5819);
+
+// https://262.ecma-international.org/13.0/#sec-tonumber
+
+module.exports = function ToNumber(argument) {
+	var value = isPrimitive(argument) ? argument : ToPrimitive(argument, $Number);
+	if (typeof value === 'symbol') {
+		throw new $TypeError('Cannot convert a Symbol value to a number');
+	}
+	if (typeof value === 'bigint') {
+		throw new $TypeError('Conversion from \'BigInt\' to \'number\' is not allowed.');
+	}
+	if (typeof value === 'string') {
+		return StringToNumber(value);
+	}
+	return +value;
+};
+
+
+/***/ }),
+
+/***/ 42678:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var toPrimitive = __webpack_require__(75604);
+
+// https://262.ecma-international.org/6.0/#sec-toprimitive
+
+module.exports = function ToPrimitive(input) {
+	if (arguments.length > 1) {
+		return toPrimitive(input, arguments[1]);
+	}
+	return toPrimitive(input);
+};
+
+
+/***/ }),
+
+/***/ 54679:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasOwn = __webpack_require__(54076);
+
+var $TypeError = __webpack_require__(73314);
+var isObject = __webpack_require__(21040);
+
+var IsCallable = __webpack_require__(30114);
+var ToBoolean = __webpack_require__(11967);
+
+// https://262.ecma-international.org/5.1/#sec-8.10.5
+
+module.exports = function ToPropertyDescriptor(Obj) {
+	if (!isObject(Obj)) {
+		throw new $TypeError('ToPropertyDescriptor requires an object');
+	}
+
+	var desc = {};
+	if (hasOwn(Obj, 'enumerable')) {
+		desc['[[Enumerable]]'] = ToBoolean(Obj.enumerable);
+	}
+	if (hasOwn(Obj, 'configurable')) {
+		desc['[[Configurable]]'] = ToBoolean(Obj.configurable);
+	}
+	if (hasOwn(Obj, 'value')) {
+		desc['[[Value]]'] = Obj.value;
+	}
+	if (hasOwn(Obj, 'writable')) {
+		desc['[[Writable]]'] = ToBoolean(Obj.writable);
+	}
+	if (hasOwn(Obj, 'get')) {
+		var getter = Obj.get;
+		if (typeof getter !== 'undefined' && !IsCallable(getter)) {
+			throw new $TypeError('getter must be a function');
+		}
+		desc['[[Get]]'] = getter;
+	}
+	if (hasOwn(Obj, 'set')) {
+		var setter = Obj.set;
+		if (typeof setter !== 'undefined' && !IsCallable(setter)) {
+			throw new $TypeError('setter must be a function');
+		}
+		desc['[[Set]]'] = setter;
+	}
+
+	if ((hasOwn(desc, '[[Get]]') || hasOwn(desc, '[[Set]]')) && (hasOwn(desc, '[[Value]]') || hasOwn(desc, '[[Writable]]'))) {
+		throw new $TypeError('Invalid property descriptor. Cannot both specify accessors and a value or writable attribute');
+	}
+	return desc;
+};
+
+
+/***/ }),
+
+/***/ 35038:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $String = GetIntrinsic('%String%');
+var $TypeError = __webpack_require__(73314);
+
+// https://262.ecma-international.org/6.0/#sec-tostring
+
+module.exports = function ToString(argument) {
+	if (typeof argument === 'symbol') {
+		throw new $TypeError('Cannot convert a Symbol value to a string');
+	}
+	return $String(argument);
+};
+
+
+/***/ }),
+
+/***/ 32712:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-touint16
+
+var two16 = 0x10000; // Math.pow(2, 16)
+
+module.exports = function ToUint16(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int16bit = modulo(int, two16);
+	return int16bit === 0 ? 0 : int16bit; // in the spec, these are math values, so we filter out -0 here
+};
+
+
+/***/ }),
+
+/***/ 89942:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+var isFinite = __webpack_require__(3766);
+
+// https://262.ecma-international.org/14.0/#sec-touint32
+
+var two32 = 0x100000000; // Math.pow(2, 32);
+
+module.exports = function ToUint32(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int32bit = modulo(int, two32);
+	return int32bit === 0 ? 0 : int32bit; // in the spec, these are math values, so we filter out -0 here
+};
+
+
+/***/ }),
+
+/***/ 41075:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var isFinite = __webpack_require__(3766);
+
+var modulo = __webpack_require__(90460);
+var ToNumber = __webpack_require__(49094);
+var truncate = __webpack_require__(60700);
+
+// https://262.ecma-international.org/14.0/#sec-touint8
+
+module.exports = function ToUint8(argument) {
+	var number = ToNumber(argument);
+	if (!isFinite(number) || number === 0) {
+		return 0;
+	}
+	var int = truncate(number);
+	var int8bit = modulo(int, 0x100);
+	return int8bit;
+};
+
+
+/***/ }),
+
+/***/ 26304:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var clamp = __webpack_require__(95835);
+
+var ToNumber = __webpack_require__(49094);
+var floor = __webpack_require__(85638);
+
+var $isNaN = __webpack_require__(77044);
+
+// https://262.ecma-international.org/15.0/#sec-touint8clamp
+
+module.exports = function ToUint8Clamp(argument) {
+	var number = ToNumber(argument); // step 1
+
+	if ($isNaN(number)) { return 0; } // step 2
+
+	var clamped = clamp(number, 0, 255); // step 4
+
+	var f = floor(clamped); // step 5
+
+	if (clamped < (f + 0.5)) { return f; } // step 6
+
+	if (clamped > (f + 0.5)) { return f + 1; } // step 7
+
+	return f % 2 === 0 ? f : f + 1; // step 8
+};
+
+
+/***/ }),
+
+/***/ 43623:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+
+var IsArray = __webpack_require__(94041);
+var IsConstructor = __webpack_require__(69028);
+var IsTypedArrayOutOfBounds = __webpack_require__(12223);
+var TypedArrayLength = __webpack_require__(57571);
+var ValidateTypedArray = __webpack_require__(77425);
+
+var availableTypedArrays = __webpack_require__(51506)();
+
+// https://262.ecma-international.org/15.0/#typedarraycreatefromconstructor
+
+module.exports = function TypedArrayCreateFromConstructor(constructor, argumentList) {
+	if (!IsConstructor(constructor)) {
+		throw new $TypeError('Assertion failed: `constructor` must be a constructor');
+	}
+	if (!IsArray(argumentList)) {
+		throw new $TypeError('Assertion failed: `argumentList` must be a List');
+	}
+	if (availableTypedArrays.length === 0) {
+		throw new $SyntaxError('Assertion failed: Typed Arrays are not supported in this environment');
+	}
+
+	// var newTypedArray = Construct(constructor, argumentList); // step 1
+	var newTypedArray;
+	if (argumentList.length === 0) {
+		newTypedArray = new constructor();
+	} else if (argumentList.length === 1) {
+		newTypedArray = new constructor(argumentList[0]);
+	} else if (argumentList.length === 2) {
+		newTypedArray = new constructor(argumentList[0], argumentList[1]);
+	} else {
+		newTypedArray = new constructor(argumentList[0], argumentList[1], argumentList[2]);
+	}
+
+	var taRecord = ValidateTypedArray(newTypedArray, 'SEQ-CST'); // step 2
+
+	if (argumentList.length === 1 && typeof argumentList[0] === 'number') { // step 3
+		if (IsTypedArrayOutOfBounds(taRecord)) {
+			throw new $TypeError('new Typed Array is out of bounds'); // step 3.a
+		}
+		var length = TypedArrayLength(taRecord); // step 3.b
+		if (length < argumentList[0]) {
+			throw new $TypeError('`argumentList[0]` must be <= `newTypedArray.length`'); // step 3.c
+		}
+	}
+
+	return newTypedArray; // step 4
+};
+
+
+/***/ }),
+
+/***/ 18866:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+var isInteger = __webpack_require__(3647);
+var whichTypedArray = __webpack_require__(54768);
+
+// https://262.ecma-international.org/13.0/#sec-typedarrayelementsize
+
+var tableTAO = __webpack_require__(41821);
+
+module.exports = function TypedArrayElementSize(O) {
+	var type = whichTypedArray(O);
+	if (!type) {
+		throw new $TypeError('Assertion failed: `O` must be a TypedArray');
+	}
+	var size = tableTAO.size['$' + tableTAO.name['$' + type]];
+	if (!isInteger(size) || size < 0) {
+		throw new $SyntaxError('Assertion failed: Unknown TypedArray type `' + type + '`');
+	}
+
+	return size;
+};
+
+
+/***/ }),
+
+/***/ 19927:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+
+var whichTypedArray = __webpack_require__(54768);
+
+// https://262.ecma-international.org/13.0/#sec-typedarrayelementtype
+
+var tableTAO = __webpack_require__(41821);
+
+module.exports = function TypedArrayElementType(O) {
+	var type = whichTypedArray(O);
+	if (!type) {
+		throw new $TypeError('Assertion failed: `O` must be a TypedArray');
+	}
+	var result = tableTAO.name['$' + type];
+	if (typeof result !== 'string') {
+		throw new $SyntaxError('Assertion failed: Unknown TypedArray type `' + type + '`');
+	}
+
+	return result;
+};
+
+
+/***/ }),
+
+/***/ 57571:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var floor = __webpack_require__(85638);
+var IsFixedLengthArrayBuffer = __webpack_require__(91643);
+var IsTypedArrayOutOfBounds = __webpack_require__(12223);
+var TypedArrayElementSize = __webpack_require__(18866);
+
+var isTypedArrayWithBufferWitnessRecord = __webpack_require__(53937);
+
+var typedArrayBuffer = __webpack_require__(58489);
+var typedArrayByteOffset = __webpack_require__(23363);
+var typedArrayLength = __webpack_require__(53655);
+
+// https://www.ecma-international.org/ecma-262/15.0/#sec-typedarraylength
+
+module.exports = function TypedArrayLength(taRecord) {
+	if (!isTypedArrayWithBufferWitnessRecord(taRecord)) {
+		throw new $TypeError('Assertion failed: `taRecord` must be a TypedArray With Buffer Witness Record');
+	}
+
+	if (IsTypedArrayOutOfBounds(taRecord)) {
+		throw new $TypeError('Assertion failed: `taRecord` is out of bounds'); // step 1
+	}
+
+	var O = taRecord['[[Object]]']; // step 2
+
+	var isFixed = IsFixedLengthArrayBuffer(typedArrayBuffer(O));
+
+	var length = isFixed ? typedArrayLength(O) : 'AUTO';
+	if (length !== 'AUTO') {
+		return length; // step 3
+	}
+
+	if (isFixed) {
+		throw new $TypeError('Assertion failed: array buffer is not fixed length'); // step 4
+	}
+
+	var byteOffset = typedArrayByteOffset(O); // step 5
+
+	var elementSize = TypedArrayElementSize(O); // step 6
+
+	var byteLength = taRecord['[[CachedBufferByteLength]]']; // step 7
+
+	if (byteLength === 'DETACHED') {
+		throw new $TypeError('Assertion failed: typed array is detached'); // step 8
+	}
+
+	return floor((byteLength - byteOffset) / elementSize); // step 9
+};
+
+
+/***/ }),
+
+/***/ 49733:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $SyntaxError = __webpack_require__(80105);
+var $TypeError = __webpack_require__(73314);
+
+var whichTypedArray = __webpack_require__(54768);
+var availableTypedArrays = __webpack_require__(51506)();
+
+var IsArray = __webpack_require__(94041);
+var SpeciesConstructor = __webpack_require__(98080);
+var TypedArrayCreateFromConstructor = __webpack_require__(43623);
+
+var getConstructor = __webpack_require__(34414);
+
+// https://262.ecma-international.org/15.0/#typedarray-species-create
+
+module.exports = function TypedArraySpeciesCreate(exemplar, argumentList) {
+	if (availableTypedArrays.length === 0) {
+		throw new $SyntaxError('Assertion failed: Typed Arrays are not supported in this environment');
+	}
+
+	var kind = whichTypedArray(exemplar);
+	if (!kind) {
+		throw new $TypeError('Assertion failed: exemplar must be a TypedArray'); // step 1
+	}
+	if (!IsArray(argumentList)) {
+		throw new $TypeError('Assertion failed: `argumentList` must be a List'); // step 1
+	}
+
+	var defaultConstructor = getConstructor(kind); // step 2
+	if (typeof defaultConstructor !== 'function') {
+		throw new $SyntaxError('Assertion failed: `constructor` of `exemplar` (' + kind + ') must exist. Please report this!');
+	}
+	var constructor = SpeciesConstructor(exemplar, defaultConstructor); // step 3
+
+	return TypedArrayCreateFromConstructor(constructor, argumentList); // step 4
+};
+
+
+/***/ }),
+
+/***/ 77425:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+var isObject = __webpack_require__(21040);
+
+var IsTypedArrayOutOfBounds = __webpack_require__(12223);
+var MakeTypedArrayWithBufferWitnessRecord = __webpack_require__(93117);
+
+var isTypedArray = __webpack_require__(6405);
+
+// https://262.ecma-international.org/15.0/#sec-validatetypedarray
+
+module.exports = function ValidateTypedArray(O, order) {
+	if (order !== 'SEQ-CST' && order !== 'UNORDERED') {
+		throw new $TypeError('Assertion failed: `order` must be ~SEQ-CST~ or ~UNORDERED~');
+	}
+
+	if (!isObject(O)) {
+		throw new $TypeError('Assertion failed: `O` must be an Object'); // step 1
+	}
+	if (!isTypedArray(O)) {
+		throw new $TypeError('Assertion failed: `O` must be a Typed Array'); // steps 1 - 2
+	}
+
+	var taRecord = MakeTypedArrayWithBufferWitnessRecord(O, order); // step 3
+
+	if (IsTypedArrayOutOfBounds(taRecord)) {
+		throw new $TypeError('`O` must be in-bounds and backed by a non-detached buffer'); // step 4
+	}
+
+	return taRecord; // step 5
+};
+
+
+/***/ }),
+
+/***/ 95835:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+var max = __webpack_require__(57147);
+var min = __webpack_require__(41017);
+
+// https://262.ecma-international.org/12.0/#clamping
+
+module.exports = function clamp(x, lower, upper) {
+	if (typeof x !== 'number' || typeof lower !== 'number' || typeof upper !== 'number' || !(lower <= upper)) {
+		throw new $TypeError('Assertion failed: all three arguments must be MVs, and `lower` must be `<= upper`');
+	}
+	return min(max(lower, x), upper);
+};
+
+
+/***/ }),
+
+/***/ 85638:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// var modulo = require('./modulo');
+var $floor = __webpack_require__(96171);
+
+// http://262.ecma-international.org/11.0/#eqn-floor
+
+module.exports = function floor(x) {
+	// return x - modulo(x, 1);
+	if (typeof x === 'bigint') {
+		return x;
+	}
+	return $floor(x);
+};
+
+
+/***/ }),
+
+/***/ 90460:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var mod = __webpack_require__(94248);
+
+// https://262.ecma-international.org/5.1/#sec-5.2
+
+module.exports = function modulo(x, y) {
+	return mod(x, y);
+};
+
+
+/***/ }),
+
+/***/ 41821:
+/***/ ((module) => {
+
+"use strict";
+
+
+// https://262.ecma-international.org/16.0/#table-the-typedarray-constructors
+
+module.exports = {
+	__proto__: null,
+	name: {
+		__proto__: null,
+		$Int8Array: 'INT8',
+		$Uint8Array: 'UINT8',
+		$Uint8ClampedArray: 'UINT8C',
+		$Int16Array: 'INT16',
+		$Uint16Array: 'UINT16',
+		$Int32Array: 'INT32',
+		$Uint32Array: 'UINT32',
+		$BigInt64Array: 'BIGINT64',
+		$BigUint64Array: 'BIGUINT64',
+		$Float16Array: 'FLOAT16',
+		$Float32Array: 'FLOAT32',
+		$Float64Array: 'FLOAT64'
+	},
+	size: {
+		__proto__: null,
+		$INT8: 1,
+		$UINT8: 1,
+		$UINT8C: 1,
+		$INT16: 2,
+		$UINT16: 2,
+		$INT32: 4,
+		$UINT32: 4,
+		$BIGINT64: 8,
+		$BIGUINT64: 8,
+		$FLOAT16: 2,
+		$FLOAT32: 4,
+		$FLOAT64: 8
+	},
+	choices: '"INT8", "UINT8", "UINT8C", "INT16", "UINT16", "INT32", "UINT32", "BIGINT64", "BIGUINT64", "FLOAT16", "FLOAT32", or "FLOAT64"'
+};
+
+
+/***/ }),
+
+/***/ 60700:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var floor = __webpack_require__(85638);
+
+var $TypeError = __webpack_require__(73314);
+
+// https://262.ecma-international.org/14.0/#eqn-truncate
+
+module.exports = function truncate(x) {
+	if (typeof x !== 'number' && typeof x !== 'bigint') {
+		throw new $TypeError('argument must be a Number or a BigInt');
+	}
+	var result = x < 0 ? -floor(-x) : floor(x);
+	return result === 0 ? 0 : result; // in the spec, these are math values, so we filter out -0 here
+};
+
+
+/***/ }),
+
+/***/ 82043:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// TODO: remove, semver-major
+
+module.exports = __webpack_require__(60470);
+
+
+/***/ }),
+
+/***/ 62652:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasPropertyDescriptors = __webpack_require__(60497);
+
+var $defineProperty = __webpack_require__(79094);
+
+var hasArrayLengthDefineBug = hasPropertyDescriptors.hasArrayLengthDefineBug();
+
+// eslint-disable-next-line global-require
+var isArray = hasArrayLengthDefineBug && __webpack_require__(30233);
+
+var callBound = __webpack_require__(23105);
+
+var $isEnumerable = callBound('Object.prototype.propertyIsEnumerable');
+
+// eslint-disable-next-line max-params
+module.exports = function DefineOwnProperty(IsDataDescriptor, SameValue, FromPropertyDescriptor, O, P, desc) {
+	if (!$defineProperty) {
+		if (!IsDataDescriptor(desc)) {
+			// ES3 does not support getters/setters
+			return false;
+		}
+		if (!desc['[[Configurable]]'] || !desc['[[Writable]]']) {
+			return false;
+		}
+
+		// fallback for ES3
+		if (P in O && $isEnumerable(O, P) !== !!desc['[[Enumerable]]']) {
+			// a non-enumerable existing property
+			return false;
+		}
+
+		// property does not exist at all, or exists but is enumerable
+		var V = desc['[[Value]]'];
+		// eslint-disable-next-line no-param-reassign
+		O[P] = V; // will use [[Define]]
+		return SameValue(O[P], V);
+	}
+	if (
+		hasArrayLengthDefineBug
+		&& P === 'length'
+		&& '[[Value]]' in desc
+		&& isArray(O)
+		&& O.length !== desc['[[Value]]']
+	) {
+		// eslint-disable-next-line no-param-reassign
+		O.length = desc['[[Value]]'];
+		return O.length === desc['[[Value]]'];
+	}
+
+	$defineProperty(O, P, FromPropertyDescriptor(desc));
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 30233:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $Array = GetIntrinsic('%Array%');
+
+// eslint-disable-next-line global-require
+var toStr = !$Array.isArray && __webpack_require__(23105)('Object.prototype.toString');
+
+module.exports = $Array.isArray || function IsArray(argument) {
+	return toStr(argument) === '[object Array]';
+};
+
+
+/***/ }),
+
+/***/ 91914:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $pow = __webpack_require__(56947);
+
+module.exports = function bytesAsFloat32(rawBytes) {
+	// return new $Float16Array(new $Uint8Array(rawBytes).buffer)[0];
+	/*
+        Let value be the byte elements of rawBytes concatenated and interpreted as a little-endian bit string encoding of an IEEE 754-2019 binary16 value.
+        If value is a NaN, return NaN.
+        Return the Number value that corresponds to value.
+    */
+
+	var bits = (rawBytes[1] << 8) | rawBytes[0];
+
+	// extract sign, exponent, mantissa
+	var sign = bits & 0x8000 ? -1 : 1;
+	var exponent = (bits & 0x7C00) >> 10;
+	var mantissa = bits & 0x03FF;
+
+	// zero (±0)
+	if (exponent === 0 && mantissa === 0) {
+		return sign === 1 ? 0 : -0;
+	}
+
+	// infinities
+	if (exponent === 0x1F && mantissa === 0) {
+		return sign === 1 ? Infinity : -Infinity;
+	}
+
+	// NaN
+	if (exponent === 0x1F && mantissa !== 0) {
+		return NaN;
+	}
+
+	// remove bias (15)
+	exponent -= 15;
+
+	// subnormals
+	if (exponent === -15) {
+		// value = sign * (mantissa) * 2^(1-bias-10) = mantissa * 2^(-14-10)
+		return sign * mantissa * $pow(2, -24);
+	}
+
+	// normals
+	// value = sign * (1 + mantissa/2^10) * 2^exponent
+	return sign * (1 + (mantissa * $pow(2, -10))) * $pow(2, exponent);
+};
+
+
+/***/ }),
+
+/***/ 77524:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $pow = __webpack_require__(56947);
+
+module.exports = function bytesAsFloat32(rawBytes) {
+	// return new $Float32Array(new $Uint8Array(rawBytes).buffer)[0];
+
+	/*
+        Let value be the byte elements of rawBytes concatenated and interpreted as a little-endian bit string encoding of an IEEE 754-2008 binary32 value.
+If value is an IEEE 754-2008 binary32 NaN value, return the NaN Number value.
+Return the Number value that corresponds to value.
+        */
+	var sign = rawBytes[3] & 0x80 ? -1 : 1; // Check the sign bit
+	var exponent = ((rawBytes[3] & 0x7F) << 1)
+		| (rawBytes[2] >> 7); // Combine bits for exponent
+	var mantissa = ((rawBytes[2] & 0x7F) << 16)
+		| (rawBytes[1] << 8)
+		| rawBytes[0]; // Combine bits for mantissa
+
+	if (exponent === 0 && mantissa === 0) {
+		return sign === 1 ? 0 : -0;
+	}
+	if (exponent === 0xFF && mantissa === 0) {
+		return sign === 1 ? Infinity : -Infinity;
+	}
+	if (exponent === 0xFF && mantissa !== 0) {
+		return NaN;
+	}
+
+	exponent -= 127; // subtract the bias
+
+	if (exponent === -127) {
+		return sign * mantissa * $pow(2, -126 - 23);
+	}
+	return sign * (1 + (mantissa * $pow(2, -23))) * $pow(2, exponent);
+};
+
+
+/***/ }),
+
+/***/ 86051:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $pow = __webpack_require__(56947);
+
+module.exports = function bytesAsFloat64(rawBytes) {
+	// return new $Float64Array(new $Uint8Array(rawBytes).buffer)[0];
+
+	/*
+    Let value be the byte elements of rawBytes concatenated and interpreted as a little-endian bit string encoding of an IEEE 754-2008 binary64 value.
+If value is an IEEE 754-2008 binary64 NaN value, return the NaN Number value.
+Return the Number value that corresponds to value.
+    */
+	var sign = rawBytes[7] & 0x80 ? -1 : 1; // first bit
+	var exponent = ((rawBytes[7] & 0x7F) << 4) // 7 bits from index 7
+        | ((rawBytes[6] & 0xF0) >> 4); // 4 bits from index 6
+	var mantissa = ((rawBytes[6] & 0x0F) * 0x1000000000000) // 4 bits from index 6
+        + (rawBytes[5] * 0x10000000000) // 8 bits from index 5
+        + (rawBytes[4] * 0x100000000) // 8 bits from index 4
+        + (rawBytes[3] * 0x1000000) // 8 bits from index 3
+        + (rawBytes[2] * 0x10000) // 8 bits from index 2
+        + (rawBytes[1] * 0x100) // 8 bits from index 1
+        + rawBytes[0]; // 8 bits from index 0
+
+	if (exponent === 0 && mantissa === 0) {
+		return sign * 0;
+	}
+	if (exponent === 0x7FF && mantissa !== 0) {
+		return NaN;
+	}
+	if (exponent === 0x7FF && mantissa === 0) {
+		return sign * Infinity;
+	}
+
+	exponent -= 1023; // subtract the bias
+
+	// Handle subnormal numbers
+	if (exponent === -1023) {
+		return sign * mantissa * 5e-324; // $pow(2, -1022 - 52)
+	}
+
+	return sign * (1 + (mantissa / 0x10000000000000)) * $pow(2, exponent);
+};
+
+
+/***/ }),
+
+/***/ 74593:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $pow = __webpack_require__(56947);
+
+var $Number = GetIntrinsic('%Number%');
+var $BigInt = GetIntrinsic('%BigInt%', true);
+
+module.exports = function bytesAsInteger(rawBytes, elementSize, isUnsigned, isBigInt) {
+	var Z = isBigInt ? $BigInt : $Number;
+
+	// this is common to both branches
+	var intValue = Z(0);
+	for (var i = 0; i < rawBytes.length; i++) {
+		intValue += Z(rawBytes[i] * $pow(2, 8 * i));
+	}
+	/*
+	Let intValue be the byte elements of rawBytes concatenated and interpreted as a bit string encoding of an unsigned little-endian binary number.
+	*/
+
+	if (!isUnsigned) { // steps 5-6
+		// Let intValue be the byte elements of rawBytes concatenated and interpreted as a bit string encoding of a binary little-endian 2's complement number of bit length elementSize × 8.
+		var bitLength = elementSize * 8;
+
+		if (rawBytes[elementSize - 1] & 0x80) {
+			intValue -= Z($pow(2, bitLength));
+		}
+	}
+
+	return intValue; // step 7
+};
+
+
+/***/ }),
+
+/***/ 19289:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $Uint8Array = GetIntrinsic('%Uint8Array%', true);
+var $Uint32Array = GetIntrinsic('%Uint32Array%', true);
+
+var typedArrayBuffer = __webpack_require__(58489);
+
+var uInt32 = $Uint32Array && new $Uint32Array([0x12345678]);
+var uInt8 = uInt32 && new $Uint8Array(typedArrayBuffer(uInt32));
+
+module.exports = uInt8
+	? uInt8[0] === 0x78
+		? 'little'
+		: uInt8[0] === 0x12
+			? 'big'
+			: uInt8[0] === 0x34
+				? 'mixed' // https://developer.mozilla.org/en-US/docs/Glossary/Endianness
+				: 'unknown' // ???
+	: 'indeterminate'; // no way to know
+
+
+/***/ }),
+
+/***/ 89835:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function every(array, predicate) {
+	for (var i = 0; i < array.length; i += 1) {
+		if (!predicate(array[i], i, array)) {
+			return false;
+		}
+	}
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 64930:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function forEach(array, callback) {
+	for (var i = 0; i < array.length; i += 1) {
+		callback(array[i], i, array); // eslint-disable-line callback-return
+	}
+};
+
+
+/***/ }),
+
+/***/ 62293:
+/***/ ((module) => {
+
+"use strict";
+
+
+var MAX_ITER = 1075; // 1023+52 (subnormals) => BIAS+NUM_SIGNFICAND_BITS-1
+var maxBits = 54; // only 53 bits for fraction
+
+module.exports = function fractionToBitString(x) {
+	var str = '';
+	if (x === 0) {
+		return str;
+	}
+	var j = MAX_ITER;
+
+	var y;
+	// Each time we multiply by 2 and find a ones digit, add a '1'; otherwise, add a '0'..
+	for (var i = 0; i < MAX_ITER; i += 1) {
+		y = x * 2;
+		if (y >= 1) {
+			x = y - 1; // eslint-disable-line no-param-reassign
+			str += '1';
+			if (j === MAX_ITER) {
+				j = i; // first 1
+			}
+		} else {
+			x = y; // eslint-disable-line no-param-reassign
+			str += '0';
+		}
+		// Stop when we have no more decimals to process or in the event we found a fraction which cannot be represented in a finite number of bits...
+		if (y === 1 || i - j > maxBits) {
+			return str;
+		}
+	}
+	return str;
+};
+
+
+/***/ }),
+
+/***/ 29890:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function fromPropertyDescriptor(Desc) {
+	if (typeof Desc === 'undefined') {
+		return Desc;
+	}
+	var obj = {};
+	if ('[[Value]]' in Desc) {
+		obj.value = Desc['[[Value]]'];
+	}
+	if ('[[Writable]]' in Desc) {
+		obj.writable = !!Desc['[[Writable]]'];
+	}
+	if ('[[Get]]' in Desc) {
+		obj.get = Desc['[[Get]]'];
+	}
+	if ('[[Set]]' in Desc) {
+		obj.set = Desc['[[Set]]'];
+	}
+	if ('[[Enumerable]]' in Desc) {
+		obj.enumerable = !!Desc['[[Enumerable]]'];
+	}
+	if ('[[Configurable]]' in Desc) {
+		obj.configurable = !!Desc['[[Configurable]]'];
+	}
+	return obj;
+};
+
+
+/***/ }),
+
+/***/ 21924:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $floor = __webpack_require__(96171);
+
+// https://runestone.academy/ns/books/published/pythonds/BasicDS/ConvertingDecimalNumberstoBinaryNumbers.html#:~:text=The%20Divide%20by%202%20algorithm,have%20a%20remainder%20of%200
+
+module.exports = function intToBinaryString(x) {
+	var str = '';
+	var y;
+
+	while (x > 0) {
+		y = x / 2;
+		x = $floor(y); // eslint-disable-line no-param-reassign
+		if (y === x) {
+			str = '0' + str;
+		} else {
+			str = '1' + str;
+		}
+	}
+	return str;
+};
+
+
+/***/ }),
+
+/***/ 27854:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $Number = GetIntrinsic('%Number%');
+var $BigInt = GetIntrinsic('%BigInt%', true);
+
+module.exports = function integerToNBytes(intValue, n, isLittleEndian) {
+	var Z = typeof intValue === 'bigint' ? $BigInt : $Number;
+	/*
+	if (intValue >= 0) { // step 3.d
+		// Let rawBytes be a List containing the n-byte binary encoding of intValue. If isLittleEndian is false, the bytes are ordered in big endian order. Otherwise, the bytes are ordered in little endian order.
+	} else { // step 3.e
+		// Let rawBytes be a List containing the n-byte binary 2's complement encoding of intValue. If isLittleEndian is false, the bytes are ordered in big endian order. Otherwise, the bytes are ordered in little endian order.
+	}
+    */
+	if (intValue < 0) {
+		intValue >>>= 0; // eslint-disable-line no-param-reassign
+	}
+
+	var rawBytes = [];
+	for (var i = 0; i < n; i++) {
+		rawBytes[isLittleEndian ? i : n - 1 - i] = $Number(intValue & Z(0xFF));
+		intValue >>= Z(8); // eslint-disable-line no-param-reassign
+	}
+
+	return rawBytes; // step 4
+};
+
+
+/***/ }),
+
+/***/ 51315:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function isByteValue(value) {
+	return typeof value === 'number' && value >= 0 && value <= 255 && (value | 0) === value;
+};
+
+
+/***/ }),
+
+/***/ 44278:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// TODO, semver-major: delete
+module.exports = __webpack_require__(3647);
+
+
+/***/ }),
+
+/***/ 92805:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = Number.isNaN || function isNaN(a) {
+	return a !== a;
+};
+
+
+/***/ }),
+
+/***/ 46229:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// TODO: remove, semver-major
+
+module.exports = __webpack_require__(21040);
+
+
+/***/ }),
+
+/***/ 67369:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function isPrimitive(value) {
+	return value === null || (typeof value !== 'function' && typeof value !== 'object');
+};
+
+
+/***/ }),
+
+/***/ 7084:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function isPropertyKey(argument) {
+	return typeof argument === 'string' || typeof argument === 'symbol';
+};
+
+
+/***/ }),
+
+/***/ 94248:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+// TODO, semver-major: delete
+module.exports = __webpack_require__(9521);
+
+
+/***/ }),
+
+/***/ 49843:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function bigIntMod(BigIntRemainder, bigint, modulo) {
+	var remain = BigIntRemainder(bigint, modulo);
+	return remain >= 0 ? remain : remain + modulo;
+};
+
+
+/***/ }),
+
+/***/ 2612:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $TypeError = __webpack_require__(73314);
+
+var hasOwn = __webpack_require__(54076);
+
+var allowed = {
+	__proto__: null,
+	'[[Configurable]]': true,
+	'[[Enumerable]]': true,
+	'[[Get]]': true,
+	'[[Set]]': true,
+	'[[Value]]': true,
+	'[[Writable]]': true
+};
+
+// https://262.ecma-international.org/6.0/#sec-property-descriptor-specification-type
+
+module.exports = function isPropertyDescriptor(Desc) {
+	if (!Desc || typeof Desc !== 'object') {
+		return false;
+	}
+
+	for (var key in Desc) { // eslint-disable-line
+		if (hasOwn(Desc, key) && !allowed[key]) {
+			return false;
+		}
+	}
+
+	var isData = hasOwn(Desc, '[[Value]]') || hasOwn(Desc, '[[Writable]]');
+	var IsAccessor = hasOwn(Desc, '[[Get]]') || hasOwn(Desc, '[[Set]]');
+	if (isData && IsAccessor) {
+		throw new $TypeError('Property Descriptors may not be both accessor and data descriptors');
+	}
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 53937:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var hasOwn = __webpack_require__(54076);
+var isTypedArray = __webpack_require__(6405);
+
+var isInteger = __webpack_require__(44278);
+
+module.exports = function isTypedArrayWithBufferWitnessRecord(value) {
+	return !!value
+		&& typeof value === 'object'
+		&& hasOwn(value, '[[Object]]')
+		&& hasOwn(value, '[[CachedBufferByteLength]]')
+		&& (
+			(isInteger(value['[[CachedBufferByteLength]]']) && value['[[CachedBufferByteLength]]'] >= 0)
+			|| value['[[CachedBufferByteLength]]'] === 'DETACHED'
+		)
+		&& isTypedArray(value['[[Object]]']);
+};
+
+
+/***/ }),
+
+/***/ 34414:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var constructors = {
+	__proto__: null,
+	$Int8Array: GetIntrinsic('%Int8Array%', true),
+	$Uint8Array: GetIntrinsic('%Uint8Array%', true),
+	$Uint8ClampedArray: GetIntrinsic('%Uint8ClampedArray%', true),
+	$Int16Array: GetIntrinsic('%Int16Array%', true),
+	$Uint16Array: GetIntrinsic('%Uint16Array%', true),
+	$Int32Array: GetIntrinsic('%Int32Array%', true),
+	$Uint32Array: GetIntrinsic('%Uint32Array%', true),
+	$BigInt64Array: GetIntrinsic('%BigInt64Array%', true),
+	$BigUint64Array: GetIntrinsic('%BigUint64Array%', true),
+	$Float16Array: GetIntrinsic('%Float16Array%', true),
+	$Float32Array: GetIntrinsic('%Float32Array%', true),
+	$Float64Array: GetIntrinsic('%Float64Array%', true)
+};
+
+module.exports = function getConstructor(kind) {
+	return constructors['$' + kind];
+};
+
+
+/***/ }),
+
+/***/ 15592:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $abs = __webpack_require__(55641);
+var $floor = __webpack_require__(96171);
+var $pow = __webpack_require__(56947);
+
+var isFinite = __webpack_require__(3766);
+var isNaN = __webpack_require__(77044);
+var isNegativeZero = __webpack_require__(1908);
+
+var maxFiniteFloat16 = 65504; // 2**16 - 2**5
+
+module.exports = function valueToFloat16Bytes(value, isLittleEndian) {
+	// NaN → exponent=all-ones, mantissa MSB=1 → 0x7e00
+	if (isNaN(value)) {
+		return isLittleEndian
+			? [0x00, 0x7e]
+			: [0x7e, 0x00];
+	}
+
+	var leastSig;
+
+	// ±0 → just the sign bit
+	if (value === 0) {
+		leastSig = isNegativeZero(value) ? 0x80 : 0x00;
+		return isLittleEndian
+			? [0x00, leastSig]
+			: [leastSig, 0x00];
+	}
+
+	// ±∞ → exponent=all-ones, mantissa=0 → 0x7c00 or 0xfc00
+	if ($abs(value) > maxFiniteFloat16 || !isFinite(value)) {
+		leastSig = value < 0 ? 0xfc : 0x7c;
+		return isLittleEndian
+			? [0x00, leastSig]
+			: [leastSig, 0x00];
+	}
+
+	var sign = value < 0 ? 1 : 0;
+	value = $abs(value); // eslint-disable-line no-param-reassign
+
+	// normalize to [1,2)
+	var exponent = 0;
+	while (value >= 2) {
+		exponent += 1;
+		value /= 2; // eslint-disable-line no-param-reassign
+	}
+	while (value < 1) {
+		exponent -= 1;
+		value *= 2; // eslint-disable-line no-param-reassign
+	}
+
+	// build mantissa (10 bits)
+	var mantissa = value - 1;
+	mantissa *= $pow(2, 10) + 0.5;
+	mantissa = $floor(mantissa);
+
+	// apply bias (15) and shift into place
+	exponent += 15;
+	exponent <<= 10;
+
+	// pack sign, exponent, mantissa
+	var result = (sign << 15) | exponent | mantissa;
+
+	// split into two bytes
+	var byte0 = result & 0xFF;
+	result >>= 8;
+	var byte1 = result & 0xFF;
+
+	return isLittleEndian
+		? [byte0, byte1]
+		: [byte1, byte0];
+};
+
+
+/***/ }),
+
+/***/ 44558:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $abs = __webpack_require__(55641);
+var $floor = __webpack_require__(96171);
+var $pow = __webpack_require__(56947);
+
+var isFinite = __webpack_require__(3766);
+var isNaN = __webpack_require__(77044);
+var isNegativeZero = __webpack_require__(1908);
+
+var maxFiniteFloat32 = 3.4028234663852886e+38; // roughly 2 ** 128 - 1
+
+module.exports = function valueToFloat32Bytes(value, isLittleEndian) {
+	if (isNaN(value)) {
+		return isLittleEndian ? [0, 0, 192, 127] : [127, 192, 0, 0]; // hardcoded
+	}
+
+	var leastSig;
+
+	if (value === 0) {
+		leastSig = isNegativeZero(value) ? 0x80 : 0;
+		return isLittleEndian ? [0, 0, 0, leastSig] : [leastSig, 0, 0, 0];
+	}
+
+	if ($abs(value) > maxFiniteFloat32 || !isFinite(value)) {
+		leastSig = value < 0 ? 255 : 127;
+		return isLittleEndian ? [0, 0, 128, leastSig] : [leastSig, 128, 0, 0];
+	}
+
+	var sign = value < 0 ? 1 : 0;
+	value = $abs(value); // eslint-disable-line no-param-reassign
+
+	var exponent = 0;
+	while (value >= 2) {
+		exponent += 1;
+		value /= 2; // eslint-disable-line no-param-reassign
+	}
+
+	while (value < 1) {
+		exponent -= 1;
+		value *= 2; // eslint-disable-line no-param-reassign
+	}
+
+	var mantissa = value - 1;
+	mantissa *= $pow(2, 23) + 0.5;
+	mantissa = $floor(mantissa);
+
+	exponent += 127;
+	exponent <<= 23;
+
+	var result = (sign << 31)
+        | exponent
+        | mantissa;
+
+	var byte0 = result & 255;
+	result >>= 8;
+	var byte1 = result & 255;
+	result >>= 8;
+	var byte2 = result & 255;
+	result >>= 8;
+	var byte3 = result & 255;
+
+	if (isLittleEndian) {
+		return [byte0, byte1, byte2, byte3];
+	}
+	return [byte3, byte2, byte1, byte0];
+};
+
+
+/***/ }),
+
+/***/ 66951:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+
+var $parseInt = GetIntrinsic('%parseInt%');
+var $abs = __webpack_require__(55641);
+var $floor = __webpack_require__(96171);
+var isFinite = __webpack_require__(3766);
+var isNegativeZero = __webpack_require__(1908);
+
+var callBound = __webpack_require__(23105);
+
+var $strIndexOf = callBound('String.prototype.indexOf');
+var $strSlice = callBound('String.prototype.slice');
+
+var fractionToBitString = __webpack_require__(62293);
+var intToBinString = __webpack_require__(21924);
+var isNaN = __webpack_require__(92805);
+
+var float64bias = 1023;
+
+var elevenOnes = '11111111111';
+var elevenZeroes = '00000000000';
+var fiftyOneZeroes = elevenZeroes + elevenZeroes + elevenZeroes + elevenZeroes + '0000000';
+
+// IEEE 754-1985
+module.exports = function valueToFloat64Bytes(value, isLittleEndian) {
+	var signBit = value < 0 || isNegativeZero(value) ? '1' : '0';
+	var exponentBits;
+	var significandBits;
+
+	if (isNaN(value)) {
+		exponentBits = elevenOnes;
+		significandBits = '1' + fiftyOneZeroes;
+	} else if (!isFinite(value)) {
+		exponentBits = elevenOnes;
+		significandBits = '0' + fiftyOneZeroes;
+	} else if (value === 0) {
+		exponentBits = elevenZeroes;
+		significandBits = '0' + fiftyOneZeroes;
+	} else {
+		value = $abs(value); // eslint-disable-line no-param-reassign
+
+		// Isolate the integer part (digits before the decimal):
+		var integerPart = $floor(value);
+
+		var intBinString = intToBinString(integerPart); // bit string for integer part
+		var fracBinString = fractionToBitString(value - integerPart); // bit string for fractional part
+
+		var numberOfBits;
+		// find exponent needed to normalize integer+fractional parts
+		if (intBinString) {
+			exponentBits = intBinString.length - 1; // move the decimal to the left
+		} else {
+			var first1 = $strIndexOf(fracBinString, '1');
+			if (first1 > -1) {
+				numberOfBits = first1 + 1;
+			}
+			exponentBits = -numberOfBits; // move the decimal to the right
+		}
+
+		significandBits = intBinString + fracBinString;
+		if (exponentBits < 0) {
+			// subnormals
+			if (exponentBits <= -float64bias) {
+				numberOfBits = float64bias - 1; // limit number of removed bits
+			}
+			significandBits = $strSlice(significandBits, numberOfBits); // remove all leading 0s and the first 1 for normal values; for subnormals, remove up to `float64bias - 1` leading bits
+		} else {
+			significandBits = $strSlice(significandBits, 1); // remove the leading '1' (implicit/hidden bit)
+		}
+		exponentBits = $strSlice(elevenZeroes + intToBinString(exponentBits + float64bias), -11); // Convert the exponent to a bit string
+
+		significandBits = $strSlice(significandBits + fiftyOneZeroes + '0', 0, 52); // fill in any trailing zeros and ensure we have only 52 fraction bits
+	}
+
+	var bits = signBit + exponentBits + significandBits;
+	var rawBytes = [];
+	for (var i = 0; i < 8; i++) {
+		var targetIndex = isLittleEndian ? 8 - i - 1 : i;
+		rawBytes[targetIndex] = $parseInt($strSlice(bits, i * 8, (i + 1) * 8), 2);
+	}
+
+	return rawBytes;
+};
+
+
+/***/ }),
+
 /***/ 72981:
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
@@ -42852,7 +51228,7 @@ ZipStream.prototype.finalize = function() {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Glob = void 0;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 const node_url_1 = __webpack_require__(73136);
 const path_scurry_1 = __webpack_require__(38958);
 const pattern_js_1 = __webpack_require__(47813);
@@ -43106,7 +51482,7 @@ exports.Glob = Glob;
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.hasMagic = void 0;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 /**
  * Return true if the patterns provided contain any magic glob characters,
  * given the options provided.
@@ -43144,7 +51520,7 @@ exports.hasMagic = hasMagic;
 // Ignores are always parsed in dot:true mode
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Ignore = void 0;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 const pattern_js_1 = __webpack_require__(47813);
 const defaultPlatform = (typeof process === 'object' &&
     process &&
@@ -43271,10 +51647,10 @@ exports.globStream = globStream;
 exports.globSync = globSync;
 exports.globIterateSync = globIterateSync;
 exports.globIterate = globIterate;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 const glob_js_1 = __webpack_require__(72981);
 const has_magic_js_1 = __webpack_require__(45197);
-var minimatch_2 = __webpack_require__(46507);
+var minimatch_2 = __webpack_require__(91409);
 Object.defineProperty(exports, "escape", ({ enumerable: true, get: function () { return minimatch_2.escape; } }));
 Object.defineProperty(exports, "unescape", ({ enumerable: true, get: function () { return minimatch_2.unescape; } }));
 var glob_js_2 = __webpack_require__(72981);
@@ -43342,7 +51718,7 @@ exports.glob.glob = exports.glob;
 // this is just a very light wrapper around 2 arrays with an offset index
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Pattern = void 0;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 const isPatternList = (pl) => pl.length >= 1;
 const isGlobList = (gl) => gl.length >= 1;
 /**
@@ -43568,7 +51944,7 @@ exports.Pattern = Pattern;
 // synchronous utility for filtering entries and calculating subwalks
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Processor = exports.SubWalks = exports.MatchRecord = exports.HasWalkedCache = void 0;
-const minimatch_1 = __webpack_require__(46507);
+const minimatch_1 = __webpack_require__(91409);
 /**
  * A cache of which patterns have been processed for a given Path
  */
@@ -44259,6 +52635,2030 @@ class GlobStream extends GlobUtil {
 }
 exports.GlobStream = GlobStream;
 //# sourceMappingURL=walker.js.map
+
+/***/ }),
+
+/***/ 8895:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.assertValidPattern = void 0;
+const MAX_PATTERN_LENGTH = 1024 * 64;
+const assertValidPattern = (pattern) => {
+    if (typeof pattern !== 'string') {
+        throw new TypeError('invalid pattern');
+    }
+    if (pattern.length > MAX_PATTERN_LENGTH) {
+        throw new TypeError('pattern is too long');
+    }
+};
+exports.assertValidPattern = assertValidPattern;
+//# sourceMappingURL=assert-valid-pattern.js.map
+
+/***/ }),
+
+/***/ 20857:
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// parse a single path portion
+var _a;
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AST = void 0;
+const brace_expressions_js_1 = __webpack_require__(65192);
+const unescape_js_1 = __webpack_require__(9829);
+const types = new Set(['!', '?', '+', '*', '@']);
+const isExtglobType = (c) => types.has(c);
+const isExtglobAST = (c) => isExtglobType(c.type);
+const adoptionMap = new Map([
+    ['!', ['@']],
+    ['?', ['?', '@']],
+    ['@', ['@']],
+    ['*', ['*', '+', '?', '@']],
+    ['+', ['+', '@']],
+]);
+const adoptionWithSpaceMap = new Map([
+    ['!', ['?']],
+    ['@', ['?']],
+    ['+', ['?', '*']],
+]);
+const adoptionAnyMap = new Map([
+    ['!', ['?', '@']],
+    ['?', ['?', '@']],
+    ['@', ['?', '@']],
+    ['*', ['*', '+', '?', '@']],
+    ['+', ['+', '@', '?', '*']],
+]);
+const usurpMap = new Map([
+    ['!', new Map([['!', '@']])],
+    ['?', new Map([['*', '*'], ['+', '*']])],
+    ['@', new Map([['!', '!'], ['?', '?'], ['@', '@'], ['*', '*'], ['+', '+']])],
+    ['+', new Map([['?', '*'], ['*', '*']])],
+]);
+// Patterns that get prepended to bind to the start of either the
+// entire string, or just a single path portion, to prevent dots
+// and/or traversal patterns, when needed.
+// Exts don't need the ^ or / bit, because the root binds that already.
+const startNoTraversal = '(?!(?:^|/)\\.\\.?(?:$|/))';
+const startNoDot = '(?!\\.)';
+// characters that indicate a start of pattern needs the "no dots" bit,
+// because a dot *might* be matched. ( is not in the list, because in
+// the case of a child extglob, it will handle the prevention itself.
+const addPatternStart = new Set(['[', '.']);
+// cases where traversal is A-OK, no dot prevention needed
+const justDots = new Set(['..', '.']);
+const reSpecials = new Set('().*{}+?[]^$\\!');
+const regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+// any single thing other than /
+const qmark = '[^/]';
+// * => any number of characters
+const star = qmark + '*?';
+// use + when we need to ensure that *something* matches, because the * is
+// the only thing in the path portion.
+const starNoEmpty = qmark + '+?';
+// remove the \ chars that we added if we end up doing a nonmagic compare
+// const deslash = (s: string) => s.replace(/\\(.)/g, '$1')
+class AST {
+    type;
+    #root;
+    #hasMagic;
+    #uflag = false;
+    #parts = [];
+    #parent;
+    #parentIndex;
+    #negs;
+    #filledNegs = false;
+    #options;
+    #toString;
+    // set to true if it's an extglob with no children
+    // (which really means one child of '')
+    #emptyExt = false;
+    constructor(type, parent, options = {}) {
+        this.type = type;
+        // extglobs are inherently magical
+        if (type)
+            this.#hasMagic = true;
+        this.#parent = parent;
+        this.#root = this.#parent ? this.#parent.#root : this;
+        this.#options = this.#root === this ? options : this.#root.#options;
+        this.#negs = this.#root === this ? [] : this.#root.#negs;
+        if (type === '!' && !this.#root.#filledNegs)
+            this.#negs.push(this);
+        this.#parentIndex = this.#parent ? this.#parent.#parts.length : 0;
+    }
+    get hasMagic() {
+        /* c8 ignore start */
+        if (this.#hasMagic !== undefined)
+            return this.#hasMagic;
+        /* c8 ignore stop */
+        for (const p of this.#parts) {
+            if (typeof p === 'string')
+                continue;
+            if (p.type || p.hasMagic)
+                return (this.#hasMagic = true);
+        }
+        // note: will be undefined until we generate the regexp src and find out
+        return this.#hasMagic;
+    }
+    // reconstructs the pattern
+    toString() {
+        if (this.#toString !== undefined)
+            return this.#toString;
+        if (!this.type) {
+            return (this.#toString = this.#parts.map(p => String(p)).join(''));
+        }
+        else {
+            return (this.#toString =
+                this.type + '(' + this.#parts.map(p => String(p)).join('|') + ')');
+        }
+    }
+    #fillNegs() {
+        /* c8 ignore start */
+        if (this !== this.#root)
+            throw new Error('should only call on root');
+        if (this.#filledNegs)
+            return this;
+        /* c8 ignore stop */
+        // call toString() once to fill this out
+        this.toString();
+        this.#filledNegs = true;
+        let n;
+        while ((n = this.#negs.pop())) {
+            if (n.type !== '!')
+                continue;
+            // walk up the tree, appending everthing that comes AFTER parentIndex
+            let p = n;
+            let pp = p.#parent;
+            while (pp) {
+                for (let i = p.#parentIndex + 1; !pp.type && i < pp.#parts.length; i++) {
+                    for (const part of n.#parts) {
+                        /* c8 ignore start */
+                        if (typeof part === 'string') {
+                            throw new Error('string part in extglob AST??');
+                        }
+                        /* c8 ignore stop */
+                        part.copyIn(pp.#parts[i]);
+                    }
+                }
+                p = pp;
+                pp = p.#parent;
+            }
+        }
+        return this;
+    }
+    push(...parts) {
+        for (const p of parts) {
+            if (p === '')
+                continue;
+            /* c8 ignore start */
+            if (typeof p !== 'string' && !(p instanceof _a && p.#parent === this)) {
+                throw new Error('invalid part: ' + p);
+            }
+            /* c8 ignore stop */
+            this.#parts.push(p);
+        }
+    }
+    toJSON() {
+        const ret = this.type === null
+            ? this.#parts.slice().map(p => (typeof p === 'string' ? p : p.toJSON()))
+            : [this.type, ...this.#parts.map(p => p.toJSON())];
+        if (this.isStart() && !this.type)
+            ret.unshift([]);
+        if (this.isEnd() &&
+            (this === this.#root ||
+                (this.#root.#filledNegs && this.#parent?.type === '!'))) {
+            ret.push({});
+        }
+        return ret;
+    }
+    isStart() {
+        if (this.#root === this)
+            return true;
+        // if (this.type) return !!this.#parent?.isStart()
+        if (!this.#parent?.isStart())
+            return false;
+        if (this.#parentIndex === 0)
+            return true;
+        // if everything AHEAD of this is a negation, then it's still the "start"
+        const p = this.#parent;
+        for (let i = 0; i < this.#parentIndex; i++) {
+            const pp = p.#parts[i];
+            if (!(pp instanceof _a && pp.type === '!')) {
+                return false;
+            }
+        }
+        return true;
+    }
+    isEnd() {
+        if (this.#root === this)
+            return true;
+        if (this.#parent?.type === '!')
+            return true;
+        if (!this.#parent?.isEnd())
+            return false;
+        if (!this.type)
+            return this.#parent?.isEnd();
+        // if not root, it'll always have a parent
+        /* c8 ignore start */
+        const pl = this.#parent ? this.#parent.#parts.length : 0;
+        /* c8 ignore stop */
+        return this.#parentIndex === pl - 1;
+    }
+    copyIn(part) {
+        if (typeof part === 'string')
+            this.push(part);
+        else
+            this.push(part.clone(this));
+    }
+    clone(parent) {
+        const c = new _a(this.type, parent);
+        for (const p of this.#parts) {
+            c.copyIn(p);
+        }
+        return c;
+    }
+    static #parseAST(str, ast, pos, opt, extDepth) {
+        const maxDepth = opt.maxExtglobRecursion ?? 2;
+        let escaping = false;
+        let inBrace = false;
+        let braceStart = -1;
+        let braceNeg = false;
+        if (ast.type === null) {
+            // outside of a extglob, append until we find a start
+            let i = pos;
+            let acc = '';
+            while (i < str.length) {
+                const c = str.charAt(i++);
+                // still accumulate escapes at this point, but we do ignore
+                // starts that are escaped
+                if (escaping || c === '\\') {
+                    escaping = !escaping;
+                    acc += c;
+                    continue;
+                }
+                if (inBrace) {
+                    if (i === braceStart + 1) {
+                        if (c === '^' || c === '!') {
+                            braceNeg = true;
+                        }
+                    }
+                    else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
+                        inBrace = false;
+                    }
+                    acc += c;
+                    continue;
+                }
+                else if (c === '[') {
+                    inBrace = true;
+                    braceStart = i;
+                    braceNeg = false;
+                    acc += c;
+                    continue;
+                }
+                const doRecurse = !opt.noext &&
+                    isExtglobType(c) &&
+                    str.charAt(i) === '(' &&
+                    extDepth <= maxDepth;
+                if (doRecurse) {
+                    ast.push(acc);
+                    acc = '';
+                    const ext = new _a(c, ast);
+                    i = _a.#parseAST(str, ext, i, opt, extDepth + 1);
+                    ast.push(ext);
+                    continue;
+                }
+                acc += c;
+            }
+            ast.push(acc);
+            return i;
+        }
+        // some kind of extglob, pos is at the (
+        // find the next | or )
+        let i = pos + 1;
+        let part = new _a(null, ast);
+        const parts = [];
+        let acc = '';
+        while (i < str.length) {
+            const c = str.charAt(i++);
+            // still accumulate escapes at this point, but we do ignore
+            // starts that are escaped
+            if (escaping || c === '\\') {
+                escaping = !escaping;
+                acc += c;
+                continue;
+            }
+            if (inBrace) {
+                if (i === braceStart + 1) {
+                    if (c === '^' || c === '!') {
+                        braceNeg = true;
+                    }
+                }
+                else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
+                    inBrace = false;
+                }
+                acc += c;
+                continue;
+            }
+            else if (c === '[') {
+                inBrace = true;
+                braceStart = i;
+                braceNeg = false;
+                acc += c;
+                continue;
+            }
+            const doRecurse = isExtglobType(c) &&
+                str.charAt(i) === '(' &&
+                /* c8 ignore start - the maxDepth is sufficient here */
+                (extDepth <= maxDepth || (ast && ast.#canAdoptType(c)));
+            /* c8 ignore stop */
+            if (doRecurse) {
+                const depthAdd = ast && ast.#canAdoptType(c) ? 0 : 1;
+                part.push(acc);
+                acc = '';
+                const ext = new _a(c, part);
+                part.push(ext);
+                i = _a.#parseAST(str, ext, i, opt, extDepth + depthAdd);
+                continue;
+            }
+            if (c === '|') {
+                part.push(acc);
+                acc = '';
+                parts.push(part);
+                part = new _a(null, ast);
+                continue;
+            }
+            if (c === ')') {
+                if (acc === '' && ast.#parts.length === 0) {
+                    ast.#emptyExt = true;
+                }
+                part.push(acc);
+                acc = '';
+                ast.push(...parts, part);
+                return i;
+            }
+            acc += c;
+        }
+        // unfinished extglob
+        // if we got here, it was a malformed extglob! not an extglob, but
+        // maybe something else in there.
+        ast.type = null;
+        ast.#hasMagic = undefined;
+        ast.#parts = [str.substring(pos - 1)];
+        return i;
+    }
+    #canAdoptWithSpace(child) {
+        return this.#canAdopt(child, adoptionWithSpaceMap);
+    }
+    #canAdopt(child, map = adoptionMap) {
+        if (!child ||
+            typeof child !== 'object' ||
+            child.type !== null ||
+            child.#parts.length !== 1 ||
+            this.type === null) {
+            return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== 'object' || gc.type === null) {
+            return false;
+        }
+        return this.#canAdoptType(gc.type, map);
+    }
+    #canAdoptType(c, map = adoptionAnyMap) {
+        return !!map.get(this.type)?.includes(c);
+    }
+    #adoptWithSpace(child, index) {
+        const gc = child.#parts[0];
+        const blank = new _a(null, gc, this.options);
+        blank.#parts.push('');
+        gc.push(blank);
+        this.#adopt(child, index);
+    }
+    #adopt(child, index) {
+        const gc = child.#parts[0];
+        this.#parts.splice(index, 1, ...gc.#parts);
+        for (const p of gc.#parts) {
+            if (typeof p === 'object')
+                p.#parent = this;
+        }
+        this.#toString = undefined;
+    }
+    #canUsurpType(c) {
+        const m = usurpMap.get(this.type);
+        return !!(m?.has(c));
+    }
+    #canUsurp(child) {
+        if (!child ||
+            typeof child !== 'object' ||
+            child.type !== null ||
+            child.#parts.length !== 1 ||
+            this.type === null ||
+            this.#parts.length !== 1) {
+            return false;
+        }
+        const gc = child.#parts[0];
+        if (!gc || typeof gc !== 'object' || gc.type === null) {
+            return false;
+        }
+        return this.#canUsurpType(gc.type);
+    }
+    #usurp(child) {
+        const m = usurpMap.get(this.type);
+        const gc = child.#parts[0];
+        const nt = m?.get(gc.type);
+        /* c8 ignore start - impossible */
+        if (!nt)
+            return false;
+        /* c8 ignore stop */
+        this.#parts = gc.#parts;
+        for (const p of this.#parts) {
+            if (typeof p === 'object')
+                p.#parent = this;
+        }
+        this.type = nt;
+        this.#toString = undefined;
+        this.#emptyExt = false;
+    }
+    #flatten() {
+        if (!isExtglobAST(this)) {
+            for (const p of this.#parts) {
+                if (typeof p === 'object')
+                    p.#flatten();
+            }
+        }
+        else {
+            let iterations = 0;
+            let done = false;
+            do {
+                done = true;
+                for (let i = 0; i < this.#parts.length; i++) {
+                    const c = this.#parts[i];
+                    if (typeof c === 'object') {
+                        c.#flatten();
+                        if (this.#canAdopt(c)) {
+                            done = false;
+                            this.#adopt(c, i);
+                        }
+                        else if (this.#canAdoptWithSpace(c)) {
+                            done = false;
+                            this.#adoptWithSpace(c, i);
+                        }
+                        else if (this.#canUsurp(c)) {
+                            done = false;
+                            this.#usurp(c);
+                        }
+                    }
+                }
+            } while (!done && ++iterations < 10);
+        }
+        this.#toString = undefined;
+    }
+    static fromGlob(pattern, options = {}) {
+        const ast = new _a(null, undefined, options);
+        _a.#parseAST(pattern, ast, 0, options, 0);
+        return ast;
+    }
+    // returns the regular expression if there's magic, or the unescaped
+    // string if not.
+    toMMPattern() {
+        // should only be called on root
+        /* c8 ignore start */
+        if (this !== this.#root)
+            return this.#root.toMMPattern();
+        /* c8 ignore stop */
+        const glob = this.toString();
+        const [re, body, hasMagic, uflag] = this.toRegExpSource();
+        // if we're in nocase mode, and not nocaseMagicOnly, then we do
+        // still need a regular expression if we have to case-insensitively
+        // match capital/lowercase characters.
+        const anyMagic = hasMagic ||
+            this.#hasMagic ||
+            (this.#options.nocase &&
+                !this.#options.nocaseMagicOnly &&
+                glob.toUpperCase() !== glob.toLowerCase());
+        if (!anyMagic) {
+            return body;
+        }
+        const flags = (this.#options.nocase ? 'i' : '') + (uflag ? 'u' : '');
+        return Object.assign(new RegExp(`^${re}$`, flags), {
+            _src: re,
+            _glob: glob,
+        });
+    }
+    get options() {
+        return this.#options;
+    }
+    // returns the string match, the regexp source, whether there's magic
+    // in the regexp (so a regular expression is required) and whether or
+    // not the uflag is needed for the regular expression (for posix classes)
+    // TODO: instead of injecting the start/end at this point, just return
+    // the BODY of the regexp, along with the start/end portions suitable
+    // for binding the start/end in either a joined full-path makeRe context
+    // (where we bind to (^|/), or a standalone matchPart context (where
+    // we bind to ^, and not /).  Otherwise slashes get duped!
+    //
+    // In part-matching mode, the start is:
+    // - if not isStart: nothing
+    // - if traversal possible, but not allowed: ^(?!\.\.?$)
+    // - if dots allowed or not possible: ^
+    // - if dots possible and not allowed: ^(?!\.)
+    // end is:
+    // - if not isEnd(): nothing
+    // - else: $
+    //
+    // In full-path matching mode, we put the slash at the START of the
+    // pattern, so start is:
+    // - if first pattern: same as part-matching mode
+    // - if not isStart(): nothing
+    // - if traversal possible, but not allowed: /(?!\.\.?(?:$|/))
+    // - if dots allowed or not possible: /
+    // - if dots possible and not allowed: /(?!\.)
+    // end is:
+    // - if last pattern, same as part-matching mode
+    // - else nothing
+    //
+    // Always put the (?:$|/) on negated tails, though, because that has to be
+    // there to bind the end of the negated pattern portion, and it's easier to
+    // just stick it in now rather than try to inject it later in the middle of
+    // the pattern.
+    //
+    // We can just always return the same end, and leave it up to the caller
+    // to know whether it's going to be used joined or in parts.
+    // And, if the start is adjusted slightly, can do the same there:
+    // - if not isStart: nothing
+    // - if traversal possible, but not allowed: (?:/|^)(?!\.\.?$)
+    // - if dots allowed or not possible: (?:/|^)
+    // - if dots possible and not allowed: (?:/|^)(?!\.)
+    //
+    // But it's better to have a simpler binding without a conditional, for
+    // performance, so probably better to return both start options.
+    //
+    // Then the caller just ignores the end if it's not the first pattern,
+    // and the start always gets applied.
+    //
+    // But that's always going to be $ if it's the ending pattern, or nothing,
+    // so the caller can just attach $ at the end of the pattern when building.
+    //
+    // So the todo is:
+    // - better detect what kind of start is needed
+    // - return both flavors of starting pattern
+    // - attach $ at the end of the pattern when creating the actual RegExp
+    //
+    // Ah, but wait, no, that all only applies to the root when the first pattern
+    // is not an extglob. If the first pattern IS an extglob, then we need all
+    // that dot prevention biz to live in the extglob portions, because eg
+    // +(*|.x*) can match .xy but not .yx.
+    //
+    // So, return the two flavors if it's #root and the first child is not an
+    // AST, otherwise leave it to the child AST to handle it, and there,
+    // use the (?:^|/) style of start binding.
+    //
+    // Even simplified further:
+    // - Since the start for a join is eg /(?!\.) and the start for a part
+    // is ^(?!\.), we can just prepend (?!\.) to the pattern (either root
+    // or start or whatever) and prepend ^ or / at the Regexp construction.
+    toRegExpSource(allowDot) {
+        const dot = allowDot ?? !!this.#options.dot;
+        if (this.#root === this) {
+            this.#flatten();
+            this.#fillNegs();
+        }
+        if (!isExtglobAST(this)) {
+            const noEmpty = this.isStart() && this.isEnd();
+            const src = this.#parts
+                .map(p => {
+                const [re, _, hasMagic, uflag] = typeof p === 'string'
+                    ? _a.#parseGlob(p, this.#hasMagic, noEmpty)
+                    : p.toRegExpSource(allowDot);
+                this.#hasMagic = this.#hasMagic || hasMagic;
+                this.#uflag = this.#uflag || uflag;
+                return re;
+            })
+                .join('');
+            let start = '';
+            if (this.isStart()) {
+                if (typeof this.#parts[0] === 'string') {
+                    // this is the string that will match the start of the pattern,
+                    // so we need to protect against dots and such.
+                    // '.' and '..' cannot match unless the pattern is that exactly,
+                    // even if it starts with . or dot:true is set.
+                    const dotTravAllowed = this.#parts.length === 1 && justDots.has(this.#parts[0]);
+                    if (!dotTravAllowed) {
+                        const aps = addPatternStart;
+                        // check if we have a possibility of matching . or ..,
+                        // and prevent that.
+                        const needNoTrav = 
+                        // dots are allowed, and the pattern starts with [ or .
+                        (dot && aps.has(src.charAt(0))) ||
+                            // the pattern starts with \., and then [ or .
+                            (src.startsWith('\\.') && aps.has(src.charAt(2))) ||
+                            // the pattern starts with \.\., and then [ or .
+                            (src.startsWith('\\.\\.') && aps.has(src.charAt(4)));
+                        // no need to prevent dots if it can't match a dot, or if a
+                        // sub-pattern will be preventing it anyway.
+                        const needNoDot = !dot && !allowDot && aps.has(src.charAt(0));
+                        start = needNoTrav ? startNoTraversal : needNoDot ? startNoDot : '';
+                    }
+                }
+            }
+            // append the "end of path portion" pattern to negation tails
+            let end = '';
+            if (this.isEnd() &&
+                this.#root.#filledNegs &&
+                this.#parent?.type === '!') {
+                end = '(?:$|\\/)';
+            }
+            const final = start + src + end;
+            return [
+                final,
+                (0, unescape_js_1.unescape)(src),
+                (this.#hasMagic = !!this.#hasMagic),
+                this.#uflag,
+            ];
+        }
+        // We need to calculate the body *twice* if it's a repeat pattern
+        // at the start, once in nodot mode, then again in dot mode, so a
+        // pattern like *(?) can match 'x.y'
+        const repeated = this.type === '*' || this.type === '+';
+        // some kind of extglob
+        const start = this.type === '!' ? '(?:(?!(?:' : '(?:';
+        let body = this.#partsToRegExp(dot);
+        if (this.isStart() && this.isEnd() && !body && this.type !== '!') {
+            // invalid extglob, has to at least be *something* present, if it's
+            // the entire path portion.
+            const s = this.toString();
+            const me = this;
+            me.#parts = [s];
+            me.type = null;
+            me.#hasMagic = undefined;
+            return [s, (0, unescape_js_1.unescape)(this.toString()), false, false];
+        }
+        // XXX abstract out this map method
+        let bodyDotAllowed = !repeated || allowDot || dot || !startNoDot
+            ? ''
+            : this.#partsToRegExp(true);
+        if (bodyDotAllowed === body) {
+            bodyDotAllowed = '';
+        }
+        if (bodyDotAllowed) {
+            body = `(?:${body})(?:${bodyDotAllowed})*?`;
+        }
+        // an empty !() is exactly equivalent to a starNoEmpty
+        let final = '';
+        if (this.type === '!' && this.#emptyExt) {
+            final = (this.isStart() && !dot ? startNoDot : '') + starNoEmpty;
+        }
+        else {
+            const close = this.type === '!'
+                ? // !() must match something,but !(x) can match ''
+                    '))' +
+                        (this.isStart() && !dot && !allowDot ? startNoDot : '') +
+                        star +
+                        ')'
+                : this.type === '@'
+                    ? ')'
+                    : this.type === '?'
+                        ? ')?'
+                        : this.type === '+' && bodyDotAllowed
+                            ? ')'
+                            : this.type === '*' && bodyDotAllowed
+                                ? `)?`
+                                : `)${this.type}`;
+            final = start + body + close;
+        }
+        return [
+            final,
+            (0, unescape_js_1.unescape)(body),
+            (this.#hasMagic = !!this.#hasMagic),
+            this.#uflag,
+        ];
+    }
+    #partsToRegExp(dot) {
+        return this.#parts
+            .map(p => {
+            // extglob ASTs should only contain parent ASTs
+            /* c8 ignore start */
+            if (typeof p === 'string') {
+                throw new Error('string type in extglob ast??');
+            }
+            /* c8 ignore stop */
+            // can ignore hasMagic, because extglobs are already always magic
+            const [re, _, _hasMagic, uflag] = p.toRegExpSource(dot);
+            this.#uflag = this.#uflag || uflag;
+            return re;
+        })
+            .filter(p => !(this.isStart() && this.isEnd()) || !!p)
+            .join('|');
+    }
+    static #parseGlob(glob, hasMagic, noEmpty = false) {
+        let escaping = false;
+        let re = '';
+        let uflag = false;
+        // multiple stars that aren't globstars coalesce into one *
+        let inStar = false;
+        for (let i = 0; i < glob.length; i++) {
+            const c = glob.charAt(i);
+            if (escaping) {
+                escaping = false;
+                re += (reSpecials.has(c) ? '\\' : '') + c;
+                inStar = false;
+                continue;
+            }
+            if (c === '\\') {
+                if (i === glob.length - 1) {
+                    re += '\\\\';
+                }
+                else {
+                    escaping = true;
+                }
+                continue;
+            }
+            if (c === '[') {
+                const [src, needUflag, consumed, magic] = (0, brace_expressions_js_1.parseClass)(glob, i);
+                if (consumed) {
+                    re += src;
+                    uflag = uflag || needUflag;
+                    i += consumed - 1;
+                    hasMagic = hasMagic || magic;
+                    inStar = false;
+                    continue;
+                }
+            }
+            if (c === '*') {
+                if (inStar)
+                    continue;
+                inStar = true;
+                re += noEmpty && /^[*]+$/.test(glob) ? starNoEmpty : star;
+                hasMagic = true;
+                continue;
+            }
+            else {
+                inStar = false;
+            }
+            if (c === '?') {
+                re += qmark;
+                hasMagic = true;
+                continue;
+            }
+            re += regExpEscape(c);
+        }
+        return [re, (0, unescape_js_1.unescape)(glob), !!hasMagic, uflag];
+    }
+}
+exports.AST = AST;
+_a = AST;
+//# sourceMappingURL=ast.js.map
+
+/***/ }),
+
+/***/ 65192:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+// translate the various posix character classes into unicode properties
+// this works across all unicode locales
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseClass = void 0;
+// { <posix class>: [<translation>, /u flag required, negated]
+const posixClasses = {
+    '[:alnum:]': ['\\p{L}\\p{Nl}\\p{Nd}', true],
+    '[:alpha:]': ['\\p{L}\\p{Nl}', true],
+    '[:ascii:]': ['\\x' + '00-\\x' + '7f', false],
+    '[:blank:]': ['\\p{Zs}\\t', true],
+    '[:cntrl:]': ['\\p{Cc}', true],
+    '[:digit:]': ['\\p{Nd}', true],
+    '[:graph:]': ['\\p{Z}\\p{C}', true, true],
+    '[:lower:]': ['\\p{Ll}', true],
+    '[:print:]': ['\\p{C}', true],
+    '[:punct:]': ['\\p{P}', true],
+    '[:space:]': ['\\p{Z}\\t\\r\\n\\v\\f', true],
+    '[:upper:]': ['\\p{Lu}', true],
+    '[:word:]': ['\\p{L}\\p{Nl}\\p{Nd}\\p{Pc}', true],
+    '[:xdigit:]': ['A-Fa-f0-9', false],
+};
+// only need to escape a few things inside of brace expressions
+// escapes: [ \ ] -
+const braceEscape = (s) => s.replace(/[[\]\\-]/g, '\\$&');
+// escape all regexp magic characters
+const regexpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+// everything has already been escaped, we just have to join
+const rangesToString = (ranges) => ranges.join('');
+// takes a glob string at a posix brace expression, and returns
+// an equivalent regular expression source, and boolean indicating
+// whether the /u flag needs to be applied, and the number of chars
+// consumed to parse the character class.
+// This also removes out of order ranges, and returns ($.) if the
+// entire class just no good.
+const parseClass = (glob, position) => {
+    const pos = position;
+    /* c8 ignore start */
+    if (glob.charAt(pos) !== '[') {
+        throw new Error('not in a brace expression');
+    }
+    /* c8 ignore stop */
+    const ranges = [];
+    const negs = [];
+    let i = pos + 1;
+    let sawStart = false;
+    let uflag = false;
+    let escaping = false;
+    let negate = false;
+    let endPos = pos;
+    let rangeStart = '';
+    WHILE: while (i < glob.length) {
+        const c = glob.charAt(i);
+        if ((c === '!' || c === '^') && i === pos + 1) {
+            negate = true;
+            i++;
+            continue;
+        }
+        if (c === ']' && sawStart && !escaping) {
+            endPos = i + 1;
+            break;
+        }
+        sawStart = true;
+        if (c === '\\') {
+            if (!escaping) {
+                escaping = true;
+                i++;
+                continue;
+            }
+            // escaped \ char, fall through and treat like normal char
+        }
+        if (c === '[' && !escaping) {
+            // either a posix class, a collation equivalent, or just a [
+            for (const [cls, [unip, u, neg]] of Object.entries(posixClasses)) {
+                if (glob.startsWith(cls, i)) {
+                    // invalid, [a-[] is fine, but not [a-[:alpha]]
+                    if (rangeStart) {
+                        return ['$.', false, glob.length - pos, true];
+                    }
+                    i += cls.length;
+                    if (neg)
+                        negs.push(unip);
+                    else
+                        ranges.push(unip);
+                    uflag = uflag || u;
+                    continue WHILE;
+                }
+            }
+        }
+        // now it's just a normal character, effectively
+        escaping = false;
+        if (rangeStart) {
+            // throw this range away if it's not valid, but others
+            // can still match.
+            if (c > rangeStart) {
+                ranges.push(braceEscape(rangeStart) + '-' + braceEscape(c));
+            }
+            else if (c === rangeStart) {
+                ranges.push(braceEscape(c));
+            }
+            rangeStart = '';
+            i++;
+            continue;
+        }
+        // now might be the start of a range.
+        // can be either c-d or c-] or c<more...>] or c] at this point
+        if (glob.startsWith('-]', i + 1)) {
+            ranges.push(braceEscape(c + '-'));
+            i += 2;
+            continue;
+        }
+        if (glob.startsWith('-', i + 1)) {
+            rangeStart = c;
+            i += 2;
+            continue;
+        }
+        // not the start of a range, just a single character
+        ranges.push(braceEscape(c));
+        i++;
+    }
+    if (endPos < i) {
+        // didn't see the end of the class, not a valid class,
+        // but might still be valid as a literal match.
+        return ['', false, 0, false];
+    }
+    // if we got no ranges and no negates, then we have a range that
+    // cannot possibly match anything, and that poisons the whole glob
+    if (!ranges.length && !negs.length) {
+        return ['$.', false, glob.length - pos, true];
+    }
+    // if we got one positive range, and it's a single character, then that's
+    // not actually a magic pattern, it's just that one literal character.
+    // we should not treat that as "magic", we should just return the literal
+    // character. [_] is a perfectly valid way to escape glob magic chars.
+    if (negs.length === 0 &&
+        ranges.length === 1 &&
+        /^\\?.$/.test(ranges[0]) &&
+        !negate) {
+        const r = ranges[0].length === 2 ? ranges[0].slice(-1) : ranges[0];
+        return [regexpEscape(r), false, endPos - pos, false];
+    }
+    const sranges = '[' + (negate ? '^' : '') + rangesToString(ranges) + ']';
+    const snegs = '[' + (negate ? '' : '^') + rangesToString(negs) + ']';
+    const comb = ranges.length && negs.length
+        ? '(' + sranges + '|' + snegs + ')'
+        : ranges.length
+            ? sranges
+            : snegs;
+    return [comb, uflag, endPos - pos, true];
+};
+exports.parseClass = parseClass;
+//# sourceMappingURL=brace-expressions.js.map
+
+/***/ }),
+
+/***/ 76726:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.escape = void 0;
+/**
+ * Escape all magic characters in a glob pattern.
+ *
+ * If the {@link windowsPathsNoEscape | GlobOptions.windowsPathsNoEscape}
+ * option is used, then characters are escaped by wrapping in `[]`, because
+ * a magic character wrapped in a character class can only be satisfied by
+ * that exact character.  In this mode, `\` is _not_ escaped, because it is
+ * not interpreted as a magic character, but instead as a path separator.
+ */
+const escape = (s, { windowsPathsNoEscape = false, } = {}) => {
+    // don't need to escape +@! because we escape the parens
+    // that make those magic, and escaping ! as [!] isn't valid,
+    // because [!]] is a valid glob class meaning not ']'.
+    return windowsPathsNoEscape
+        ? s.replace(/[?*()[\]]/g, '[$&]')
+        : s.replace(/[?*()[\]\\]/g, '\\$&');
+};
+exports.escape = escape;
+//# sourceMappingURL=escape.js.map
+
+/***/ }),
+
+/***/ 91409:
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.unescape = exports.escape = exports.AST = exports.Minimatch = exports.match = exports.makeRe = exports.braceExpand = exports.defaults = exports.filter = exports.GLOBSTAR = exports.sep = exports.minimatch = void 0;
+const brace_expansion_1 = __importDefault(__webpack_require__(68497));
+const assert_valid_pattern_js_1 = __webpack_require__(8895);
+const ast_js_1 = __webpack_require__(20857);
+const escape_js_1 = __webpack_require__(76726);
+const unescape_js_1 = __webpack_require__(9829);
+const minimatch = (p, pattern, options = {}) => {
+    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+    // shortcut: comments match nothing.
+    if (!options.nocomment && pattern.charAt(0) === '#') {
+        return false;
+    }
+    return new Minimatch(pattern, options).match(p);
+};
+exports.minimatch = minimatch;
+// Optimized checking for the most common glob patterns.
+const starDotExtRE = /^\*+([^+@!?\*\[\(]*)$/;
+const starDotExtTest = (ext) => (f) => !f.startsWith('.') && f.endsWith(ext);
+const starDotExtTestDot = (ext) => (f) => f.endsWith(ext);
+const starDotExtTestNocase = (ext) => {
+    ext = ext.toLowerCase();
+    return (f) => !f.startsWith('.') && f.toLowerCase().endsWith(ext);
+};
+const starDotExtTestNocaseDot = (ext) => {
+    ext = ext.toLowerCase();
+    return (f) => f.toLowerCase().endsWith(ext);
+};
+const starDotStarRE = /^\*+\.\*+$/;
+const starDotStarTest = (f) => !f.startsWith('.') && f.includes('.');
+const starDotStarTestDot = (f) => f !== '.' && f !== '..' && f.includes('.');
+const dotStarRE = /^\.\*+$/;
+const dotStarTest = (f) => f !== '.' && f !== '..' && f.startsWith('.');
+const starRE = /^\*+$/;
+const starTest = (f) => f.length !== 0 && !f.startsWith('.');
+const starTestDot = (f) => f.length !== 0 && f !== '.' && f !== '..';
+const qmarksRE = /^\?+([^+@!?\*\[\(]*)?$/;
+const qmarksTestNocase = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExt([$0]);
+    if (!ext)
+        return noext;
+    ext = ext.toLowerCase();
+    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
+};
+const qmarksTestNocaseDot = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExtDot([$0]);
+    if (!ext)
+        return noext;
+    ext = ext.toLowerCase();
+    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
+};
+const qmarksTestDot = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExtDot([$0]);
+    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
+};
+const qmarksTest = ([$0, ext = '']) => {
+    const noext = qmarksTestNoExt([$0]);
+    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
+};
+const qmarksTestNoExt = ([$0]) => {
+    const len = $0.length;
+    return (f) => f.length === len && !f.startsWith('.');
+};
+const qmarksTestNoExtDot = ([$0]) => {
+    const len = $0.length;
+    return (f) => f.length === len && f !== '.' && f !== '..';
+};
+/* c8 ignore start */
+const defaultPlatform = (typeof process === 'object' && process
+    ? (typeof process.env === 'object' &&
+        process.env &&
+        process.env.__MINIMATCH_TESTING_PLATFORM__) ||
+        process.platform
+    : 'posix');
+const path = {
+    win32: { sep: '\\' },
+    posix: { sep: '/' },
+};
+/* c8 ignore stop */
+exports.sep = defaultPlatform === 'win32' ? path.win32.sep : path.posix.sep;
+exports.minimatch.sep = exports.sep;
+exports.GLOBSTAR = Symbol('globstar **');
+exports.minimatch.GLOBSTAR = exports.GLOBSTAR;
+// any single thing other than /
+// don't need to escape / when using new RegExp()
+const qmark = '[^/]';
+// * => any number of characters
+const star = qmark + '*?';
+// ** when dots are allowed.  Anything goes, except .. and .
+// not (^ or / followed by one or two dots followed by $ or /),
+// followed by anything, any number of times.
+const twoStarDot = '(?:(?!(?:\\/|^)(?:\\.{1,2})($|\\/)).)*?';
+// not a ^ or / followed by a dot,
+// followed by anything, any number of times.
+const twoStarNoDot = '(?:(?!(?:\\/|^)\\.).)*?';
+const filter = (pattern, options = {}) => (p) => (0, exports.minimatch)(p, pattern, options);
+exports.filter = filter;
+exports.minimatch.filter = exports.filter;
+const ext = (a, b = {}) => Object.assign({}, a, b);
+const defaults = (def) => {
+    if (!def || typeof def !== 'object' || !Object.keys(def).length) {
+        return exports.minimatch;
+    }
+    const orig = exports.minimatch;
+    const m = (p, pattern, options = {}) => orig(p, pattern, ext(def, options));
+    return Object.assign(m, {
+        Minimatch: class Minimatch extends orig.Minimatch {
+            constructor(pattern, options = {}) {
+                super(pattern, ext(def, options));
+            }
+            static defaults(options) {
+                return orig.defaults(ext(def, options)).Minimatch;
+            }
+        },
+        AST: class AST extends orig.AST {
+            /* c8 ignore start */
+            constructor(type, parent, options = {}) {
+                super(type, parent, ext(def, options));
+            }
+            /* c8 ignore stop */
+            static fromGlob(pattern, options = {}) {
+                return orig.AST.fromGlob(pattern, ext(def, options));
+            }
+        },
+        unescape: (s, options = {}) => orig.unescape(s, ext(def, options)),
+        escape: (s, options = {}) => orig.escape(s, ext(def, options)),
+        filter: (pattern, options = {}) => orig.filter(pattern, ext(def, options)),
+        defaults: (options) => orig.defaults(ext(def, options)),
+        makeRe: (pattern, options = {}) => orig.makeRe(pattern, ext(def, options)),
+        braceExpand: (pattern, options = {}) => orig.braceExpand(pattern, ext(def, options)),
+        match: (list, pattern, options = {}) => orig.match(list, pattern, ext(def, options)),
+        sep: orig.sep,
+        GLOBSTAR: exports.GLOBSTAR,
+    });
+};
+exports.defaults = defaults;
+exports.minimatch.defaults = exports.defaults;
+// Brace expansion:
+// a{b,c}d -> abd acd
+// a{b,}c -> abc ac
+// a{0..3}d -> a0d a1d a2d a3d
+// a{b,c{d,e}f}g -> abg acdfg acefg
+// a{b,c}d{e,f}g -> abdeg acdeg abdeg abdfg
+//
+// Invalid sets are not expanded.
+// a{2..}b -> a{2..}b
+// a{b}c -> a{b}c
+const braceExpand = (pattern, options = {}) => {
+    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+    // Thanks to Yeting Li <https://github.com/yetingli> for
+    // improving this regexp to avoid a ReDOS vulnerability.
+    if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern)) {
+        // shortcut. no need to expand.
+        return [pattern];
+    }
+    return (0, brace_expansion_1.default)(pattern);
+};
+exports.braceExpand = braceExpand;
+exports.minimatch.braceExpand = exports.braceExpand;
+// parse a component of the expanded set.
+// At this point, no pattern may contain "/" in it
+// so we're going to return a 2d array, where each entry is the full
+// pattern, split on '/', and then turned into a regular expression.
+// A regexp is made at the end which joins each array with an
+// escaped /, and another full one which joins each regexp with |.
+//
+// Following the lead of Bash 4.1, note that "**" only has special meaning
+// when it is the *only* thing in a path portion.  Otherwise, any series
+// of * is equivalent to a single *.  Globstar behavior is enabled by
+// default, and can be disabled by setting options.noglobstar.
+const makeRe = (pattern, options = {}) => new Minimatch(pattern, options).makeRe();
+exports.makeRe = makeRe;
+exports.minimatch.makeRe = exports.makeRe;
+const match = (list, pattern, options = {}) => {
+    const mm = new Minimatch(pattern, options);
+    list = list.filter(f => mm.match(f));
+    if (mm.options.nonull && !list.length) {
+        list.push(pattern);
+    }
+    return list;
+};
+exports.match = match;
+exports.minimatch.match = exports.match;
+// replace stuff like \* with *
+const globMagic = /[?*]|[+@!]\(.*?\)|\[|\]/;
+const regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+class Minimatch {
+    options;
+    set;
+    pattern;
+    windowsPathsNoEscape;
+    nonegate;
+    negate;
+    comment;
+    empty;
+    preserveMultipleSlashes;
+    partial;
+    globSet;
+    globParts;
+    nocase;
+    isWindows;
+    platform;
+    windowsNoMagicRoot;
+    maxGlobstarRecursion;
+    regexp;
+    constructor(pattern, options = {}) {
+        (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+        options = options || {};
+        this.options = options;
+        this.maxGlobstarRecursion = options.maxGlobstarRecursion ?? 200;
+        this.pattern = pattern;
+        this.platform = options.platform || defaultPlatform;
+        this.isWindows = this.platform === 'win32';
+        this.windowsPathsNoEscape =
+            !!options.windowsPathsNoEscape || options.allowWindowsEscape === false;
+        if (this.windowsPathsNoEscape) {
+            this.pattern = this.pattern.replace(/\\/g, '/');
+        }
+        this.preserveMultipleSlashes = !!options.preserveMultipleSlashes;
+        this.regexp = null;
+        this.negate = false;
+        this.nonegate = !!options.nonegate;
+        this.comment = false;
+        this.empty = false;
+        this.partial = !!options.partial;
+        this.nocase = !!this.options.nocase;
+        this.windowsNoMagicRoot =
+            options.windowsNoMagicRoot !== undefined
+                ? options.windowsNoMagicRoot
+                : !!(this.isWindows && this.nocase);
+        this.globSet = [];
+        this.globParts = [];
+        this.set = [];
+        // make the set of regexps etc.
+        this.make();
+    }
+    hasMagic() {
+        if (this.options.magicalBraces && this.set.length > 1) {
+            return true;
+        }
+        for (const pattern of this.set) {
+            for (const part of pattern) {
+                if (typeof part !== 'string')
+                    return true;
+            }
+        }
+        return false;
+    }
+    debug(..._) { }
+    make() {
+        const pattern = this.pattern;
+        const options = this.options;
+        // empty patterns and comments match nothing.
+        if (!options.nocomment && pattern.charAt(0) === '#') {
+            this.comment = true;
+            return;
+        }
+        if (!pattern) {
+            this.empty = true;
+            return;
+        }
+        // step 1: figure out negation, etc.
+        this.parseNegate();
+        // step 2: expand braces
+        this.globSet = [...new Set(this.braceExpand())];
+        if (options.debug) {
+            this.debug = (...args) => console.error(...args);
+        }
+        this.debug(this.pattern, this.globSet);
+        // step 3: now we have a set, so turn each one into a series of
+        // path-portion matching patterns.
+        // These will be regexps, except in the case of "**", which is
+        // set to the GLOBSTAR object for globstar behavior,
+        // and will not contain any / characters
+        //
+        // First, we preprocess to make the glob pattern sets a bit simpler
+        // and deduped.  There are some perf-killing patterns that can cause
+        // problems with a glob walk, but we can simplify them down a bit.
+        const rawGlobParts = this.globSet.map(s => this.slashSplit(s));
+        this.globParts = this.preprocess(rawGlobParts);
+        this.debug(this.pattern, this.globParts);
+        // glob --> regexps
+        let set = this.globParts.map((s, _, __) => {
+            if (this.isWindows && this.windowsNoMagicRoot) {
+                // check if it's a drive or unc path.
+                const isUNC = s[0] === '' &&
+                    s[1] === '' &&
+                    (s[2] === '?' || !globMagic.test(s[2])) &&
+                    !globMagic.test(s[3]);
+                const isDrive = /^[a-z]:/i.test(s[0]);
+                if (isUNC) {
+                    return [...s.slice(0, 4), ...s.slice(4).map(ss => this.parse(ss))];
+                }
+                else if (isDrive) {
+                    return [s[0], ...s.slice(1).map(ss => this.parse(ss))];
+                }
+            }
+            return s.map(ss => this.parse(ss));
+        });
+        this.debug(this.pattern, set);
+        // filter out everything that didn't compile properly.
+        this.set = set.filter(s => s.indexOf(false) === -1);
+        // do not treat the ? in UNC paths as magic
+        if (this.isWindows) {
+            for (let i = 0; i < this.set.length; i++) {
+                const p = this.set[i];
+                if (p[0] === '' &&
+                    p[1] === '' &&
+                    this.globParts[i][2] === '?' &&
+                    typeof p[3] === 'string' &&
+                    /^[a-z]:$/i.test(p[3])) {
+                    p[2] = '?';
+                }
+            }
+        }
+        this.debug(this.pattern, this.set);
+    }
+    // various transforms to equivalent pattern sets that are
+    // faster to process in a filesystem walk.  The goal is to
+    // eliminate what we can, and push all ** patterns as far
+    // to the right as possible, even if it increases the number
+    // of patterns that we have to process.
+    preprocess(globParts) {
+        // if we're not in globstar mode, then turn all ** into *
+        if (this.options.noglobstar) {
+            for (let i = 0; i < globParts.length; i++) {
+                for (let j = 0; j < globParts[i].length; j++) {
+                    if (globParts[i][j] === '**') {
+                        globParts[i][j] = '*';
+                    }
+                }
+            }
+        }
+        const { optimizationLevel = 1 } = this.options;
+        if (optimizationLevel >= 2) {
+            // aggressive optimization for the purpose of fs walking
+            globParts = this.firstPhasePreProcess(globParts);
+            globParts = this.secondPhasePreProcess(globParts);
+        }
+        else if (optimizationLevel >= 1) {
+            // just basic optimizations to remove some .. parts
+            globParts = this.levelOneOptimize(globParts);
+        }
+        else {
+            // just collapse multiple ** portions into one
+            globParts = this.adjascentGlobstarOptimize(globParts);
+        }
+        return globParts;
+    }
+    // just get rid of adjascent ** portions
+    adjascentGlobstarOptimize(globParts) {
+        return globParts.map(parts => {
+            let gs = -1;
+            while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
+                let i = gs;
+                while (parts[i + 1] === '**') {
+                    i++;
+                }
+                if (i !== gs) {
+                    parts.splice(gs, i - gs);
+                }
+            }
+            return parts;
+        });
+    }
+    // get rid of adjascent ** and resolve .. portions
+    levelOneOptimize(globParts) {
+        return globParts.map(parts => {
+            parts = parts.reduce((set, part) => {
+                const prev = set[set.length - 1];
+                if (part === '**' && prev === '**') {
+                    return set;
+                }
+                if (part === '..') {
+                    if (prev && prev !== '..' && prev !== '.' && prev !== '**') {
+                        set.pop();
+                        return set;
+                    }
+                }
+                set.push(part);
+                return set;
+            }, []);
+            return parts.length === 0 ? [''] : parts;
+        });
+    }
+    levelTwoFileOptimize(parts) {
+        if (!Array.isArray(parts)) {
+            parts = this.slashSplit(parts);
+        }
+        let didSomething = false;
+        do {
+            didSomething = false;
+            // <pre>/<e>/<rest> -> <pre>/<rest>
+            if (!this.preserveMultipleSlashes) {
+                for (let i = 1; i < parts.length - 1; i++) {
+                    const p = parts[i];
+                    // don't squeeze out UNC patterns
+                    if (i === 1 && p === '' && parts[0] === '')
+                        continue;
+                    if (p === '.' || p === '') {
+                        didSomething = true;
+                        parts.splice(i, 1);
+                        i--;
+                    }
+                }
+                if (parts[0] === '.' &&
+                    parts.length === 2 &&
+                    (parts[1] === '.' || parts[1] === '')) {
+                    didSomething = true;
+                    parts.pop();
+                }
+            }
+            // <pre>/<p>/../<rest> -> <pre>/<rest>
+            let dd = 0;
+            while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
+                const p = parts[dd - 1];
+                if (p && p !== '.' && p !== '..' && p !== '**') {
+                    didSomething = true;
+                    parts.splice(dd - 1, 2);
+                    dd -= 2;
+                }
+            }
+        } while (didSomething);
+        return parts.length === 0 ? [''] : parts;
+    }
+    // First phase: single-pattern processing
+    // <pre> is 1 or more portions
+    // <rest> is 1 or more portions
+    // <p> is any portion other than ., .., '', or **
+    // <e> is . or ''
+    //
+    // **/.. is *brutal* for filesystem walking performance, because
+    // it effectively resets the recursive walk each time it occurs,
+    // and ** cannot be reduced out by a .. pattern part like a regexp
+    // or most strings (other than .., ., and '') can be.
+    //
+    // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
+    // <pre>/<e>/<rest> -> <pre>/<rest>
+    // <pre>/<p>/../<rest> -> <pre>/<rest>
+    // **/**/<rest> -> **/<rest>
+    //
+    // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
+    // this WOULD be allowed if ** did follow symlinks, or * didn't
+    firstPhasePreProcess(globParts) {
+        let didSomething = false;
+        do {
+            didSomething = false;
+            // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
+            for (let parts of globParts) {
+                let gs = -1;
+                while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
+                    let gss = gs;
+                    while (parts[gss + 1] === '**') {
+                        // <pre>/**/**/<rest> -> <pre>/**/<rest>
+                        gss++;
+                    }
+                    // eg, if gs is 2 and gss is 4, that means we have 3 **
+                    // parts, and can remove 2 of them.
+                    if (gss > gs) {
+                        parts.splice(gs + 1, gss - gs);
+                    }
+                    let next = parts[gs + 1];
+                    const p = parts[gs + 2];
+                    const p2 = parts[gs + 3];
+                    if (next !== '..')
+                        continue;
+                    if (!p ||
+                        p === '.' ||
+                        p === '..' ||
+                        !p2 ||
+                        p2 === '.' ||
+                        p2 === '..') {
+                        continue;
+                    }
+                    didSomething = true;
+                    // edit parts in place, and push the new one
+                    parts.splice(gs, 1);
+                    const other = parts.slice(0);
+                    other[gs] = '**';
+                    globParts.push(other);
+                    gs--;
+                }
+                // <pre>/<e>/<rest> -> <pre>/<rest>
+                if (!this.preserveMultipleSlashes) {
+                    for (let i = 1; i < parts.length - 1; i++) {
+                        const p = parts[i];
+                        // don't squeeze out UNC patterns
+                        if (i === 1 && p === '' && parts[0] === '')
+                            continue;
+                        if (p === '.' || p === '') {
+                            didSomething = true;
+                            parts.splice(i, 1);
+                            i--;
+                        }
+                    }
+                    if (parts[0] === '.' &&
+                        parts.length === 2 &&
+                        (parts[1] === '.' || parts[1] === '')) {
+                        didSomething = true;
+                        parts.pop();
+                    }
+                }
+                // <pre>/<p>/../<rest> -> <pre>/<rest>
+                let dd = 0;
+                while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
+                    const p = parts[dd - 1];
+                    if (p && p !== '.' && p !== '..' && p !== '**') {
+                        didSomething = true;
+                        const needDot = dd === 1 && parts[dd + 1] === '**';
+                        const splin = needDot ? ['.'] : [];
+                        parts.splice(dd - 1, 2, ...splin);
+                        if (parts.length === 0)
+                            parts.push('');
+                        dd -= 2;
+                    }
+                }
+            }
+        } while (didSomething);
+        return globParts;
+    }
+    // second phase: multi-pattern dedupes
+    // {<pre>/*/<rest>,<pre>/<p>/<rest>} -> <pre>/*/<rest>
+    // {<pre>/<rest>,<pre>/<rest>} -> <pre>/<rest>
+    // {<pre>/**/<rest>,<pre>/<rest>} -> <pre>/**/<rest>
+    //
+    // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
+    // ^-- not valid because ** doens't follow symlinks
+    secondPhasePreProcess(globParts) {
+        for (let i = 0; i < globParts.length - 1; i++) {
+            for (let j = i + 1; j < globParts.length; j++) {
+                const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
+                if (matched) {
+                    globParts[i] = [];
+                    globParts[j] = matched;
+                    break;
+                }
+            }
+        }
+        return globParts.filter(gs => gs.length);
+    }
+    partsMatch(a, b, emptyGSMatch = false) {
+        let ai = 0;
+        let bi = 0;
+        let result = [];
+        let which = '';
+        while (ai < a.length && bi < b.length) {
+            if (a[ai] === b[bi]) {
+                result.push(which === 'b' ? b[bi] : a[ai]);
+                ai++;
+                bi++;
+            }
+            else if (emptyGSMatch && a[ai] === '**' && b[bi] === a[ai + 1]) {
+                result.push(a[ai]);
+                ai++;
+            }
+            else if (emptyGSMatch && b[bi] === '**' && a[ai] === b[bi + 1]) {
+                result.push(b[bi]);
+                bi++;
+            }
+            else if (a[ai] === '*' &&
+                b[bi] &&
+                (this.options.dot || !b[bi].startsWith('.')) &&
+                b[bi] !== '**') {
+                if (which === 'b')
+                    return false;
+                which = 'a';
+                result.push(a[ai]);
+                ai++;
+                bi++;
+            }
+            else if (b[bi] === '*' &&
+                a[ai] &&
+                (this.options.dot || !a[ai].startsWith('.')) &&
+                a[ai] !== '**') {
+                if (which === 'a')
+                    return false;
+                which = 'b';
+                result.push(b[bi]);
+                ai++;
+                bi++;
+            }
+            else {
+                return false;
+            }
+        }
+        // if we fall out of the loop, it means they two are identical
+        // as long as their lengths match
+        return a.length === b.length && result;
+    }
+    parseNegate() {
+        if (this.nonegate)
+            return;
+        const pattern = this.pattern;
+        let negate = false;
+        let negateOffset = 0;
+        for (let i = 0; i < pattern.length && pattern.charAt(i) === '!'; i++) {
+            negate = !negate;
+            negateOffset++;
+        }
+        if (negateOffset)
+            this.pattern = pattern.slice(negateOffset);
+        this.negate = negate;
+    }
+    // set partial to true to test if, for example,
+    // "/a/b" matches the start of "/*/b/*/d"
+    // Partial means, if you run out of file before you run
+    // out of pattern, then that's fine, as long as all
+    // the parts match.
+    matchOne(file, pattern, partial = false) {
+        let fileStartIndex = 0;
+        let patternStartIndex = 0;
+        // UNC paths like //?/X:/... can match X:/... and vice versa
+        // Drive letters in absolute drive or unc paths are always compared
+        // case-insensitively.
+        if (this.isWindows) {
+            const fileDrive = typeof file[0] === 'string' && /^[a-z]:$/i.test(file[0]);
+            const fileUNC = !fileDrive &&
+                file[0] === '' &&
+                file[1] === '' &&
+                file[2] === '?' &&
+                /^[a-z]:$/i.test(file[3]);
+            const patternDrive = typeof pattern[0] === 'string' && /^[a-z]:$/i.test(pattern[0]);
+            const patternUNC = !patternDrive &&
+                pattern[0] === '' &&
+                pattern[1] === '' &&
+                pattern[2] === '?' &&
+                typeof pattern[3] === 'string' &&
+                /^[a-z]:$/i.test(pattern[3]);
+            const fdi = fileUNC ? 3 : fileDrive ? 0 : undefined;
+            const pdi = patternUNC ? 3 : patternDrive ? 0 : undefined;
+            if (typeof fdi === 'number' && typeof pdi === 'number') {
+                const [fd, pd] = [
+                    file[fdi],
+                    pattern[pdi],
+                ];
+                if (fd.toLowerCase() === pd.toLowerCase()) {
+                    pattern[pdi] = fd;
+                    patternStartIndex = pdi;
+                    fileStartIndex = fdi;
+                }
+            }
+        }
+        // resolve and reduce . and .. portions in the file as well.
+        // dont' need to do the second phase, because it's only one string[]
+        const { optimizationLevel = 1 } = this.options;
+        if (optimizationLevel >= 2) {
+            file = this.levelTwoFileOptimize(file);
+        }
+        if (pattern.includes(exports.GLOBSTAR)) {
+            return this.#matchGlobstar(file, pattern, partial, fileStartIndex, patternStartIndex);
+        }
+        return this.#matchOne(file, pattern, partial, fileStartIndex, patternStartIndex);
+    }
+    #matchGlobstar(file, pattern, partial, fileIndex, patternIndex) {
+        const firstgs = pattern.indexOf(exports.GLOBSTAR, patternIndex);
+        const lastgs = pattern.lastIndexOf(exports.GLOBSTAR);
+        const [head, body, tail] = partial ? [
+            pattern.slice(patternIndex, firstgs),
+            pattern.slice(firstgs + 1),
+            [],
+        ] : [
+            pattern.slice(patternIndex, firstgs),
+            pattern.slice(firstgs + 1, lastgs),
+            pattern.slice(lastgs + 1),
+        ];
+        if (head.length) {
+            const fileHead = file.slice(fileIndex, fileIndex + head.length);
+            if (!this.#matchOne(fileHead, head, partial, 0, 0))
+                return false;
+            fileIndex += head.length;
+        }
+        let fileTailMatch = 0;
+        if (tail.length) {
+            if (tail.length + fileIndex > file.length)
+                return false;
+            let tailStart = file.length - tail.length;
+            if (this.#matchOne(file, tail, partial, tailStart, 0)) {
+                fileTailMatch = tail.length;
+            }
+            else {
+                if (file[file.length - 1] !== '' ||
+                    fileIndex + tail.length === file.length) {
+                    return false;
+                }
+                tailStart--;
+                if (!this.#matchOne(file, tail, partial, tailStart, 0))
+                    return false;
+                fileTailMatch = tail.length + 1;
+            }
+        }
+        if (!body.length) {
+            let sawSome = !!fileTailMatch;
+            for (let i = fileIndex; i < file.length - fileTailMatch; i++) {
+                const f = String(file[i]);
+                sawSome = true;
+                if (f === '.' || f === '..' ||
+                    (!this.options.dot && f.startsWith('.'))) {
+                    return false;
+                }
+            }
+            return partial || sawSome;
+        }
+        const bodySegments = [[[], 0]];
+        let currentBody = bodySegments[0];
+        let nonGsParts = 0;
+        const nonGsPartsSums = [0];
+        for (const b of body) {
+            if (b === exports.GLOBSTAR) {
+                nonGsPartsSums.push(nonGsParts);
+                currentBody = [[], 0];
+                bodySegments.push(currentBody);
+            }
+            else {
+                currentBody[0].push(b);
+                nonGsParts++;
+            }
+        }
+        let i = bodySegments.length - 1;
+        const fileLength = file.length - fileTailMatch;
+        for (const b of bodySegments) {
+            b[1] = fileLength - (nonGsPartsSums[i--] + b[0].length);
+        }
+        return !!this.#matchGlobStarBodySections(file, bodySegments, fileIndex, 0, partial, 0, !!fileTailMatch);
+    }
+    #matchGlobStarBodySections(file, bodySegments, fileIndex, bodyIndex, partial, globStarDepth, sawTail) {
+        const bs = bodySegments[bodyIndex];
+        if (!bs) {
+            for (let i = fileIndex; i < file.length; i++) {
+                sawTail = true;
+                const f = file[i];
+                if (f === '.' || f === '..' ||
+                    (!this.options.dot && f.startsWith('.'))) {
+                    return false;
+                }
+            }
+            return sawTail;
+        }
+        const [body, after] = bs;
+        while (fileIndex <= after) {
+            const m = this.#matchOne(file.slice(0, fileIndex + body.length), body, partial, fileIndex, 0);
+            if (m && globStarDepth < this.maxGlobstarRecursion) {
+                const sub = this.#matchGlobStarBodySections(file, bodySegments, fileIndex + body.length, bodyIndex + 1, partial, globStarDepth + 1, sawTail);
+                if (sub !== false)
+                    return sub;
+            }
+            const f = file[fileIndex];
+            if (f === '.' || f === '..' ||
+                (!this.options.dot && f.startsWith('.'))) {
+                return false;
+            }
+            fileIndex++;
+        }
+        return partial || null;
+    }
+    #matchOne(file, pattern, partial, fileIndex, patternIndex) {
+        let fi;
+        let pi;
+        let pl;
+        let fl;
+        for (fi = fileIndex, pi = patternIndex,
+            fl = file.length, pl = pattern.length; fi < fl && pi < pl; fi++, pi++) {
+            this.debug('matchOne loop');
+            let p = pattern[pi];
+            let f = file[fi];
+            this.debug(pattern, p, f);
+            /* c8 ignore start */
+            if (p === false || p === exports.GLOBSTAR)
+                return false;
+            /* c8 ignore stop */
+            let hit;
+            if (typeof p === 'string') {
+                hit = f === p;
+                this.debug('string match', p, f, hit);
+            }
+            else {
+                hit = p.test(f);
+                this.debug('pattern match', p, f, hit);
+            }
+            if (!hit)
+                return false;
+        }
+        if (fi === fl && pi === pl) {
+            return true;
+        }
+        else if (fi === fl) {
+            return partial;
+        }
+        else if (pi === pl) {
+            return fi === fl - 1 && file[fi] === '';
+            /* c8 ignore start */
+        }
+        else {
+            throw new Error('wtf?');
+        }
+        /* c8 ignore stop */
+    }
+    braceExpand() {
+        return (0, exports.braceExpand)(this.pattern, this.options);
+    }
+    parse(pattern) {
+        (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
+        const options = this.options;
+        // shortcuts
+        if (pattern === '**')
+            return exports.GLOBSTAR;
+        if (pattern === '')
+            return '';
+        // far and away, the most common glob pattern parts are
+        // *, *.*, and *.<ext>  Add a fast check method for those.
+        let m;
+        let fastTest = null;
+        if ((m = pattern.match(starRE))) {
+            fastTest = options.dot ? starTestDot : starTest;
+        }
+        else if ((m = pattern.match(starDotExtRE))) {
+            fastTest = (options.nocase
+                ? options.dot
+                    ? starDotExtTestNocaseDot
+                    : starDotExtTestNocase
+                : options.dot
+                    ? starDotExtTestDot
+                    : starDotExtTest)(m[1]);
+        }
+        else if ((m = pattern.match(qmarksRE))) {
+            fastTest = (options.nocase
+                ? options.dot
+                    ? qmarksTestNocaseDot
+                    : qmarksTestNocase
+                : options.dot
+                    ? qmarksTestDot
+                    : qmarksTest)(m);
+        }
+        else if ((m = pattern.match(starDotStarRE))) {
+            fastTest = options.dot ? starDotStarTestDot : starDotStarTest;
+        }
+        else if ((m = pattern.match(dotStarRE))) {
+            fastTest = dotStarTest;
+        }
+        const re = ast_js_1.AST.fromGlob(pattern, this.options).toMMPattern();
+        if (fastTest && typeof re === 'object') {
+            // Avoids overriding in frozen environments
+            Reflect.defineProperty(re, 'test', { value: fastTest });
+        }
+        return re;
+    }
+    makeRe() {
+        if (this.regexp || this.regexp === false)
+            return this.regexp;
+        // at this point, this.set is a 2d array of partial
+        // pattern strings, or "**".
+        //
+        // It's better to use .match().  This function shouldn't
+        // be used, really, but it's pretty convenient sometimes,
+        // when you just want to work with a regex.
+        const set = this.set;
+        if (!set.length) {
+            this.regexp = false;
+            return this.regexp;
+        }
+        const options = this.options;
+        const twoStar = options.noglobstar
+            ? star
+            : options.dot
+                ? twoStarDot
+                : twoStarNoDot;
+        const flags = new Set(options.nocase ? ['i'] : []);
+        // regexpify non-globstar patterns
+        // if ** is only item, then we just do one twoStar
+        // if ** is first, and there are more, prepend (\/|twoStar\/)? to next
+        // if ** is last, append (\/twoStar|) to previous
+        // if ** is in the middle, append (\/|\/twoStar\/) to previous
+        // then filter out GLOBSTAR symbols
+        let re = set
+            .map(pattern => {
+            const pp = pattern.map(p => {
+                if (p instanceof RegExp) {
+                    for (const f of p.flags.split(''))
+                        flags.add(f);
+                }
+                return typeof p === 'string'
+                    ? regExpEscape(p)
+                    : p === exports.GLOBSTAR
+                        ? exports.GLOBSTAR
+                        : p._src;
+            });
+            pp.forEach((p, i) => {
+                const next = pp[i + 1];
+                const prev = pp[i - 1];
+                if (p !== exports.GLOBSTAR || prev === exports.GLOBSTAR) {
+                    return;
+                }
+                if (prev === undefined) {
+                    if (next !== undefined && next !== exports.GLOBSTAR) {
+                        pp[i + 1] = '(?:\\/|' + twoStar + '\\/)?' + next;
+                    }
+                    else {
+                        pp[i] = twoStar;
+                    }
+                }
+                else if (next === undefined) {
+                    pp[i - 1] = prev + '(?:\\/|' + twoStar + ')?';
+                }
+                else if (next !== exports.GLOBSTAR) {
+                    pp[i - 1] = prev + '(?:\\/|\\/' + twoStar + '\\/)' + next;
+                    pp[i + 1] = exports.GLOBSTAR;
+                }
+            });
+            return pp.filter(p => p !== exports.GLOBSTAR).join('/');
+        })
+            .join('|');
+        // need to wrap in parens if we had more than one thing with |,
+        // otherwise only the first will be anchored to ^ and the last to $
+        const [open, close] = set.length > 1 ? ['(?:', ')'] : ['', ''];
+        // must match entire pattern
+        // ending in a * or ** will make it less strict.
+        re = '^' + open + re + close + '$';
+        // can match anything, as long as it's not this.
+        if (this.negate)
+            re = '^(?!' + re + ').+$';
+        try {
+            this.regexp = new RegExp(re, [...flags].join(''));
+            /* c8 ignore start */
+        }
+        catch (ex) {
+            // should be impossible
+            this.regexp = false;
+        }
+        /* c8 ignore stop */
+        return this.regexp;
+    }
+    slashSplit(p) {
+        // if p starts with // on windows, we preserve that
+        // so that UNC paths aren't broken.  Otherwise, any number of
+        // / characters are coalesced into one, unless
+        // preserveMultipleSlashes is set to true.
+        if (this.preserveMultipleSlashes) {
+            return p.split('/');
+        }
+        else if (this.isWindows && /^\/\/[^\/]+/.test(p)) {
+            // add an extra '' for the one we lose
+            return ['', ...p.split(/\/+/)];
+        }
+        else {
+            return p.split(/\/+/);
+        }
+    }
+    match(f, partial = this.partial) {
+        this.debug('match', f, this.pattern);
+        // short-circuit in the case of busted things.
+        // comments, etc.
+        if (this.comment) {
+            return false;
+        }
+        if (this.empty) {
+            return f === '';
+        }
+        if (f === '/' && partial) {
+            return true;
+        }
+        const options = this.options;
+        // windows: need to use /, not \
+        if (this.isWindows) {
+            f = f.split('\\').join('/');
+        }
+        // treat the test path as a set of pathparts.
+        const ff = this.slashSplit(f);
+        this.debug(this.pattern, 'split', ff);
+        // just ONE of the pattern sets in this.set needs to match
+        // in order for it to be valid.  If negating, then just one
+        // match means that we have failed.
+        // Either way, return on the first hit.
+        const set = this.set;
+        this.debug(this.pattern, 'set', set);
+        // Find the basename of the path by looking for the last non-empty segment
+        let filename = ff[ff.length - 1];
+        if (!filename) {
+            for (let i = ff.length - 2; !filename && i >= 0; i--) {
+                filename = ff[i];
+            }
+        }
+        for (let i = 0; i < set.length; i++) {
+            const pattern = set[i];
+            let file = ff;
+            if (options.matchBase && pattern.length === 1) {
+                file = [filename];
+            }
+            const hit = this.matchOne(file, pattern, partial);
+            if (hit) {
+                if (options.flipNegate) {
+                    return true;
+                }
+                return !this.negate;
+            }
+        }
+        // didn't get any hits.  this is success if it's a negative
+        // pattern, failure otherwise.
+        if (options.flipNegate) {
+            return false;
+        }
+        return this.negate;
+    }
+    static defaults(def) {
+        return exports.minimatch.defaults(def).Minimatch;
+    }
+}
+exports.Minimatch = Minimatch;
+/* c8 ignore start */
+var ast_js_2 = __webpack_require__(20857);
+Object.defineProperty(exports, "AST", ({ enumerable: true, get: function () { return ast_js_2.AST; } }));
+var escape_js_2 = __webpack_require__(76726);
+Object.defineProperty(exports, "escape", ({ enumerable: true, get: function () { return escape_js_2.escape; } }));
+var unescape_js_2 = __webpack_require__(9829);
+Object.defineProperty(exports, "unescape", ({ enumerable: true, get: function () { return unescape_js_2.unescape; } }));
+/* c8 ignore stop */
+exports.minimatch.AST = ast_js_1.AST;
+exports.minimatch.Minimatch = Minimatch;
+exports.minimatch.escape = escape_js_1.escape;
+exports.minimatch.unescape = unescape_js_1.unescape;
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ 9829:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.unescape = void 0;
+/**
+ * Un-escape a string that has been escaped with {@link escape}.
+ *
+ * If the {@link windowsPathsNoEscape} option is used, then square-brace
+ * escapes are removed, but not backslash escapes.  For example, it will turn
+ * the string `'[*]'` into `*`, but it will not turn `'\\*'` into `'*'`,
+ * becuase `\` is a path separator in `windowsPathsNoEscape` mode.
+ *
+ * When `windowsPathsNoEscape` is not set, then both brace escapes and
+ * backslash escapes are removed.
+ *
+ * Slashes (and backslashes in `windowsPathsNoEscape` mode) cannot be escaped
+ * or unescaped.
+ */
+const unescape = (s, { windowsPathsNoEscape = false, } = {}) => {
+    return windowsPathsNoEscape
+        ? s.replace(/\[([^\/\\])\]/g, '$1')
+        : s.replace(/((?!\\).|^)\[([^\/\\])\]/g, '$1$2').replace(/\\([^\/])/g, '$1');
+};
+exports.unescape = unescape;
+//# sourceMappingURL=unescape.js.map
 
 /***/ }),
 
@@ -45812,2030 +56212,6 @@ class LRUCache {
 }
 exports.LRUCache = LRUCache;
 //# sourceMappingURL=index.js.map
-
-/***/ }),
-
-/***/ 57305:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.assertValidPattern = void 0;
-const MAX_PATTERN_LENGTH = 1024 * 64;
-const assertValidPattern = (pattern) => {
-    if (typeof pattern !== 'string') {
-        throw new TypeError('invalid pattern');
-    }
-    if (pattern.length > MAX_PATTERN_LENGTH) {
-        throw new TypeError('pattern is too long');
-    }
-};
-exports.assertValidPattern = assertValidPattern;
-//# sourceMappingURL=assert-valid-pattern.js.map
-
-/***/ }),
-
-/***/ 31803:
-/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
-
-"use strict";
-
-// parse a single path portion
-var _a;
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.AST = void 0;
-const brace_expressions_js_1 = __webpack_require__(11090);
-const unescape_js_1 = __webpack_require__(70851);
-const types = new Set(['!', '?', '+', '*', '@']);
-const isExtglobType = (c) => types.has(c);
-const isExtglobAST = (c) => isExtglobType(c.type);
-const adoptionMap = new Map([
-    ['!', ['@']],
-    ['?', ['?', '@']],
-    ['@', ['@']],
-    ['*', ['*', '+', '?', '@']],
-    ['+', ['+', '@']],
-]);
-const adoptionWithSpaceMap = new Map([
-    ['!', ['?']],
-    ['@', ['?']],
-    ['+', ['?', '*']],
-]);
-const adoptionAnyMap = new Map([
-    ['!', ['?', '@']],
-    ['?', ['?', '@']],
-    ['@', ['?', '@']],
-    ['*', ['*', '+', '?', '@']],
-    ['+', ['+', '@', '?', '*']],
-]);
-const usurpMap = new Map([
-    ['!', new Map([['!', '@']])],
-    ['?', new Map([['*', '*'], ['+', '*']])],
-    ['@', new Map([['!', '!'], ['?', '?'], ['@', '@'], ['*', '*'], ['+', '+']])],
-    ['+', new Map([['?', '*'], ['*', '*']])],
-]);
-// Patterns that get prepended to bind to the start of either the
-// entire string, or just a single path portion, to prevent dots
-// and/or traversal patterns, when needed.
-// Exts don't need the ^ or / bit, because the root binds that already.
-const startNoTraversal = '(?!(?:^|/)\\.\\.?(?:$|/))';
-const startNoDot = '(?!\\.)';
-// characters that indicate a start of pattern needs the "no dots" bit,
-// because a dot *might* be matched. ( is not in the list, because in
-// the case of a child extglob, it will handle the prevention itself.
-const addPatternStart = new Set(['[', '.']);
-// cases where traversal is A-OK, no dot prevention needed
-const justDots = new Set(['..', '.']);
-const reSpecials = new Set('().*{}+?[]^$\\!');
-const regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-// any single thing other than /
-const qmark = '[^/]';
-// * => any number of characters
-const star = qmark + '*?';
-// use + when we need to ensure that *something* matches, because the * is
-// the only thing in the path portion.
-const starNoEmpty = qmark + '+?';
-// remove the \ chars that we added if we end up doing a nonmagic compare
-// const deslash = (s: string) => s.replace(/\\(.)/g, '$1')
-class AST {
-    type;
-    #root;
-    #hasMagic;
-    #uflag = false;
-    #parts = [];
-    #parent;
-    #parentIndex;
-    #negs;
-    #filledNegs = false;
-    #options;
-    #toString;
-    // set to true if it's an extglob with no children
-    // (which really means one child of '')
-    #emptyExt = false;
-    constructor(type, parent, options = {}) {
-        this.type = type;
-        // extglobs are inherently magical
-        if (type)
-            this.#hasMagic = true;
-        this.#parent = parent;
-        this.#root = this.#parent ? this.#parent.#root : this;
-        this.#options = this.#root === this ? options : this.#root.#options;
-        this.#negs = this.#root === this ? [] : this.#root.#negs;
-        if (type === '!' && !this.#root.#filledNegs)
-            this.#negs.push(this);
-        this.#parentIndex = this.#parent ? this.#parent.#parts.length : 0;
-    }
-    get hasMagic() {
-        /* c8 ignore start */
-        if (this.#hasMagic !== undefined)
-            return this.#hasMagic;
-        /* c8 ignore stop */
-        for (const p of this.#parts) {
-            if (typeof p === 'string')
-                continue;
-            if (p.type || p.hasMagic)
-                return (this.#hasMagic = true);
-        }
-        // note: will be undefined until we generate the regexp src and find out
-        return this.#hasMagic;
-    }
-    // reconstructs the pattern
-    toString() {
-        if (this.#toString !== undefined)
-            return this.#toString;
-        if (!this.type) {
-            return (this.#toString = this.#parts.map(p => String(p)).join(''));
-        }
-        else {
-            return (this.#toString =
-                this.type + '(' + this.#parts.map(p => String(p)).join('|') + ')');
-        }
-    }
-    #fillNegs() {
-        /* c8 ignore start */
-        if (this !== this.#root)
-            throw new Error('should only call on root');
-        if (this.#filledNegs)
-            return this;
-        /* c8 ignore stop */
-        // call toString() once to fill this out
-        this.toString();
-        this.#filledNegs = true;
-        let n;
-        while ((n = this.#negs.pop())) {
-            if (n.type !== '!')
-                continue;
-            // walk up the tree, appending everthing that comes AFTER parentIndex
-            let p = n;
-            let pp = p.#parent;
-            while (pp) {
-                for (let i = p.#parentIndex + 1; !pp.type && i < pp.#parts.length; i++) {
-                    for (const part of n.#parts) {
-                        /* c8 ignore start */
-                        if (typeof part === 'string') {
-                            throw new Error('string part in extglob AST??');
-                        }
-                        /* c8 ignore stop */
-                        part.copyIn(pp.#parts[i]);
-                    }
-                }
-                p = pp;
-                pp = p.#parent;
-            }
-        }
-        return this;
-    }
-    push(...parts) {
-        for (const p of parts) {
-            if (p === '')
-                continue;
-            /* c8 ignore start */
-            if (typeof p !== 'string' && !(p instanceof _a && p.#parent === this)) {
-                throw new Error('invalid part: ' + p);
-            }
-            /* c8 ignore stop */
-            this.#parts.push(p);
-        }
-    }
-    toJSON() {
-        const ret = this.type === null
-            ? this.#parts.slice().map(p => (typeof p === 'string' ? p : p.toJSON()))
-            : [this.type, ...this.#parts.map(p => p.toJSON())];
-        if (this.isStart() && !this.type)
-            ret.unshift([]);
-        if (this.isEnd() &&
-            (this === this.#root ||
-                (this.#root.#filledNegs && this.#parent?.type === '!'))) {
-            ret.push({});
-        }
-        return ret;
-    }
-    isStart() {
-        if (this.#root === this)
-            return true;
-        // if (this.type) return !!this.#parent?.isStart()
-        if (!this.#parent?.isStart())
-            return false;
-        if (this.#parentIndex === 0)
-            return true;
-        // if everything AHEAD of this is a negation, then it's still the "start"
-        const p = this.#parent;
-        for (let i = 0; i < this.#parentIndex; i++) {
-            const pp = p.#parts[i];
-            if (!(pp instanceof _a && pp.type === '!')) {
-                return false;
-            }
-        }
-        return true;
-    }
-    isEnd() {
-        if (this.#root === this)
-            return true;
-        if (this.#parent?.type === '!')
-            return true;
-        if (!this.#parent?.isEnd())
-            return false;
-        if (!this.type)
-            return this.#parent?.isEnd();
-        // if not root, it'll always have a parent
-        /* c8 ignore start */
-        const pl = this.#parent ? this.#parent.#parts.length : 0;
-        /* c8 ignore stop */
-        return this.#parentIndex === pl - 1;
-    }
-    copyIn(part) {
-        if (typeof part === 'string')
-            this.push(part);
-        else
-            this.push(part.clone(this));
-    }
-    clone(parent) {
-        const c = new _a(this.type, parent);
-        for (const p of this.#parts) {
-            c.copyIn(p);
-        }
-        return c;
-    }
-    static #parseAST(str, ast, pos, opt, extDepth) {
-        const maxDepth = opt.maxExtglobRecursion ?? 2;
-        let escaping = false;
-        let inBrace = false;
-        let braceStart = -1;
-        let braceNeg = false;
-        if (ast.type === null) {
-            // outside of a extglob, append until we find a start
-            let i = pos;
-            let acc = '';
-            while (i < str.length) {
-                const c = str.charAt(i++);
-                // still accumulate escapes at this point, but we do ignore
-                // starts that are escaped
-                if (escaping || c === '\\') {
-                    escaping = !escaping;
-                    acc += c;
-                    continue;
-                }
-                if (inBrace) {
-                    if (i === braceStart + 1) {
-                        if (c === '^' || c === '!') {
-                            braceNeg = true;
-                        }
-                    }
-                    else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
-                        inBrace = false;
-                    }
-                    acc += c;
-                    continue;
-                }
-                else if (c === '[') {
-                    inBrace = true;
-                    braceStart = i;
-                    braceNeg = false;
-                    acc += c;
-                    continue;
-                }
-                const doRecurse = !opt.noext &&
-                    isExtglobType(c) &&
-                    str.charAt(i) === '(' &&
-                    extDepth <= maxDepth;
-                if (doRecurse) {
-                    ast.push(acc);
-                    acc = '';
-                    const ext = new _a(c, ast);
-                    i = _a.#parseAST(str, ext, i, opt, extDepth + 1);
-                    ast.push(ext);
-                    continue;
-                }
-                acc += c;
-            }
-            ast.push(acc);
-            return i;
-        }
-        // some kind of extglob, pos is at the (
-        // find the next | or )
-        let i = pos + 1;
-        let part = new _a(null, ast);
-        const parts = [];
-        let acc = '';
-        while (i < str.length) {
-            const c = str.charAt(i++);
-            // still accumulate escapes at this point, but we do ignore
-            // starts that are escaped
-            if (escaping || c === '\\') {
-                escaping = !escaping;
-                acc += c;
-                continue;
-            }
-            if (inBrace) {
-                if (i === braceStart + 1) {
-                    if (c === '^' || c === '!') {
-                        braceNeg = true;
-                    }
-                }
-                else if (c === ']' && !(i === braceStart + 2 && braceNeg)) {
-                    inBrace = false;
-                }
-                acc += c;
-                continue;
-            }
-            else if (c === '[') {
-                inBrace = true;
-                braceStart = i;
-                braceNeg = false;
-                acc += c;
-                continue;
-            }
-            const doRecurse = isExtglobType(c) &&
-                str.charAt(i) === '(' &&
-                /* c8 ignore start - the maxDepth is sufficient here */
-                (extDepth <= maxDepth || (ast && ast.#canAdoptType(c)));
-            /* c8 ignore stop */
-            if (doRecurse) {
-                const depthAdd = ast && ast.#canAdoptType(c) ? 0 : 1;
-                part.push(acc);
-                acc = '';
-                const ext = new _a(c, part);
-                part.push(ext);
-                i = _a.#parseAST(str, ext, i, opt, extDepth + depthAdd);
-                continue;
-            }
-            if (c === '|') {
-                part.push(acc);
-                acc = '';
-                parts.push(part);
-                part = new _a(null, ast);
-                continue;
-            }
-            if (c === ')') {
-                if (acc === '' && ast.#parts.length === 0) {
-                    ast.#emptyExt = true;
-                }
-                part.push(acc);
-                acc = '';
-                ast.push(...parts, part);
-                return i;
-            }
-            acc += c;
-        }
-        // unfinished extglob
-        // if we got here, it was a malformed extglob! not an extglob, but
-        // maybe something else in there.
-        ast.type = null;
-        ast.#hasMagic = undefined;
-        ast.#parts = [str.substring(pos - 1)];
-        return i;
-    }
-    #canAdoptWithSpace(child) {
-        return this.#canAdopt(child, adoptionWithSpaceMap);
-    }
-    #canAdopt(child, map = adoptionMap) {
-        if (!child ||
-            typeof child !== 'object' ||
-            child.type !== null ||
-            child.#parts.length !== 1 ||
-            this.type === null) {
-            return false;
-        }
-        const gc = child.#parts[0];
-        if (!gc || typeof gc !== 'object' || gc.type === null) {
-            return false;
-        }
-        return this.#canAdoptType(gc.type, map);
-    }
-    #canAdoptType(c, map = adoptionAnyMap) {
-        return !!map.get(this.type)?.includes(c);
-    }
-    #adoptWithSpace(child, index) {
-        const gc = child.#parts[0];
-        const blank = new _a(null, gc, this.options);
-        blank.#parts.push('');
-        gc.push(blank);
-        this.#adopt(child, index);
-    }
-    #adopt(child, index) {
-        const gc = child.#parts[0];
-        this.#parts.splice(index, 1, ...gc.#parts);
-        for (const p of gc.#parts) {
-            if (typeof p === 'object')
-                p.#parent = this;
-        }
-        this.#toString = undefined;
-    }
-    #canUsurpType(c) {
-        const m = usurpMap.get(this.type);
-        return !!(m?.has(c));
-    }
-    #canUsurp(child) {
-        if (!child ||
-            typeof child !== 'object' ||
-            child.type !== null ||
-            child.#parts.length !== 1 ||
-            this.type === null ||
-            this.#parts.length !== 1) {
-            return false;
-        }
-        const gc = child.#parts[0];
-        if (!gc || typeof gc !== 'object' || gc.type === null) {
-            return false;
-        }
-        return this.#canUsurpType(gc.type);
-    }
-    #usurp(child) {
-        const m = usurpMap.get(this.type);
-        const gc = child.#parts[0];
-        const nt = m?.get(gc.type);
-        /* c8 ignore start - impossible */
-        if (!nt)
-            return false;
-        /* c8 ignore stop */
-        this.#parts = gc.#parts;
-        for (const p of this.#parts) {
-            if (typeof p === 'object')
-                p.#parent = this;
-        }
-        this.type = nt;
-        this.#toString = undefined;
-        this.#emptyExt = false;
-    }
-    #flatten() {
-        if (!isExtglobAST(this)) {
-            for (const p of this.#parts) {
-                if (typeof p === 'object')
-                    p.#flatten();
-            }
-        }
-        else {
-            let iterations = 0;
-            let done = false;
-            do {
-                done = true;
-                for (let i = 0; i < this.#parts.length; i++) {
-                    const c = this.#parts[i];
-                    if (typeof c === 'object') {
-                        c.#flatten();
-                        if (this.#canAdopt(c)) {
-                            done = false;
-                            this.#adopt(c, i);
-                        }
-                        else if (this.#canAdoptWithSpace(c)) {
-                            done = false;
-                            this.#adoptWithSpace(c, i);
-                        }
-                        else if (this.#canUsurp(c)) {
-                            done = false;
-                            this.#usurp(c);
-                        }
-                    }
-                }
-            } while (!done && ++iterations < 10);
-        }
-        this.#toString = undefined;
-    }
-    static fromGlob(pattern, options = {}) {
-        const ast = new _a(null, undefined, options);
-        _a.#parseAST(pattern, ast, 0, options, 0);
-        return ast;
-    }
-    // returns the regular expression if there's magic, or the unescaped
-    // string if not.
-    toMMPattern() {
-        // should only be called on root
-        /* c8 ignore start */
-        if (this !== this.#root)
-            return this.#root.toMMPattern();
-        /* c8 ignore stop */
-        const glob = this.toString();
-        const [re, body, hasMagic, uflag] = this.toRegExpSource();
-        // if we're in nocase mode, and not nocaseMagicOnly, then we do
-        // still need a regular expression if we have to case-insensitively
-        // match capital/lowercase characters.
-        const anyMagic = hasMagic ||
-            this.#hasMagic ||
-            (this.#options.nocase &&
-                !this.#options.nocaseMagicOnly &&
-                glob.toUpperCase() !== glob.toLowerCase());
-        if (!anyMagic) {
-            return body;
-        }
-        const flags = (this.#options.nocase ? 'i' : '') + (uflag ? 'u' : '');
-        return Object.assign(new RegExp(`^${re}$`, flags), {
-            _src: re,
-            _glob: glob,
-        });
-    }
-    get options() {
-        return this.#options;
-    }
-    // returns the string match, the regexp source, whether there's magic
-    // in the regexp (so a regular expression is required) and whether or
-    // not the uflag is needed for the regular expression (for posix classes)
-    // TODO: instead of injecting the start/end at this point, just return
-    // the BODY of the regexp, along with the start/end portions suitable
-    // for binding the start/end in either a joined full-path makeRe context
-    // (where we bind to (^|/), or a standalone matchPart context (where
-    // we bind to ^, and not /).  Otherwise slashes get duped!
-    //
-    // In part-matching mode, the start is:
-    // - if not isStart: nothing
-    // - if traversal possible, but not allowed: ^(?!\.\.?$)
-    // - if dots allowed or not possible: ^
-    // - if dots possible and not allowed: ^(?!\.)
-    // end is:
-    // - if not isEnd(): nothing
-    // - else: $
-    //
-    // In full-path matching mode, we put the slash at the START of the
-    // pattern, so start is:
-    // - if first pattern: same as part-matching mode
-    // - if not isStart(): nothing
-    // - if traversal possible, but not allowed: /(?!\.\.?(?:$|/))
-    // - if dots allowed or not possible: /
-    // - if dots possible and not allowed: /(?!\.)
-    // end is:
-    // - if last pattern, same as part-matching mode
-    // - else nothing
-    //
-    // Always put the (?:$|/) on negated tails, though, because that has to be
-    // there to bind the end of the negated pattern portion, and it's easier to
-    // just stick it in now rather than try to inject it later in the middle of
-    // the pattern.
-    //
-    // We can just always return the same end, and leave it up to the caller
-    // to know whether it's going to be used joined or in parts.
-    // And, if the start is adjusted slightly, can do the same there:
-    // - if not isStart: nothing
-    // - if traversal possible, but not allowed: (?:/|^)(?!\.\.?$)
-    // - if dots allowed or not possible: (?:/|^)
-    // - if dots possible and not allowed: (?:/|^)(?!\.)
-    //
-    // But it's better to have a simpler binding without a conditional, for
-    // performance, so probably better to return both start options.
-    //
-    // Then the caller just ignores the end if it's not the first pattern,
-    // and the start always gets applied.
-    //
-    // But that's always going to be $ if it's the ending pattern, or nothing,
-    // so the caller can just attach $ at the end of the pattern when building.
-    //
-    // So the todo is:
-    // - better detect what kind of start is needed
-    // - return both flavors of starting pattern
-    // - attach $ at the end of the pattern when creating the actual RegExp
-    //
-    // Ah, but wait, no, that all only applies to the root when the first pattern
-    // is not an extglob. If the first pattern IS an extglob, then we need all
-    // that dot prevention biz to live in the extglob portions, because eg
-    // +(*|.x*) can match .xy but not .yx.
-    //
-    // So, return the two flavors if it's #root and the first child is not an
-    // AST, otherwise leave it to the child AST to handle it, and there,
-    // use the (?:^|/) style of start binding.
-    //
-    // Even simplified further:
-    // - Since the start for a join is eg /(?!\.) and the start for a part
-    // is ^(?!\.), we can just prepend (?!\.) to the pattern (either root
-    // or start or whatever) and prepend ^ or / at the Regexp construction.
-    toRegExpSource(allowDot) {
-        const dot = allowDot ?? !!this.#options.dot;
-        if (this.#root === this) {
-            this.#flatten();
-            this.#fillNegs();
-        }
-        if (!isExtglobAST(this)) {
-            const noEmpty = this.isStart() && this.isEnd();
-            const src = this.#parts
-                .map(p => {
-                const [re, _, hasMagic, uflag] = typeof p === 'string'
-                    ? _a.#parseGlob(p, this.#hasMagic, noEmpty)
-                    : p.toRegExpSource(allowDot);
-                this.#hasMagic = this.#hasMagic || hasMagic;
-                this.#uflag = this.#uflag || uflag;
-                return re;
-            })
-                .join('');
-            let start = '';
-            if (this.isStart()) {
-                if (typeof this.#parts[0] === 'string') {
-                    // this is the string that will match the start of the pattern,
-                    // so we need to protect against dots and such.
-                    // '.' and '..' cannot match unless the pattern is that exactly,
-                    // even if it starts with . or dot:true is set.
-                    const dotTravAllowed = this.#parts.length === 1 && justDots.has(this.#parts[0]);
-                    if (!dotTravAllowed) {
-                        const aps = addPatternStart;
-                        // check if we have a possibility of matching . or ..,
-                        // and prevent that.
-                        const needNoTrav = 
-                        // dots are allowed, and the pattern starts with [ or .
-                        (dot && aps.has(src.charAt(0))) ||
-                            // the pattern starts with \., and then [ or .
-                            (src.startsWith('\\.') && aps.has(src.charAt(2))) ||
-                            // the pattern starts with \.\., and then [ or .
-                            (src.startsWith('\\.\\.') && aps.has(src.charAt(4)));
-                        // no need to prevent dots if it can't match a dot, or if a
-                        // sub-pattern will be preventing it anyway.
-                        const needNoDot = !dot && !allowDot && aps.has(src.charAt(0));
-                        start = needNoTrav ? startNoTraversal : needNoDot ? startNoDot : '';
-                    }
-                }
-            }
-            // append the "end of path portion" pattern to negation tails
-            let end = '';
-            if (this.isEnd() &&
-                this.#root.#filledNegs &&
-                this.#parent?.type === '!') {
-                end = '(?:$|\\/)';
-            }
-            const final = start + src + end;
-            return [
-                final,
-                (0, unescape_js_1.unescape)(src),
-                (this.#hasMagic = !!this.#hasMagic),
-                this.#uflag,
-            ];
-        }
-        // We need to calculate the body *twice* if it's a repeat pattern
-        // at the start, once in nodot mode, then again in dot mode, so a
-        // pattern like *(?) can match 'x.y'
-        const repeated = this.type === '*' || this.type === '+';
-        // some kind of extglob
-        const start = this.type === '!' ? '(?:(?!(?:' : '(?:';
-        let body = this.#partsToRegExp(dot);
-        if (this.isStart() && this.isEnd() && !body && this.type !== '!') {
-            // invalid extglob, has to at least be *something* present, if it's
-            // the entire path portion.
-            const s = this.toString();
-            const me = this;
-            me.#parts = [s];
-            me.type = null;
-            me.#hasMagic = undefined;
-            return [s, (0, unescape_js_1.unescape)(this.toString()), false, false];
-        }
-        // XXX abstract out this map method
-        let bodyDotAllowed = !repeated || allowDot || dot || !startNoDot
-            ? ''
-            : this.#partsToRegExp(true);
-        if (bodyDotAllowed === body) {
-            bodyDotAllowed = '';
-        }
-        if (bodyDotAllowed) {
-            body = `(?:${body})(?:${bodyDotAllowed})*?`;
-        }
-        // an empty !() is exactly equivalent to a starNoEmpty
-        let final = '';
-        if (this.type === '!' && this.#emptyExt) {
-            final = (this.isStart() && !dot ? startNoDot : '') + starNoEmpty;
-        }
-        else {
-            const close = this.type === '!'
-                ? // !() must match something,but !(x) can match ''
-                    '))' +
-                        (this.isStart() && !dot && !allowDot ? startNoDot : '') +
-                        star +
-                        ')'
-                : this.type === '@'
-                    ? ')'
-                    : this.type === '?'
-                        ? ')?'
-                        : this.type === '+' && bodyDotAllowed
-                            ? ')'
-                            : this.type === '*' && bodyDotAllowed
-                                ? `)?`
-                                : `)${this.type}`;
-            final = start + body + close;
-        }
-        return [
-            final,
-            (0, unescape_js_1.unescape)(body),
-            (this.#hasMagic = !!this.#hasMagic),
-            this.#uflag,
-        ];
-    }
-    #partsToRegExp(dot) {
-        return this.#parts
-            .map(p => {
-            // extglob ASTs should only contain parent ASTs
-            /* c8 ignore start */
-            if (typeof p === 'string') {
-                throw new Error('string type in extglob ast??');
-            }
-            /* c8 ignore stop */
-            // can ignore hasMagic, because extglobs are already always magic
-            const [re, _, _hasMagic, uflag] = p.toRegExpSource(dot);
-            this.#uflag = this.#uflag || uflag;
-            return re;
-        })
-            .filter(p => !(this.isStart() && this.isEnd()) || !!p)
-            .join('|');
-    }
-    static #parseGlob(glob, hasMagic, noEmpty = false) {
-        let escaping = false;
-        let re = '';
-        let uflag = false;
-        // multiple stars that aren't globstars coalesce into one *
-        let inStar = false;
-        for (let i = 0; i < glob.length; i++) {
-            const c = glob.charAt(i);
-            if (escaping) {
-                escaping = false;
-                re += (reSpecials.has(c) ? '\\' : '') + c;
-                inStar = false;
-                continue;
-            }
-            if (c === '\\') {
-                if (i === glob.length - 1) {
-                    re += '\\\\';
-                }
-                else {
-                    escaping = true;
-                }
-                continue;
-            }
-            if (c === '[') {
-                const [src, needUflag, consumed, magic] = (0, brace_expressions_js_1.parseClass)(glob, i);
-                if (consumed) {
-                    re += src;
-                    uflag = uflag || needUflag;
-                    i += consumed - 1;
-                    hasMagic = hasMagic || magic;
-                    inStar = false;
-                    continue;
-                }
-            }
-            if (c === '*') {
-                if (inStar)
-                    continue;
-                inStar = true;
-                re += noEmpty && /^[*]+$/.test(glob) ? starNoEmpty : star;
-                hasMagic = true;
-                continue;
-            }
-            else {
-                inStar = false;
-            }
-            if (c === '?') {
-                re += qmark;
-                hasMagic = true;
-                continue;
-            }
-            re += regExpEscape(c);
-        }
-        return [re, (0, unescape_js_1.unescape)(glob), !!hasMagic, uflag];
-    }
-}
-exports.AST = AST;
-_a = AST;
-//# sourceMappingURL=ast.js.map
-
-/***/ }),
-
-/***/ 11090:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-// translate the various posix character classes into unicode properties
-// this works across all unicode locales
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseClass = void 0;
-// { <posix class>: [<translation>, /u flag required, negated]
-const posixClasses = {
-    '[:alnum:]': ['\\p{L}\\p{Nl}\\p{Nd}', true],
-    '[:alpha:]': ['\\p{L}\\p{Nl}', true],
-    '[:ascii:]': ['\\x' + '00-\\x' + '7f', false],
-    '[:blank:]': ['\\p{Zs}\\t', true],
-    '[:cntrl:]': ['\\p{Cc}', true],
-    '[:digit:]': ['\\p{Nd}', true],
-    '[:graph:]': ['\\p{Z}\\p{C}', true, true],
-    '[:lower:]': ['\\p{Ll}', true],
-    '[:print:]': ['\\p{C}', true],
-    '[:punct:]': ['\\p{P}', true],
-    '[:space:]': ['\\p{Z}\\t\\r\\n\\v\\f', true],
-    '[:upper:]': ['\\p{Lu}', true],
-    '[:word:]': ['\\p{L}\\p{Nl}\\p{Nd}\\p{Pc}', true],
-    '[:xdigit:]': ['A-Fa-f0-9', false],
-};
-// only need to escape a few things inside of brace expressions
-// escapes: [ \ ] -
-const braceEscape = (s) => s.replace(/[[\]\\-]/g, '\\$&');
-// escape all regexp magic characters
-const regexpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-// everything has already been escaped, we just have to join
-const rangesToString = (ranges) => ranges.join('');
-// takes a glob string at a posix brace expression, and returns
-// an equivalent regular expression source, and boolean indicating
-// whether the /u flag needs to be applied, and the number of chars
-// consumed to parse the character class.
-// This also removes out of order ranges, and returns ($.) if the
-// entire class just no good.
-const parseClass = (glob, position) => {
-    const pos = position;
-    /* c8 ignore start */
-    if (glob.charAt(pos) !== '[') {
-        throw new Error('not in a brace expression');
-    }
-    /* c8 ignore stop */
-    const ranges = [];
-    const negs = [];
-    let i = pos + 1;
-    let sawStart = false;
-    let uflag = false;
-    let escaping = false;
-    let negate = false;
-    let endPos = pos;
-    let rangeStart = '';
-    WHILE: while (i < glob.length) {
-        const c = glob.charAt(i);
-        if ((c === '!' || c === '^') && i === pos + 1) {
-            negate = true;
-            i++;
-            continue;
-        }
-        if (c === ']' && sawStart && !escaping) {
-            endPos = i + 1;
-            break;
-        }
-        sawStart = true;
-        if (c === '\\') {
-            if (!escaping) {
-                escaping = true;
-                i++;
-                continue;
-            }
-            // escaped \ char, fall through and treat like normal char
-        }
-        if (c === '[' && !escaping) {
-            // either a posix class, a collation equivalent, or just a [
-            for (const [cls, [unip, u, neg]] of Object.entries(posixClasses)) {
-                if (glob.startsWith(cls, i)) {
-                    // invalid, [a-[] is fine, but not [a-[:alpha]]
-                    if (rangeStart) {
-                        return ['$.', false, glob.length - pos, true];
-                    }
-                    i += cls.length;
-                    if (neg)
-                        negs.push(unip);
-                    else
-                        ranges.push(unip);
-                    uflag = uflag || u;
-                    continue WHILE;
-                }
-            }
-        }
-        // now it's just a normal character, effectively
-        escaping = false;
-        if (rangeStart) {
-            // throw this range away if it's not valid, but others
-            // can still match.
-            if (c > rangeStart) {
-                ranges.push(braceEscape(rangeStart) + '-' + braceEscape(c));
-            }
-            else if (c === rangeStart) {
-                ranges.push(braceEscape(c));
-            }
-            rangeStart = '';
-            i++;
-            continue;
-        }
-        // now might be the start of a range.
-        // can be either c-d or c-] or c<more...>] or c] at this point
-        if (glob.startsWith('-]', i + 1)) {
-            ranges.push(braceEscape(c + '-'));
-            i += 2;
-            continue;
-        }
-        if (glob.startsWith('-', i + 1)) {
-            rangeStart = c;
-            i += 2;
-            continue;
-        }
-        // not the start of a range, just a single character
-        ranges.push(braceEscape(c));
-        i++;
-    }
-    if (endPos < i) {
-        // didn't see the end of the class, not a valid class,
-        // but might still be valid as a literal match.
-        return ['', false, 0, false];
-    }
-    // if we got no ranges and no negates, then we have a range that
-    // cannot possibly match anything, and that poisons the whole glob
-    if (!ranges.length && !negs.length) {
-        return ['$.', false, glob.length - pos, true];
-    }
-    // if we got one positive range, and it's a single character, then that's
-    // not actually a magic pattern, it's just that one literal character.
-    // we should not treat that as "magic", we should just return the literal
-    // character. [_] is a perfectly valid way to escape glob magic chars.
-    if (negs.length === 0 &&
-        ranges.length === 1 &&
-        /^\\?.$/.test(ranges[0]) &&
-        !negate) {
-        const r = ranges[0].length === 2 ? ranges[0].slice(-1) : ranges[0];
-        return [regexpEscape(r), false, endPos - pos, false];
-    }
-    const sranges = '[' + (negate ? '^' : '') + rangesToString(ranges) + ']';
-    const snegs = '[' + (negate ? '' : '^') + rangesToString(negs) + ']';
-    const comb = ranges.length && negs.length
-        ? '(' + sranges + '|' + snegs + ')'
-        : ranges.length
-            ? sranges
-            : snegs;
-    return [comb, uflag, endPos - pos, true];
-};
-exports.parseClass = parseClass;
-//# sourceMappingURL=brace-expressions.js.map
-
-/***/ }),
-
-/***/ 10800:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.escape = void 0;
-/**
- * Escape all magic characters in a glob pattern.
- *
- * If the {@link windowsPathsNoEscape | GlobOptions.windowsPathsNoEscape}
- * option is used, then characters are escaped by wrapping in `[]`, because
- * a magic character wrapped in a character class can only be satisfied by
- * that exact character.  In this mode, `\` is _not_ escaped, because it is
- * not interpreted as a magic character, but instead as a path separator.
- */
-const escape = (s, { windowsPathsNoEscape = false, } = {}) => {
-    // don't need to escape +@! because we escape the parens
-    // that make those magic, and escaping ! as [!] isn't valid,
-    // because [!]] is a valid glob class meaning not ']'.
-    return windowsPathsNoEscape
-        ? s.replace(/[?*()[\]]/g, '[$&]')
-        : s.replace(/[?*()[\]\\]/g, '\\$&');
-};
-exports.escape = escape;
-//# sourceMappingURL=escape.js.map
-
-/***/ }),
-
-/***/ 46507:
-/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
-
-"use strict";
-
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.unescape = exports.escape = exports.AST = exports.Minimatch = exports.match = exports.makeRe = exports.braceExpand = exports.defaults = exports.filter = exports.GLOBSTAR = exports.sep = exports.minimatch = void 0;
-const brace_expansion_1 = __importDefault(__webpack_require__(94691));
-const assert_valid_pattern_js_1 = __webpack_require__(57305);
-const ast_js_1 = __webpack_require__(31803);
-const escape_js_1 = __webpack_require__(10800);
-const unescape_js_1 = __webpack_require__(70851);
-const minimatch = (p, pattern, options = {}) => {
-    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
-    // shortcut: comments match nothing.
-    if (!options.nocomment && pattern.charAt(0) === '#') {
-        return false;
-    }
-    return new Minimatch(pattern, options).match(p);
-};
-exports.minimatch = minimatch;
-// Optimized checking for the most common glob patterns.
-const starDotExtRE = /^\*+([^+@!?\*\[\(]*)$/;
-const starDotExtTest = (ext) => (f) => !f.startsWith('.') && f.endsWith(ext);
-const starDotExtTestDot = (ext) => (f) => f.endsWith(ext);
-const starDotExtTestNocase = (ext) => {
-    ext = ext.toLowerCase();
-    return (f) => !f.startsWith('.') && f.toLowerCase().endsWith(ext);
-};
-const starDotExtTestNocaseDot = (ext) => {
-    ext = ext.toLowerCase();
-    return (f) => f.toLowerCase().endsWith(ext);
-};
-const starDotStarRE = /^\*+\.\*+$/;
-const starDotStarTest = (f) => !f.startsWith('.') && f.includes('.');
-const starDotStarTestDot = (f) => f !== '.' && f !== '..' && f.includes('.');
-const dotStarRE = /^\.\*+$/;
-const dotStarTest = (f) => f !== '.' && f !== '..' && f.startsWith('.');
-const starRE = /^\*+$/;
-const starTest = (f) => f.length !== 0 && !f.startsWith('.');
-const starTestDot = (f) => f.length !== 0 && f !== '.' && f !== '..';
-const qmarksRE = /^\?+([^+@!?\*\[\(]*)?$/;
-const qmarksTestNocase = ([$0, ext = '']) => {
-    const noext = qmarksTestNoExt([$0]);
-    if (!ext)
-        return noext;
-    ext = ext.toLowerCase();
-    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
-};
-const qmarksTestNocaseDot = ([$0, ext = '']) => {
-    const noext = qmarksTestNoExtDot([$0]);
-    if (!ext)
-        return noext;
-    ext = ext.toLowerCase();
-    return (f) => noext(f) && f.toLowerCase().endsWith(ext);
-};
-const qmarksTestDot = ([$0, ext = '']) => {
-    const noext = qmarksTestNoExtDot([$0]);
-    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
-};
-const qmarksTest = ([$0, ext = '']) => {
-    const noext = qmarksTestNoExt([$0]);
-    return !ext ? noext : (f) => noext(f) && f.endsWith(ext);
-};
-const qmarksTestNoExt = ([$0]) => {
-    const len = $0.length;
-    return (f) => f.length === len && !f.startsWith('.');
-};
-const qmarksTestNoExtDot = ([$0]) => {
-    const len = $0.length;
-    return (f) => f.length === len && f !== '.' && f !== '..';
-};
-/* c8 ignore start */
-const defaultPlatform = (typeof process === 'object' && process
-    ? (typeof process.env === 'object' &&
-        process.env &&
-        process.env.__MINIMATCH_TESTING_PLATFORM__) ||
-        process.platform
-    : 'posix');
-const path = {
-    win32: { sep: '\\' },
-    posix: { sep: '/' },
-};
-/* c8 ignore stop */
-exports.sep = defaultPlatform === 'win32' ? path.win32.sep : path.posix.sep;
-exports.minimatch.sep = exports.sep;
-exports.GLOBSTAR = Symbol('globstar **');
-exports.minimatch.GLOBSTAR = exports.GLOBSTAR;
-// any single thing other than /
-// don't need to escape / when using new RegExp()
-const qmark = '[^/]';
-// * => any number of characters
-const star = qmark + '*?';
-// ** when dots are allowed.  Anything goes, except .. and .
-// not (^ or / followed by one or two dots followed by $ or /),
-// followed by anything, any number of times.
-const twoStarDot = '(?:(?!(?:\\/|^)(?:\\.{1,2})($|\\/)).)*?';
-// not a ^ or / followed by a dot,
-// followed by anything, any number of times.
-const twoStarNoDot = '(?:(?!(?:\\/|^)\\.).)*?';
-const filter = (pattern, options = {}) => (p) => (0, exports.minimatch)(p, pattern, options);
-exports.filter = filter;
-exports.minimatch.filter = exports.filter;
-const ext = (a, b = {}) => Object.assign({}, a, b);
-const defaults = (def) => {
-    if (!def || typeof def !== 'object' || !Object.keys(def).length) {
-        return exports.minimatch;
-    }
-    const orig = exports.minimatch;
-    const m = (p, pattern, options = {}) => orig(p, pattern, ext(def, options));
-    return Object.assign(m, {
-        Minimatch: class Minimatch extends orig.Minimatch {
-            constructor(pattern, options = {}) {
-                super(pattern, ext(def, options));
-            }
-            static defaults(options) {
-                return orig.defaults(ext(def, options)).Minimatch;
-            }
-        },
-        AST: class AST extends orig.AST {
-            /* c8 ignore start */
-            constructor(type, parent, options = {}) {
-                super(type, parent, ext(def, options));
-            }
-            /* c8 ignore stop */
-            static fromGlob(pattern, options = {}) {
-                return orig.AST.fromGlob(pattern, ext(def, options));
-            }
-        },
-        unescape: (s, options = {}) => orig.unescape(s, ext(def, options)),
-        escape: (s, options = {}) => orig.escape(s, ext(def, options)),
-        filter: (pattern, options = {}) => orig.filter(pattern, ext(def, options)),
-        defaults: (options) => orig.defaults(ext(def, options)),
-        makeRe: (pattern, options = {}) => orig.makeRe(pattern, ext(def, options)),
-        braceExpand: (pattern, options = {}) => orig.braceExpand(pattern, ext(def, options)),
-        match: (list, pattern, options = {}) => orig.match(list, pattern, ext(def, options)),
-        sep: orig.sep,
-        GLOBSTAR: exports.GLOBSTAR,
-    });
-};
-exports.defaults = defaults;
-exports.minimatch.defaults = exports.defaults;
-// Brace expansion:
-// a{b,c}d -> abd acd
-// a{b,}c -> abc ac
-// a{0..3}d -> a0d a1d a2d a3d
-// a{b,c{d,e}f}g -> abg acdfg acefg
-// a{b,c}d{e,f}g -> abdeg acdeg abdeg abdfg
-//
-// Invalid sets are not expanded.
-// a{2..}b -> a{2..}b
-// a{b}c -> a{b}c
-const braceExpand = (pattern, options = {}) => {
-    (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
-    // Thanks to Yeting Li <https://github.com/yetingli> for
-    // improving this regexp to avoid a ReDOS vulnerability.
-    if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern)) {
-        // shortcut. no need to expand.
-        return [pattern];
-    }
-    return (0, brace_expansion_1.default)(pattern);
-};
-exports.braceExpand = braceExpand;
-exports.minimatch.braceExpand = exports.braceExpand;
-// parse a component of the expanded set.
-// At this point, no pattern may contain "/" in it
-// so we're going to return a 2d array, where each entry is the full
-// pattern, split on '/', and then turned into a regular expression.
-// A regexp is made at the end which joins each array with an
-// escaped /, and another full one which joins each regexp with |.
-//
-// Following the lead of Bash 4.1, note that "**" only has special meaning
-// when it is the *only* thing in a path portion.  Otherwise, any series
-// of * is equivalent to a single *.  Globstar behavior is enabled by
-// default, and can be disabled by setting options.noglobstar.
-const makeRe = (pattern, options = {}) => new Minimatch(pattern, options).makeRe();
-exports.makeRe = makeRe;
-exports.minimatch.makeRe = exports.makeRe;
-const match = (list, pattern, options = {}) => {
-    const mm = new Minimatch(pattern, options);
-    list = list.filter(f => mm.match(f));
-    if (mm.options.nonull && !list.length) {
-        list.push(pattern);
-    }
-    return list;
-};
-exports.match = match;
-exports.minimatch.match = exports.match;
-// replace stuff like \* with *
-const globMagic = /[?*]|[+@!]\(.*?\)|\[|\]/;
-const regExpEscape = (s) => s.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-class Minimatch {
-    options;
-    set;
-    pattern;
-    windowsPathsNoEscape;
-    nonegate;
-    negate;
-    comment;
-    empty;
-    preserveMultipleSlashes;
-    partial;
-    globSet;
-    globParts;
-    nocase;
-    isWindows;
-    platform;
-    windowsNoMagicRoot;
-    maxGlobstarRecursion;
-    regexp;
-    constructor(pattern, options = {}) {
-        (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
-        options = options || {};
-        this.options = options;
-        this.maxGlobstarRecursion = options.maxGlobstarRecursion ?? 200;
-        this.pattern = pattern;
-        this.platform = options.platform || defaultPlatform;
-        this.isWindows = this.platform === 'win32';
-        this.windowsPathsNoEscape =
-            !!options.windowsPathsNoEscape || options.allowWindowsEscape === false;
-        if (this.windowsPathsNoEscape) {
-            this.pattern = this.pattern.replace(/\\/g, '/');
-        }
-        this.preserveMultipleSlashes = !!options.preserveMultipleSlashes;
-        this.regexp = null;
-        this.negate = false;
-        this.nonegate = !!options.nonegate;
-        this.comment = false;
-        this.empty = false;
-        this.partial = !!options.partial;
-        this.nocase = !!this.options.nocase;
-        this.windowsNoMagicRoot =
-            options.windowsNoMagicRoot !== undefined
-                ? options.windowsNoMagicRoot
-                : !!(this.isWindows && this.nocase);
-        this.globSet = [];
-        this.globParts = [];
-        this.set = [];
-        // make the set of regexps etc.
-        this.make();
-    }
-    hasMagic() {
-        if (this.options.magicalBraces && this.set.length > 1) {
-            return true;
-        }
-        for (const pattern of this.set) {
-            for (const part of pattern) {
-                if (typeof part !== 'string')
-                    return true;
-            }
-        }
-        return false;
-    }
-    debug(..._) { }
-    make() {
-        const pattern = this.pattern;
-        const options = this.options;
-        // empty patterns and comments match nothing.
-        if (!options.nocomment && pattern.charAt(0) === '#') {
-            this.comment = true;
-            return;
-        }
-        if (!pattern) {
-            this.empty = true;
-            return;
-        }
-        // step 1: figure out negation, etc.
-        this.parseNegate();
-        // step 2: expand braces
-        this.globSet = [...new Set(this.braceExpand())];
-        if (options.debug) {
-            this.debug = (...args) => console.error(...args);
-        }
-        this.debug(this.pattern, this.globSet);
-        // step 3: now we have a set, so turn each one into a series of
-        // path-portion matching patterns.
-        // These will be regexps, except in the case of "**", which is
-        // set to the GLOBSTAR object for globstar behavior,
-        // and will not contain any / characters
-        //
-        // First, we preprocess to make the glob pattern sets a bit simpler
-        // and deduped.  There are some perf-killing patterns that can cause
-        // problems with a glob walk, but we can simplify them down a bit.
-        const rawGlobParts = this.globSet.map(s => this.slashSplit(s));
-        this.globParts = this.preprocess(rawGlobParts);
-        this.debug(this.pattern, this.globParts);
-        // glob --> regexps
-        let set = this.globParts.map((s, _, __) => {
-            if (this.isWindows && this.windowsNoMagicRoot) {
-                // check if it's a drive or unc path.
-                const isUNC = s[0] === '' &&
-                    s[1] === '' &&
-                    (s[2] === '?' || !globMagic.test(s[2])) &&
-                    !globMagic.test(s[3]);
-                const isDrive = /^[a-z]:/i.test(s[0]);
-                if (isUNC) {
-                    return [...s.slice(0, 4), ...s.slice(4).map(ss => this.parse(ss))];
-                }
-                else if (isDrive) {
-                    return [s[0], ...s.slice(1).map(ss => this.parse(ss))];
-                }
-            }
-            return s.map(ss => this.parse(ss));
-        });
-        this.debug(this.pattern, set);
-        // filter out everything that didn't compile properly.
-        this.set = set.filter(s => s.indexOf(false) === -1);
-        // do not treat the ? in UNC paths as magic
-        if (this.isWindows) {
-            for (let i = 0; i < this.set.length; i++) {
-                const p = this.set[i];
-                if (p[0] === '' &&
-                    p[1] === '' &&
-                    this.globParts[i][2] === '?' &&
-                    typeof p[3] === 'string' &&
-                    /^[a-z]:$/i.test(p[3])) {
-                    p[2] = '?';
-                }
-            }
-        }
-        this.debug(this.pattern, this.set);
-    }
-    // various transforms to equivalent pattern sets that are
-    // faster to process in a filesystem walk.  The goal is to
-    // eliminate what we can, and push all ** patterns as far
-    // to the right as possible, even if it increases the number
-    // of patterns that we have to process.
-    preprocess(globParts) {
-        // if we're not in globstar mode, then turn all ** into *
-        if (this.options.noglobstar) {
-            for (let i = 0; i < globParts.length; i++) {
-                for (let j = 0; j < globParts[i].length; j++) {
-                    if (globParts[i][j] === '**') {
-                        globParts[i][j] = '*';
-                    }
-                }
-            }
-        }
-        const { optimizationLevel = 1 } = this.options;
-        if (optimizationLevel >= 2) {
-            // aggressive optimization for the purpose of fs walking
-            globParts = this.firstPhasePreProcess(globParts);
-            globParts = this.secondPhasePreProcess(globParts);
-        }
-        else if (optimizationLevel >= 1) {
-            // just basic optimizations to remove some .. parts
-            globParts = this.levelOneOptimize(globParts);
-        }
-        else {
-            // just collapse multiple ** portions into one
-            globParts = this.adjascentGlobstarOptimize(globParts);
-        }
-        return globParts;
-    }
-    // just get rid of adjascent ** portions
-    adjascentGlobstarOptimize(globParts) {
-        return globParts.map(parts => {
-            let gs = -1;
-            while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
-                let i = gs;
-                while (parts[i + 1] === '**') {
-                    i++;
-                }
-                if (i !== gs) {
-                    parts.splice(gs, i - gs);
-                }
-            }
-            return parts;
-        });
-    }
-    // get rid of adjascent ** and resolve .. portions
-    levelOneOptimize(globParts) {
-        return globParts.map(parts => {
-            parts = parts.reduce((set, part) => {
-                const prev = set[set.length - 1];
-                if (part === '**' && prev === '**') {
-                    return set;
-                }
-                if (part === '..') {
-                    if (prev && prev !== '..' && prev !== '.' && prev !== '**') {
-                        set.pop();
-                        return set;
-                    }
-                }
-                set.push(part);
-                return set;
-            }, []);
-            return parts.length === 0 ? [''] : parts;
-        });
-    }
-    levelTwoFileOptimize(parts) {
-        if (!Array.isArray(parts)) {
-            parts = this.slashSplit(parts);
-        }
-        let didSomething = false;
-        do {
-            didSomething = false;
-            // <pre>/<e>/<rest> -> <pre>/<rest>
-            if (!this.preserveMultipleSlashes) {
-                for (let i = 1; i < parts.length - 1; i++) {
-                    const p = parts[i];
-                    // don't squeeze out UNC patterns
-                    if (i === 1 && p === '' && parts[0] === '')
-                        continue;
-                    if (p === '.' || p === '') {
-                        didSomething = true;
-                        parts.splice(i, 1);
-                        i--;
-                    }
-                }
-                if (parts[0] === '.' &&
-                    parts.length === 2 &&
-                    (parts[1] === '.' || parts[1] === '')) {
-                    didSomething = true;
-                    parts.pop();
-                }
-            }
-            // <pre>/<p>/../<rest> -> <pre>/<rest>
-            let dd = 0;
-            while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
-                const p = parts[dd - 1];
-                if (p && p !== '.' && p !== '..' && p !== '**') {
-                    didSomething = true;
-                    parts.splice(dd - 1, 2);
-                    dd -= 2;
-                }
-            }
-        } while (didSomething);
-        return parts.length === 0 ? [''] : parts;
-    }
-    // First phase: single-pattern processing
-    // <pre> is 1 or more portions
-    // <rest> is 1 or more portions
-    // <p> is any portion other than ., .., '', or **
-    // <e> is . or ''
-    //
-    // **/.. is *brutal* for filesystem walking performance, because
-    // it effectively resets the recursive walk each time it occurs,
-    // and ** cannot be reduced out by a .. pattern part like a regexp
-    // or most strings (other than .., ., and '') can be.
-    //
-    // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
-    // <pre>/<e>/<rest> -> <pre>/<rest>
-    // <pre>/<p>/../<rest> -> <pre>/<rest>
-    // **/**/<rest> -> **/<rest>
-    //
-    // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
-    // this WOULD be allowed if ** did follow symlinks, or * didn't
-    firstPhasePreProcess(globParts) {
-        let didSomething = false;
-        do {
-            didSomething = false;
-            // <pre>/**/../<p>/<p>/<rest> -> {<pre>/../<p>/<p>/<rest>,<pre>/**/<p>/<p>/<rest>}
-            for (let parts of globParts) {
-                let gs = -1;
-                while (-1 !== (gs = parts.indexOf('**', gs + 1))) {
-                    let gss = gs;
-                    while (parts[gss + 1] === '**') {
-                        // <pre>/**/**/<rest> -> <pre>/**/<rest>
-                        gss++;
-                    }
-                    // eg, if gs is 2 and gss is 4, that means we have 3 **
-                    // parts, and can remove 2 of them.
-                    if (gss > gs) {
-                        parts.splice(gs + 1, gss - gs);
-                    }
-                    let next = parts[gs + 1];
-                    const p = parts[gs + 2];
-                    const p2 = parts[gs + 3];
-                    if (next !== '..')
-                        continue;
-                    if (!p ||
-                        p === '.' ||
-                        p === '..' ||
-                        !p2 ||
-                        p2 === '.' ||
-                        p2 === '..') {
-                        continue;
-                    }
-                    didSomething = true;
-                    // edit parts in place, and push the new one
-                    parts.splice(gs, 1);
-                    const other = parts.slice(0);
-                    other[gs] = '**';
-                    globParts.push(other);
-                    gs--;
-                }
-                // <pre>/<e>/<rest> -> <pre>/<rest>
-                if (!this.preserveMultipleSlashes) {
-                    for (let i = 1; i < parts.length - 1; i++) {
-                        const p = parts[i];
-                        // don't squeeze out UNC patterns
-                        if (i === 1 && p === '' && parts[0] === '')
-                            continue;
-                        if (p === '.' || p === '') {
-                            didSomething = true;
-                            parts.splice(i, 1);
-                            i--;
-                        }
-                    }
-                    if (parts[0] === '.' &&
-                        parts.length === 2 &&
-                        (parts[1] === '.' || parts[1] === '')) {
-                        didSomething = true;
-                        parts.pop();
-                    }
-                }
-                // <pre>/<p>/../<rest> -> <pre>/<rest>
-                let dd = 0;
-                while (-1 !== (dd = parts.indexOf('..', dd + 1))) {
-                    const p = parts[dd - 1];
-                    if (p && p !== '.' && p !== '..' && p !== '**') {
-                        didSomething = true;
-                        const needDot = dd === 1 && parts[dd + 1] === '**';
-                        const splin = needDot ? ['.'] : [];
-                        parts.splice(dd - 1, 2, ...splin);
-                        if (parts.length === 0)
-                            parts.push('');
-                        dd -= 2;
-                    }
-                }
-            }
-        } while (didSomething);
-        return globParts;
-    }
-    // second phase: multi-pattern dedupes
-    // {<pre>/*/<rest>,<pre>/<p>/<rest>} -> <pre>/*/<rest>
-    // {<pre>/<rest>,<pre>/<rest>} -> <pre>/<rest>
-    // {<pre>/**/<rest>,<pre>/<rest>} -> <pre>/**/<rest>
-    //
-    // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
-    // ^-- not valid because ** doens't follow symlinks
-    secondPhasePreProcess(globParts) {
-        for (let i = 0; i < globParts.length - 1; i++) {
-            for (let j = i + 1; j < globParts.length; j++) {
-                const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
-                if (matched) {
-                    globParts[i] = [];
-                    globParts[j] = matched;
-                    break;
-                }
-            }
-        }
-        return globParts.filter(gs => gs.length);
-    }
-    partsMatch(a, b, emptyGSMatch = false) {
-        let ai = 0;
-        let bi = 0;
-        let result = [];
-        let which = '';
-        while (ai < a.length && bi < b.length) {
-            if (a[ai] === b[bi]) {
-                result.push(which === 'b' ? b[bi] : a[ai]);
-                ai++;
-                bi++;
-            }
-            else if (emptyGSMatch && a[ai] === '**' && b[bi] === a[ai + 1]) {
-                result.push(a[ai]);
-                ai++;
-            }
-            else if (emptyGSMatch && b[bi] === '**' && a[ai] === b[bi + 1]) {
-                result.push(b[bi]);
-                bi++;
-            }
-            else if (a[ai] === '*' &&
-                b[bi] &&
-                (this.options.dot || !b[bi].startsWith('.')) &&
-                b[bi] !== '**') {
-                if (which === 'b')
-                    return false;
-                which = 'a';
-                result.push(a[ai]);
-                ai++;
-                bi++;
-            }
-            else if (b[bi] === '*' &&
-                a[ai] &&
-                (this.options.dot || !a[ai].startsWith('.')) &&
-                a[ai] !== '**') {
-                if (which === 'a')
-                    return false;
-                which = 'b';
-                result.push(b[bi]);
-                ai++;
-                bi++;
-            }
-            else {
-                return false;
-            }
-        }
-        // if we fall out of the loop, it means they two are identical
-        // as long as their lengths match
-        return a.length === b.length && result;
-    }
-    parseNegate() {
-        if (this.nonegate)
-            return;
-        const pattern = this.pattern;
-        let negate = false;
-        let negateOffset = 0;
-        for (let i = 0; i < pattern.length && pattern.charAt(i) === '!'; i++) {
-            negate = !negate;
-            negateOffset++;
-        }
-        if (negateOffset)
-            this.pattern = pattern.slice(negateOffset);
-        this.negate = negate;
-    }
-    // set partial to true to test if, for example,
-    // "/a/b" matches the start of "/*/b/*/d"
-    // Partial means, if you run out of file before you run
-    // out of pattern, then that's fine, as long as all
-    // the parts match.
-    matchOne(file, pattern, partial = false) {
-        let fileStartIndex = 0;
-        let patternStartIndex = 0;
-        // UNC paths like //?/X:/... can match X:/... and vice versa
-        // Drive letters in absolute drive or unc paths are always compared
-        // case-insensitively.
-        if (this.isWindows) {
-            const fileDrive = typeof file[0] === 'string' && /^[a-z]:$/i.test(file[0]);
-            const fileUNC = !fileDrive &&
-                file[0] === '' &&
-                file[1] === '' &&
-                file[2] === '?' &&
-                /^[a-z]:$/i.test(file[3]);
-            const patternDrive = typeof pattern[0] === 'string' && /^[a-z]:$/i.test(pattern[0]);
-            const patternUNC = !patternDrive &&
-                pattern[0] === '' &&
-                pattern[1] === '' &&
-                pattern[2] === '?' &&
-                typeof pattern[3] === 'string' &&
-                /^[a-z]:$/i.test(pattern[3]);
-            const fdi = fileUNC ? 3 : fileDrive ? 0 : undefined;
-            const pdi = patternUNC ? 3 : patternDrive ? 0 : undefined;
-            if (typeof fdi === 'number' && typeof pdi === 'number') {
-                const [fd, pd] = [
-                    file[fdi],
-                    pattern[pdi],
-                ];
-                if (fd.toLowerCase() === pd.toLowerCase()) {
-                    pattern[pdi] = fd;
-                    patternStartIndex = pdi;
-                    fileStartIndex = fdi;
-                }
-            }
-        }
-        // resolve and reduce . and .. portions in the file as well.
-        // dont' need to do the second phase, because it's only one string[]
-        const { optimizationLevel = 1 } = this.options;
-        if (optimizationLevel >= 2) {
-            file = this.levelTwoFileOptimize(file);
-        }
-        if (pattern.includes(exports.GLOBSTAR)) {
-            return this.#matchGlobstar(file, pattern, partial, fileStartIndex, patternStartIndex);
-        }
-        return this.#matchOne(file, pattern, partial, fileStartIndex, patternStartIndex);
-    }
-    #matchGlobstar(file, pattern, partial, fileIndex, patternIndex) {
-        const firstgs = pattern.indexOf(exports.GLOBSTAR, patternIndex);
-        const lastgs = pattern.lastIndexOf(exports.GLOBSTAR);
-        const [head, body, tail] = partial ? [
-            pattern.slice(patternIndex, firstgs),
-            pattern.slice(firstgs + 1),
-            [],
-        ] : [
-            pattern.slice(patternIndex, firstgs),
-            pattern.slice(firstgs + 1, lastgs),
-            pattern.slice(lastgs + 1),
-        ];
-        if (head.length) {
-            const fileHead = file.slice(fileIndex, fileIndex + head.length);
-            if (!this.#matchOne(fileHead, head, partial, 0, 0))
-                return false;
-            fileIndex += head.length;
-        }
-        let fileTailMatch = 0;
-        if (tail.length) {
-            if (tail.length + fileIndex > file.length)
-                return false;
-            let tailStart = file.length - tail.length;
-            if (this.#matchOne(file, tail, partial, tailStart, 0)) {
-                fileTailMatch = tail.length;
-            }
-            else {
-                if (file[file.length - 1] !== '' ||
-                    fileIndex + tail.length === file.length) {
-                    return false;
-                }
-                tailStart--;
-                if (!this.#matchOne(file, tail, partial, tailStart, 0))
-                    return false;
-                fileTailMatch = tail.length + 1;
-            }
-        }
-        if (!body.length) {
-            let sawSome = !!fileTailMatch;
-            for (let i = fileIndex; i < file.length - fileTailMatch; i++) {
-                const f = String(file[i]);
-                sawSome = true;
-                if (f === '.' || f === '..' ||
-                    (!this.options.dot && f.startsWith('.'))) {
-                    return false;
-                }
-            }
-            return partial || sawSome;
-        }
-        const bodySegments = [[[], 0]];
-        let currentBody = bodySegments[0];
-        let nonGsParts = 0;
-        const nonGsPartsSums = [0];
-        for (const b of body) {
-            if (b === exports.GLOBSTAR) {
-                nonGsPartsSums.push(nonGsParts);
-                currentBody = [[], 0];
-                bodySegments.push(currentBody);
-            }
-            else {
-                currentBody[0].push(b);
-                nonGsParts++;
-            }
-        }
-        let i = bodySegments.length - 1;
-        const fileLength = file.length - fileTailMatch;
-        for (const b of bodySegments) {
-            b[1] = fileLength - (nonGsPartsSums[i--] + b[0].length);
-        }
-        return !!this.#matchGlobStarBodySections(file, bodySegments, fileIndex, 0, partial, 0, !!fileTailMatch);
-    }
-    #matchGlobStarBodySections(file, bodySegments, fileIndex, bodyIndex, partial, globStarDepth, sawTail) {
-        const bs = bodySegments[bodyIndex];
-        if (!bs) {
-            for (let i = fileIndex; i < file.length; i++) {
-                sawTail = true;
-                const f = file[i];
-                if (f === '.' || f === '..' ||
-                    (!this.options.dot && f.startsWith('.'))) {
-                    return false;
-                }
-            }
-            return sawTail;
-        }
-        const [body, after] = bs;
-        while (fileIndex <= after) {
-            const m = this.#matchOne(file.slice(0, fileIndex + body.length), body, partial, fileIndex, 0);
-            if (m && globStarDepth < this.maxGlobstarRecursion) {
-                const sub = this.#matchGlobStarBodySections(file, bodySegments, fileIndex + body.length, bodyIndex + 1, partial, globStarDepth + 1, sawTail);
-                if (sub !== false)
-                    return sub;
-            }
-            const f = file[fileIndex];
-            if (f === '.' || f === '..' ||
-                (!this.options.dot && f.startsWith('.'))) {
-                return false;
-            }
-            fileIndex++;
-        }
-        return partial || null;
-    }
-    #matchOne(file, pattern, partial, fileIndex, patternIndex) {
-        let fi;
-        let pi;
-        let pl;
-        let fl;
-        for (fi = fileIndex, pi = patternIndex,
-            fl = file.length, pl = pattern.length; fi < fl && pi < pl; fi++, pi++) {
-            this.debug('matchOne loop');
-            let p = pattern[pi];
-            let f = file[fi];
-            this.debug(pattern, p, f);
-            /* c8 ignore start */
-            if (p === false || p === exports.GLOBSTAR)
-                return false;
-            /* c8 ignore stop */
-            let hit;
-            if (typeof p === 'string') {
-                hit = f === p;
-                this.debug('string match', p, f, hit);
-            }
-            else {
-                hit = p.test(f);
-                this.debug('pattern match', p, f, hit);
-            }
-            if (!hit)
-                return false;
-        }
-        if (fi === fl && pi === pl) {
-            return true;
-        }
-        else if (fi === fl) {
-            return partial;
-        }
-        else if (pi === pl) {
-            return fi === fl - 1 && file[fi] === '';
-            /* c8 ignore start */
-        }
-        else {
-            throw new Error('wtf?');
-        }
-        /* c8 ignore stop */
-    }
-    braceExpand() {
-        return (0, exports.braceExpand)(this.pattern, this.options);
-    }
-    parse(pattern) {
-        (0, assert_valid_pattern_js_1.assertValidPattern)(pattern);
-        const options = this.options;
-        // shortcuts
-        if (pattern === '**')
-            return exports.GLOBSTAR;
-        if (pattern === '')
-            return '';
-        // far and away, the most common glob pattern parts are
-        // *, *.*, and *.<ext>  Add a fast check method for those.
-        let m;
-        let fastTest = null;
-        if ((m = pattern.match(starRE))) {
-            fastTest = options.dot ? starTestDot : starTest;
-        }
-        else if ((m = pattern.match(starDotExtRE))) {
-            fastTest = (options.nocase
-                ? options.dot
-                    ? starDotExtTestNocaseDot
-                    : starDotExtTestNocase
-                : options.dot
-                    ? starDotExtTestDot
-                    : starDotExtTest)(m[1]);
-        }
-        else if ((m = pattern.match(qmarksRE))) {
-            fastTest = (options.nocase
-                ? options.dot
-                    ? qmarksTestNocaseDot
-                    : qmarksTestNocase
-                : options.dot
-                    ? qmarksTestDot
-                    : qmarksTest)(m);
-        }
-        else if ((m = pattern.match(starDotStarRE))) {
-            fastTest = options.dot ? starDotStarTestDot : starDotStarTest;
-        }
-        else if ((m = pattern.match(dotStarRE))) {
-            fastTest = dotStarTest;
-        }
-        const re = ast_js_1.AST.fromGlob(pattern, this.options).toMMPattern();
-        if (fastTest && typeof re === 'object') {
-            // Avoids overriding in frozen environments
-            Reflect.defineProperty(re, 'test', { value: fastTest });
-        }
-        return re;
-    }
-    makeRe() {
-        if (this.regexp || this.regexp === false)
-            return this.regexp;
-        // at this point, this.set is a 2d array of partial
-        // pattern strings, or "**".
-        //
-        // It's better to use .match().  This function shouldn't
-        // be used, really, but it's pretty convenient sometimes,
-        // when you just want to work with a regex.
-        const set = this.set;
-        if (!set.length) {
-            this.regexp = false;
-            return this.regexp;
-        }
-        const options = this.options;
-        const twoStar = options.noglobstar
-            ? star
-            : options.dot
-                ? twoStarDot
-                : twoStarNoDot;
-        const flags = new Set(options.nocase ? ['i'] : []);
-        // regexpify non-globstar patterns
-        // if ** is only item, then we just do one twoStar
-        // if ** is first, and there are more, prepend (\/|twoStar\/)? to next
-        // if ** is last, append (\/twoStar|) to previous
-        // if ** is in the middle, append (\/|\/twoStar\/) to previous
-        // then filter out GLOBSTAR symbols
-        let re = set
-            .map(pattern => {
-            const pp = pattern.map(p => {
-                if (p instanceof RegExp) {
-                    for (const f of p.flags.split(''))
-                        flags.add(f);
-                }
-                return typeof p === 'string'
-                    ? regExpEscape(p)
-                    : p === exports.GLOBSTAR
-                        ? exports.GLOBSTAR
-                        : p._src;
-            });
-            pp.forEach((p, i) => {
-                const next = pp[i + 1];
-                const prev = pp[i - 1];
-                if (p !== exports.GLOBSTAR || prev === exports.GLOBSTAR) {
-                    return;
-                }
-                if (prev === undefined) {
-                    if (next !== undefined && next !== exports.GLOBSTAR) {
-                        pp[i + 1] = '(?:\\/|' + twoStar + '\\/)?' + next;
-                    }
-                    else {
-                        pp[i] = twoStar;
-                    }
-                }
-                else if (next === undefined) {
-                    pp[i - 1] = prev + '(?:\\/|' + twoStar + ')?';
-                }
-                else if (next !== exports.GLOBSTAR) {
-                    pp[i - 1] = prev + '(?:\\/|\\/' + twoStar + '\\/)' + next;
-                    pp[i + 1] = exports.GLOBSTAR;
-                }
-            });
-            return pp.filter(p => p !== exports.GLOBSTAR).join('/');
-        })
-            .join('|');
-        // need to wrap in parens if we had more than one thing with |,
-        // otherwise only the first will be anchored to ^ and the last to $
-        const [open, close] = set.length > 1 ? ['(?:', ')'] : ['', ''];
-        // must match entire pattern
-        // ending in a * or ** will make it less strict.
-        re = '^' + open + re + close + '$';
-        // can match anything, as long as it's not this.
-        if (this.negate)
-            re = '^(?!' + re + ').+$';
-        try {
-            this.regexp = new RegExp(re, [...flags].join(''));
-            /* c8 ignore start */
-        }
-        catch (ex) {
-            // should be impossible
-            this.regexp = false;
-        }
-        /* c8 ignore stop */
-        return this.regexp;
-    }
-    slashSplit(p) {
-        // if p starts with // on windows, we preserve that
-        // so that UNC paths aren't broken.  Otherwise, any number of
-        // / characters are coalesced into one, unless
-        // preserveMultipleSlashes is set to true.
-        if (this.preserveMultipleSlashes) {
-            return p.split('/');
-        }
-        else if (this.isWindows && /^\/\/[^\/]+/.test(p)) {
-            // add an extra '' for the one we lose
-            return ['', ...p.split(/\/+/)];
-        }
-        else {
-            return p.split(/\/+/);
-        }
-    }
-    match(f, partial = this.partial) {
-        this.debug('match', f, this.pattern);
-        // short-circuit in the case of busted things.
-        // comments, etc.
-        if (this.comment) {
-            return false;
-        }
-        if (this.empty) {
-            return f === '';
-        }
-        if (f === '/' && partial) {
-            return true;
-        }
-        const options = this.options;
-        // windows: need to use /, not \
-        if (this.isWindows) {
-            f = f.split('\\').join('/');
-        }
-        // treat the test path as a set of pathparts.
-        const ff = this.slashSplit(f);
-        this.debug(this.pattern, 'split', ff);
-        // just ONE of the pattern sets in this.set needs to match
-        // in order for it to be valid.  If negating, then just one
-        // match means that we have failed.
-        // Either way, return on the first hit.
-        const set = this.set;
-        this.debug(this.pattern, 'set', set);
-        // Find the basename of the path by looking for the last non-empty segment
-        let filename = ff[ff.length - 1];
-        if (!filename) {
-            for (let i = ff.length - 2; !filename && i >= 0; i--) {
-                filename = ff[i];
-            }
-        }
-        for (let i = 0; i < set.length; i++) {
-            const pattern = set[i];
-            let file = ff;
-            if (options.matchBase && pattern.length === 1) {
-                file = [filename];
-            }
-            const hit = this.matchOne(file, pattern, partial);
-            if (hit) {
-                if (options.flipNegate) {
-                    return true;
-                }
-                return !this.negate;
-            }
-        }
-        // didn't get any hits.  this is success if it's a negative
-        // pattern, failure otherwise.
-        if (options.flipNegate) {
-            return false;
-        }
-        return this.negate;
-    }
-    static defaults(def) {
-        return exports.minimatch.defaults(def).Minimatch;
-    }
-}
-exports.Minimatch = Minimatch;
-/* c8 ignore start */
-var ast_js_2 = __webpack_require__(31803);
-Object.defineProperty(exports, "AST", ({ enumerable: true, get: function () { return ast_js_2.AST; } }));
-var escape_js_2 = __webpack_require__(10800);
-Object.defineProperty(exports, "escape", ({ enumerable: true, get: function () { return escape_js_2.escape; } }));
-var unescape_js_2 = __webpack_require__(70851);
-Object.defineProperty(exports, "unescape", ({ enumerable: true, get: function () { return unescape_js_2.unescape; } }));
-/* c8 ignore stop */
-exports.minimatch.AST = ast_js_1.AST;
-exports.minimatch.Minimatch = Minimatch;
-exports.minimatch.escape = escape_js_1.escape;
-exports.minimatch.unescape = unescape_js_1.unescape;
-//# sourceMappingURL=index.js.map
-
-/***/ }),
-
-/***/ 70851:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.unescape = void 0;
-/**
- * Un-escape a string that has been escaped with {@link escape}.
- *
- * If the {@link windowsPathsNoEscape} option is used, then square-brace
- * escapes are removed, but not backslash escapes.  For example, it will turn
- * the string `'[*]'` into `*`, but it will not turn `'\\*'` into `'*'`,
- * becuase `\` is a path separator in `windowsPathsNoEscape` mode.
- *
- * When `windowsPathsNoEscape` is not set, then both brace escapes and
- * backslash escapes are removed.
- *
- * Slashes (and backslashes in `windowsPathsNoEscape` mode) cannot be escaped
- * or unescaped.
- */
-const unescape = (s, { windowsPathsNoEscape = false, } = {}) => {
-    return windowsPathsNoEscape
-        ? s.replace(/\[([^\/\\])\]/g, '$1')
-        : s.replace(/((?!\\).|^)\[([^\/\\])\]/g, '$1$2').replace(/\\([^\/])/g, '$1');
-};
-exports.unescape = unescape;
-//# sourceMappingURL=unescape.js.map
 
 /***/ }),
 
@@ -50902,6 +59278,76 @@ exports.PathScurry = process.platform === 'win32' ? PathScurryWin32
     : process.platform === 'darwin' ? PathScurryDarwin
         : PathScurryPosix;
 //# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ 35957:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(60470);
+var IsCallable = __webpack_require__(57187);
+var isObject = __webpack_require__(46229);
+var whichBuiltinType = __webpack_require__(45330);
+var $TypeError = __webpack_require__(73314);
+
+var gPO = __webpack_require__(81967);
+var $Object = __webpack_require__(95399);
+
+module.exports = function getPrototypeOf(O) {
+	if (!isObject(O)) {
+		throw new $TypeError('Reflect.getPrototypeOf called on non-object');
+	}
+
+	if (gPO) {
+		return gPO(O);
+	}
+
+	var type = whichBuiltinType(O);
+	if (type) {
+		var intrinsic = GetIntrinsic('%' + type + '.prototype%', true);
+		if (intrinsic) {
+			return intrinsic;
+		}
+	}
+	if (IsCallable(O.constructor)) {
+		return O.constructor.prototype;
+	}
+	if (O instanceof Object) {
+		return $Object.prototype;
+	}
+
+	/*
+	 * Correctly return null for Objects created with `Object.create(null)` (shammed or native) or `{ __proto__: null}`.  Also returns null for
+	 * cross-realm objects on browsers that lack `__proto__` support (like IE <11), but that's the best we can do.
+	 */
+	return null;
+};
+
+
+/***/ }),
+
+/***/ 31360:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(35957);
+
+var getProto = __webpack_require__(81967);
+
+module.exports = function getPolyfill() {
+	if (typeof Reflect === 'object' && Reflect && Reflect.getPrototypeOf) {
+		return Reflect.getPrototypeOf;
+	}
+	return getProto
+		? function getPrototypeOf(O) { return getProto(O); }
+		: implementation;
+};
+
 
 /***/ }),
 

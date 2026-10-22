@@ -4,12 +4,12 @@
 # it into proxy/requirements-lock.txt, and the Dockerfile installs from that lock
 # with --require-hashes.
 #
-# The base image is mitmproxy/mitmproxy:12.2.3, which already ships all of these.
+# The base image is mitmproxy/mitmproxy:12.3.0, which already ships all of these.
 # They are declared explicitly anyway so the lock pins and hash-verifies them
 # rather than silently inheriting whatever the base image happens to carry.
 #
-# IMPORTANT: the upper bounds mirror mitmproxy 12.2.3's own declared ranges
-# (cryptography <=48.1, pyOpenSSL <=27.0.0). Exceeding them installs a version
+# IMPORTANT: the upper bounds mirror mitmproxy 12.3.0's own declared ranges
+# (cryptography <=50.0.2, pyOpenSSL <=27.0.0). Exceeding them installs a version
 # mitmproxy itself cannot use and breaks the proxy at runtime. Raise these only
 # when the base image's mitmproxy version is bumped.
 
@@ -17,22 +17,17 @@ pyyaml>=6.0.3
 
 # Used by proxy/addon.py for server-certificate verification
 # (see _get_trust_store, _cert_dns_names, verify_server_cert).
-cryptography>=42.0,<49
-# <26.3 is the binding cap, tighter than mitmproxy's own <=27.0.0: pyOpenSSL
-# 26.3.0 requires cryptography>=49, which the line above forbids. Stating it
-# here makes the pair unsatisfiable at compile time instead of letting a lock
-# pin two versions that cannot be installed together.
-pyOpenSSL>=24.3,<26.3
+cryptography>=42.0,<=50.0.2
+pyOpenSSL>=24.3,<=27.0.0
 certifi>=2019.9.11
 
 # Pulled in transitively, capped here for the same reason: mitmproxy is absent
 # from this file (it comes from the base image), so the resolver cannot see its
-# ranges and floats transitives past them. mitmproxy 12.2.3 declares
-# typing-extensions<=4.14 on python<3.13; without this the image installs
-# 4.16.0 over the very mitmproxy that forbids it.
+# ranges and floats transitives past them. mitmproxy 12.3.0 declares
+# typing-extensions<=4.16.0 on python<3.13; without this the image could
+# install a newer release over the very mitmproxy that forbids it.
 #
 # Do not let Dependabot "permit the latest version" here (it did in #115, which
-# also rewrote the comment above to claim mitmproxy allows <=4.16.0 — it does
-# not). The bound is dictated by the base image, not by what the package has
-# released, so a bump is only correct when mitmproxy itself moves.
-typing-extensions<=4.14; python_version < "3.13"
+# also rewrote the comment above to misstate mitmproxy's range). The bound is dictated by the base
+# image, not by what the package has released, so a bump is only correct when mitmproxy itself moves.
+typing-extensions<=4.16.0; python_version < "3.13"

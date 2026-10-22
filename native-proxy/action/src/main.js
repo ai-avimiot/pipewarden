@@ -15,7 +15,7 @@ const nativeProxyDir = process.env.GITHUB_ACTION_PATH
 // Keep the default in lockstep with setup.sh (MITMPROXY_VERSION) and
 // proxy/Dockerfile.
 const MITMPROXY_VERSION =
-  process.env["INPUT_MITMPROXY-VERSION"] || process.env.INPUT_MITMPROXY_VERSION || "12.2.3";
+  process.env["INPUT_MITMPROXY-VERSION"] || process.env.INPUT_MITMPROXY_VERSION || "12.3.0";
 
 // Pip wheel cache shared with setup.sh's `pip install mitmproxy` (setup.sh
 // forwards it through sudo as PIP_CACHE_DIR). Caching wheels rather than

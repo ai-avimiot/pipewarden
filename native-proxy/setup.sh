@@ -176,7 +176,7 @@ echo "::endgroup::"
 # into the runner at job time. Keep this in lockstep with the proxy container
 # base image (proxy/Dockerfile: mitmproxy/mitmproxy:<version>). Overridable via
 # the mitmproxy-version input for testing against a newer release.
-MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.2.3}"
+MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.0}"
 echo "::group::PipeWarden: Install proxy"
 if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     echo "TLS interception disabled — skipping proxy install (no MITM will run)."

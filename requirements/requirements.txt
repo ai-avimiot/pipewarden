@@ -2,9 +2,9 @@ pytest>=9.1.1
 pytest-cov>=6.0.0
 hypothesis>=6.170.0
 pyyaml>=6.0.3
-mitmproxy>=12.2.3
-# <49: mitmproxy 12.2.3 caps cryptography<=48.1; raise when mitmproxy is bumped
-cryptography>=42.0,<49
+mitmproxy>=12.3.0
+# mitmproxy 12.3.0 caps cryptography<=50.0.2; raise when mitmproxy is bumped
+cryptography>=42.0,<=50.0.2
 dnspython>=2.9.0
 # Linting / type-checking (CI: see .github/workflows/test.yml)
 ruff>=0.17.1
