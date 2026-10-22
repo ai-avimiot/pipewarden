@@ -2,7 +2,7 @@
 # new image — a supply-chain risk). The tag is kept for readability; the digest
 # is authoritative. To refresh after a version bump (Dependabot also does this):
 #   docker buildx imagetools inspect mitmproxy/mitmproxy:<tag>
-FROM mitmproxy/mitmproxy:12.2.3@sha256:00b77b5d8804c8ad18cb6caefbf9d5849e895e8986c5ce011f4ae30f4385962f
+FROM mitmproxy/mitmproxy:12.3.0@sha256:c8a3753de11fd8266afeb103e163f7b7ac6a4a568a707fa2e15b23d20acf4eba
 
 USER root
 
