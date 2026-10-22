@@ -11,6 +11,9 @@ rules:
       domains:
         - "api.github.com"
         - "github.com"
+        # Runner fetches action tarballs from here when a step resolves an action
+        # mid-job (e.g. a local composite action's nested uses:).
+        - "codeload.github.com"
         - "*.githubusercontent.com"
       ports: [443]
       protocols: [https]
