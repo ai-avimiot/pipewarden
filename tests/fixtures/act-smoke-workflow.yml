@@ -1,0 +1,17 @@
+# Run by .github/workflows/demo-pipewarden-container.yml in workflow-file mode
+# with the default act runner image, which has no iproute2.
+name: act smoke
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allowed host is reachable through the proxy
+        run: curl -sS --max-time 20 -o /dev/null https://api.github.com/zen
+      - name: Non-allowlisted host is blocked
+        run: |
+          out=$(curl -sS --max-time 15 https://example.com/ 2>&1 || true)
+          case "$out" in
+            *"Example Domain"*) echo "LEAK: reached example.com"; exit 1 ;;
+          esac
+          echo "blocked as expected: ${out:0:120}"

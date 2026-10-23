@@ -40,7 +40,7 @@ class TestInjectInitStep:
         steps = result["jobs"]["build"]["steps"]
         assert steps[0]["uses"] == "actions/checkout@v4"
         assert steps[1]["name"] == "NFW: Setup monitoring"
-        assert "ip route" in steps[1]["run"]
+        assert "/proc/net/route" in steps[1]["run"]
         assert steps[2]["run"] == "echo hello"
 
     def test_injects_at_beginning_without_checkout(self, tmp_workflow, tmp_path):
@@ -107,10 +107,30 @@ class TestInjectInitStep:
         assert "ca.pem" in NFW_INIT_STEP["run"]
         assert "update-ca-certificates" in NFW_INIT_STEP["run"]
 
-    def test_init_step_has_route_switching(self):
-        assert "ip route del default" in NFW_INIT_STEP["run"]
-        assert "ip route add default" in NFW_INIT_STEP["run"]
-        assert "PROXY_GATEWAY" in NFW_INIT_STEP["run"]
+    def test_init_step_waits_for_external_route(self):
+        run = NFW_INIT_STEP["run"]
+        assert "PROXY_GATEWAY" in run
+        assert "/proc/net/route" in run
+        # The job may not change routes itself or need packages to do so.
+        assert "ip route" not in run
+        assert "apt-get" not in run
+
+    def test_init_step_gateway_check_matches_proc_format(self, tmp_path):
+        import subprocess
+
+        route = tmp_path / "route"
+        route.write_text(
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n"
+            "eth0\t00000000\t02001EAC\t0003\t0\t0\t0\t00000000\n"
+        )
+        script = NFW_INIT_STEP["run"].replace("/proc/net/route", str(route))
+        script = script.replace("seq 1 60", "seq 1 1")
+        ok = subprocess.run(["bash", "-c", script], env={"PROXY_GATEWAY": "172.30.0.2", "PATH": "/usr/bin:/bin"},
+                            capture_output=True, text=True)
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+        bad = subprocess.run(["bash", "-c", script], env={"PROXY_GATEWAY": "172.30.0.9", "PATH": "/usr/bin:/bin"},
+                             capture_output=True, text=True)
+        assert bad.returncode == 1
 
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
