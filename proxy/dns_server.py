@@ -93,6 +93,8 @@ def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
 
         if (length & 0xC0) == 0xC0:
             # Compression pointer
+            if offset + 2 > len(data):
+                raise ValueError("truncated compression pointer")
             if not jumped:
                 original_offset = offset + 2
             pointer = struct.unpack("!H", data[offset:offset + 2])[0] & 0x3FFF
@@ -266,7 +268,11 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
     This prevents DNS exfiltration in enforce mode while still providing
     full visibility in monitor mode.
     """
-    _, qname, qtype = parse_dns_query(data)
+    try:
+        _, qname, qtype = parse_dns_query(data)
+    except (ValueError, struct.error):
+        sock.sendto(_make_formerr(data), addr)
+        return
     if not qname:
         return
 
@@ -302,7 +308,10 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
         return
 
     # Parse resolved IPs and update the map
-    resolved_ips = parse_dns_response(response)
+    try:
+        resolved_ips = parse_dns_response(response)
+    except (ValueError, struct.error):
+        resolved_ips = []
     for ip in resolved_ips:
         _remember_ip(ip, qname)
 
@@ -311,6 +320,12 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
 
     log_dns_query(qname, qtype, resolved_ips, status)
     sock.sendto(response, addr)
+
+
+def _make_formerr(query: bytes) -> bytes:
+    """Header-only FORMERR reply echoing the query's transaction ID."""
+    txn = query[:2].ljust(2, b"\x00")
+    return txn + b"\x81\x81" + b"\x00" * 8
 
 
 def _make_nxdomain(query: bytes) -> bytes:

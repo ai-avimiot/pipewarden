@@ -52,15 +52,51 @@ def _md(value) -> str:
     return s
 
 
+_SAFE_POLICY_HOST = re.compile(r"(?:\*\.)?[A-Za-z0-9_](?:[A-Za-z0-9_.:-]{0,252})")
+
+
+def _comment_text(value) -> str:
+    """Single-line, printable text for a YAML comment (rDNS/owner are external data)."""
+    return "".join(ch for ch in str(value) if ch.isprintable())[:120]
+
+
 def read_jsonl(input_path: str) -> list[dict]:
     """Read a JSONL file and return a list of connection dicts."""
+    return read_jsonl_counted(input_path)[0]
+
+
+def read_jsonl_counted(input_path: str) -> tuple[list[dict], int]:
+    """Read a JSONL file; return (connection dicts, number of malformed lines skipped).
+
+    The log is writable by the job, so one garbage line must not abort the
+    report — a missing report.json used to read as "nothing blocked".
+    """
     connections: list[dict] = []
-    with open(input_path, "r") as f:
+    malformed = 0
+    with open(input_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
-            if line:
-                connections.append(json.loads(line))
-    return connections
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                malformed += 1
+                continue
+            if not _well_formed(entry):
+                malformed += 1
+                continue
+            connections.append(entry)
+    return connections, malformed
+
+
+def _well_formed(entry) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if not isinstance(entry.get("host", ""), str):
+        return False
+    port = entry.get("port", 0)
+    return isinstance(port, int) and not isinstance(port, bool)
 
 
 def _attribution_hint(mode: str | None) -> str:
@@ -467,6 +503,12 @@ def format_summary(report: dict) -> str:
         f"DNS queries:         {report.get('dns_queries', 0)}",
         "",
     ]
+    if report.get("malformed_log_lines"):
+        lines.append(
+            f"WARNING: {report['malformed_log_lines']} malformed line(s) in the connection "
+            "log were skipped — the log may have been tampered with."
+        )
+        lines.append("")
     pinned = report.get("tls_pinned", {})
     if pinned.get("count"):
         lines.append(
@@ -691,6 +733,12 @@ def format_markdown_summary(report: dict) -> str:
         f"| DNS queries | {report.get('dns_queries', 0)} |",
         "",
     ]
+    if report.get("malformed_log_lines"):
+        lines.append(
+            f"> \u26a0\ufe0f **{report['malformed_log_lines']} malformed line(s)** in the "
+            "connection log were skipped — the log may have been tampered with."
+        )
+        lines.append("")
 
     pinned = report.get("tls_pinned", {})
     if pinned.get("count"):
@@ -951,6 +999,11 @@ def generate_complete_policy_yaml(report: dict) -> str:
         proto = dest.get("protocol", "https")
         if not host or proto == "dns":
             continue
+        # Hosts come from the job's own traffic: only plain hostnames/IPs may
+        # become YAML, or a crafted name could inject an extra allow rule.
+        if not _SAFE_POLICY_HOST.fullmatch(host) or not isinstance(port, int) \
+                or not re.fullmatch(r"[a-z0-9]{1,16}", str(proto)):
+            continue
 
         # Build a short, valid rule name from the host
         rule_name = host.lstrip("*.")
@@ -959,7 +1012,7 @@ def generate_complete_policy_yaml(report: dict) -> str:
 
         ip_info = dest.get("ip_info", {})
         owner = ip_info.get("owner", "")
-        comment = f"  # {owner}" if owner else ""
+        comment = f"  # {_comment_text(owner)}" if owner else ""
 
         lines.append(f'  - name: "{rule_name}"{comment}')
         lines.append("    allow:")
@@ -1000,8 +1053,9 @@ def generate_report(input_path: str, output_dir: str,
     always the one that was asked for — setup downgrades to ``client`` when the
     helper cannot start. Returns the report dict.
     """
-    connections = read_jsonl(input_path)
+    connections, malformed = read_jsonl_counted(input_path)
     report = build_report(connections)
+    report["malformed_log_lines"] = malformed
     _enrich_destinations(report)
     if attribution_mode:
         report["attribution"]["mode"] = attribution_mode

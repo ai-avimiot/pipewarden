@@ -20,7 +20,10 @@ RUN apt-get update -qq \
          echo "WARNING: proxy/requirements-lock.txt has no pinned packages." \
               "Run ./scripts/update-lock-files.sh to enable hash verification."; \
          pip install --no-cache-dir -r /proxy-requirements.txt; \
-       fi
+       fi \
+    && pip check \
+    && pip uninstall -y -q pip \
+    && rm -rf /usr/local/lib/python3*/ensurepip/_bundled
 
 # Bake the policy Python package (changes less often)
 COPY policy/ /policy/

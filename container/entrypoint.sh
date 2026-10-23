@@ -56,6 +56,7 @@ fi
 NETWORK_NAME="cicd-monitor-net"
 PROXY_CONTAINER="cicd-proxy"
 PIPELINE_CONTAINER="cicd-pipeline"
+NETNS_CONTAINER="cicd-pipeline-netns"
 CA_DIR="/tmp/ca"
 LOG_DIR="/tmp/monitor-logs"
 REPORT_DIR="/tmp/report"
@@ -68,6 +69,7 @@ cleanup() {
     echo "Cleaning up containers and network..."
     docker rm -f "${PROXY_CONTAINER}" 2>/dev/null || true
     docker rm -f "${PIPELINE_CONTAINER}" 2>/dev/null || true
+    docker rm -f "${NETNS_CONTAINER}" 2>/dev/null || true
     docker network rm "${NETWORK_NAME}" 2>/dev/null || true
     echo "Cleanup complete."
     echo "::endgroup::"
@@ -83,12 +85,15 @@ echo "::group::Setup (CA + network + proxy pull)"
 python3 scripts/generate_ca.py --out "${CA_DIR}" &
 PID_CA=$!
 
-docker network create --subnet=172.30.0.0/16 "${NETWORK_NAME}" &
+# --internal: the only way off this network is through the dual-homed proxy, so
+# a workload that rewrites its own default route reaches nothing.
+docker network create --internal --subnet=172.30.0.0/16 "${NETWORK_NAME}" &
 PID_NET=$!
 
 PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE:-${NFW_PROXY_IMAGE:-}}"
 if [ -n "${PROXY_IMAGE}" ]; then
-    docker pull "${PROXY_IMAGE}" &
+    # A locally built image (CI testing a PR) has no registry to pull from.
+    { docker image inspect "${PROXY_IMAGE}" > /dev/null 2>&1 || docker pull "${PROXY_IMAGE}"; } &
     PID_PULL=$!
 fi
 
@@ -120,10 +125,11 @@ echo "::group::Start proxy"
 
 PROXY_IP="172.30.0.2"
 
+# Created on the default bridge (its egress), then attached to the monitored
+# network as the gateway.
 PROXY_RUN_ARGS=(
-    -d --name "${PROXY_CONTAINER}"
-    --network "${NETWORK_NAME}"
-    --ip "${PROXY_IP}"
+    --name "${PROXY_CONTAINER}"
+    --network bridge
     --cap-add NET_ADMIN
     --sysctl net.ipv4.ip_forward=1
     -v "${CA_DIR}:/ca"
@@ -132,7 +138,9 @@ PROXY_RUN_ARGS=(
 if [ "${POLICY_FILE_EXISTS}" = "true" ]; then
     PROXY_RUN_ARGS+=(-v "$(realpath "${POLICY_FILE}"):/policy.yml")
 fi
-docker run "${PROXY_RUN_ARGS[@]}" "${PROXY_IMAGE}"
+docker create "${PROXY_RUN_ARGS[@]}" "${PROXY_IMAGE}" > /dev/null
+docker network connect --ip "${PROXY_IP}" "${NETWORK_NAME}" "${PROXY_CONTAINER}"
+docker start "${PROXY_CONTAINER}" > /dev/null
 
 # Wait for mitmproxy to be listening on port 8080 (fast readiness check)
 echo "Waiting for proxy to be ready..."
@@ -198,16 +206,30 @@ else
     # --- Pipeline-command mode: run directly in a container ---
     PIPELINE_IP="172.30.0.3"
 
-    docker run --name "${PIPELINE_CONTAINER}" \
+    # The route through the proxy is set from outside, in a namespace the
+    # pipeline then joins: the pipeline itself never gets NET_ADMIN to undo it.
+    docker run -d --name "${NETNS_CONTAINER}" \
         --network "${NETWORK_NAME}" \
         --ip "${PIPELINE_IP}" \
-        --cap-add NET_ADMIN \
         --dns "${PROXY_IP}" \
+        --entrypoint sleep "${PROXY_IMAGE}" infinity > /dev/null
+    docker run --rm --network "container:${NETNS_CONTAINER}" --cap-add NET_ADMIN \
+        --entrypoint ip "${PROXY_IMAGE}" route replace default via "${PROXY_IP}"
+
+    # Every TLS connection is intercepted, so the per-run CA is the only root needed.
+    docker run --name "${PIPELINE_CONTAINER}" \
+        --network "container:${NETNS_CONTAINER}" \
         -v "${WORKSPACE_DIR}:/workspace" \
         -v "${CA_DIR}/ca.pem:/ca/ca.pem:ro" \
         -w /workspace \
         -e CI=true \
-        -e PROXY_GATEWAY="${PROXY_IP}" \
+        -e SSL_CERT_FILE=/ca/ca.pem \
+        -e CURL_CA_BUNDLE=/ca/ca.pem \
+        -e REQUESTS_CA_BUNDLE=/ca/ca.pem \
+        -e NODE_EXTRA_CA_CERTS=/ca/ca.pem \
+        -e NPM_CONFIG_CAFILE=/ca/ca.pem \
+        -e PIP_CERT=/ca/ca.pem \
+        -e GIT_SSL_CAINFO=/ca/ca.pem \
         ubuntu:22.04 \
         bash -c "${PIPELINE_CMD}"
     PIPELINE_EXIT=$?

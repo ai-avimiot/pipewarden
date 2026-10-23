@@ -1,6 +1,8 @@
 """Policy matching engine for PipeWarden."""
 
 import fnmatch
+import re
+from urllib.parse import unquote
 
 from policy.models import ConnectionEntry, PolicyRule
 
@@ -133,4 +135,42 @@ class PolicyEngine:
         """
         if not patterns:
             return True
-        return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+        normalised = _normalise_path(path)
+        if normalised is None:
+            return False
+        return any(fnmatch.fnmatchcase(normalised, pattern) for pattern in patterns)
+
+
+# After one percent-decode: an encoded separator or dot is read differently by
+# different servers, so a path that still carries one cannot be matched safely.
+_AMBIGUOUS_PATH = re.compile(r"%(?:2[ef]|5c)|\\", re.IGNORECASE)
+
+
+def _normalise_path(path: str) -> str | None:
+    """Percent-decode *path* and resolve dot-segments (RFC 3986 5.2.4).
+
+    Returns None for a path no rule should match: one that climbs above the
+    root, or whose meaning depends on how the server decodes it.
+    """
+    if _AMBIGUOUS_PATH.search(path):
+        return None
+    decoded = unquote(path)
+    if _AMBIGUOUS_PATH.search(decoded):
+        return None
+    out: list[str] = []
+    segments = decoded.split("/")
+    for i, seg in enumerate(segments):
+        last = i == len(segments) - 1
+        if seg == ".":
+            if last:
+                out.append("")
+            continue
+        if seg == "..":
+            if len(out) <= 1:
+                return None
+            out.pop()
+            if last:
+                out.append("")
+            continue
+        out.append(seg)
+    return "/".join(out)

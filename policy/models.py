@@ -31,12 +31,15 @@ class ConnectionEntry:
     # attribution.Attribution: the self-reported client, and — when the
     # privileged helper is running — the process behind it.
     attribution: dict = field(default_factory=dict)
+    # Why a policy-allowed destination was nonetheless blocked (e.g. Host/SNI mismatch).
+    block_reason: str = ""
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary, omitting empty TLS fields."""
         d = asdict(self)
         # Drop empty TLS fields to keep logs compact for non-TLS connections
-        for key in ("tls_sni", "tls_cert_issuer", "tls_cert_error", "server_ip"):
+        for key in ("tls_sni", "tls_cert_issuer", "tls_cert_error", "server_ip",
+                    "block_reason"):
             if not d.get(key):
                 del d[key]
         if d.get("tls_cert_valid") is True:
@@ -66,6 +69,7 @@ class ConnectionEntry:
             server_ip=data.get("server_ip", ""),
             exfil_findings=data.get("exfil_findings", []),
             attribution=data.get("attribution", {}),
+            block_reason=data.get("block_reason", ""),
         )
 
 

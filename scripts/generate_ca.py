@@ -29,7 +29,9 @@ def generate_ca(out_dir: str) -> tuple[str, str]:
                 "-newkey", "rsa:2048",
                 "-keyout", key_path,
                 "-out", cert_path,
-                "-days", "365",
+                # A per-job CA; short-lived so one left trusted by a skipped
+                # teardown (killed self-hosted job) expires on its own.
+                "-days", "7",
                 "-subj", "/CN=CI\\/CD Network Monitor CA/O=pipewarden",
                 "-addext", "basicConstraints=critical,CA:TRUE",
                 "-addext", "keyUsage=critical,keyCertSign,cRLSign,digitalSignature",

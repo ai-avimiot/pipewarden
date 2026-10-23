@@ -12,6 +12,13 @@ set -euo pipefail
 # Raw policy-file input. Empty ("") means auto-resolve (common + per-pipeline).
 POLICY_FILE_INPUT="${INPUT_POLICY_FILE:-}"
 MODE="${INPUT_MODE:-enforce}"
+case "${MODE}" in
+    monitor|enforce) ;;
+    *)
+        echo "ERROR: mode must be monitor or enforce — got '${MODE}'" >&2
+        exit 1
+        ;;
+esac
 # Enforce mode: fail the job when a connection was blocked (default), unless the
 # caller opts out to block-but-continue. Consumed by teardown.
 FAIL_ON_BLOCK="${INPUT_FAIL_ON_BLOCK:-true}"
@@ -117,6 +124,8 @@ rollback_on_failure() {
         # break every later step on the runner, not just PipeWarden's own.
         sudo iptables -D OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
         sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+        sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+        sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
     fi
     if [ "${FORWARD_LOG_INSTALLED}" = "true" ]; then
         sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || true
@@ -125,6 +134,8 @@ rollback_on_failure() {
         sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true
         sudo ip6tables -D OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
         sudo ip6tables -D OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
     fi
     sudo pkill -f "proxy/dns_server.py" 2>/dev/null || true
     sudo pkill -f "mitmdump" 2>/dev/null || true
@@ -168,6 +179,25 @@ cat /tmp/pw-resolve.log || true
 PIPELINE_POLICY_PATH="$(python3 -c "import os, sys; sys.path.insert(0, '${PROJECT_ROOT}'); from scripts.resolve_policy import workflow_stem, pipeline_policy_name, PIPEWARDEN_DIR; s = workflow_stem(os.environ.get('GITHUB_WORKFLOW_REF', '')); print(os.path.join(PIPEWARDEN_DIR, pipeline_policy_name(s)) if s else os.path.join(PIPEWARDEN_DIR, 'network-policy.yml'))" 2>/dev/null || echo "")"
 echo "Effective policy: ${POLICY_FILE:-<discovery mode>}"
 echo "::endgroup::"
+
+# ---------------------------------------------------------------------------
+# 0b. Root-owned runtime copy
+# ---------------------------------------------------------------------------
+# The action checkout belongs to the runner user, and mitmproxy hot-reloads -s
+# scripts: a later step could delete or swap addon.py (or the policy) and the
+# running proxy would follow. Everything the proxy, DNS server and root helper
+# load comes from here instead.
+RUNTIME_ROOT="/opt/pipewarden"
+sudo rm -rf "${RUNTIME_ROOT}"
+sudo mkdir -p "${RUNTIME_ROOT}/native-proxy" "${RUNTIME_ROOT}/run"
+sudo cp -R "${PROJECT_ROOT}/proxy" "${PROJECT_ROOT}/policy" "${PROJECT_ROOT}/scripts" "${RUNTIME_ROOT}/"
+sudo cp "${PROJECT_ROOT}"/native-proxy/*.py "${RUNTIME_ROOT}/native-proxy/"
+if [ -n "${POLICY_FILE}" ]; then
+    sudo cp "$(realpath "${POLICY_FILE}")" "${RUNTIME_ROOT}/policy.yml"
+    POLICY_FILE="${RUNTIME_ROOT}/policy.yml"
+fi
+sudo chown -R root:root "${RUNTIME_ROOT}"
+sudo chmod -R u=rwX,go=rX "${RUNTIME_ROOT}"
 
 # ---------------------------------------------------------------------------
 # 1. Install mitmproxy (the proven proxy engine)
@@ -344,7 +374,7 @@ if [ "${ATTRIBUTION_MODE}" = "process" ]; then
         echo "Warning: attribution-cmdline=true but no watched-secrets file — command lines will NOT be recorded."
     fi
 
-    nohup sudo python3 "${PROJECT_ROOT}/scripts/attribution_helper.py" \
+    nohup sudo python3 "${RUNTIME_ROOT}/scripts/attribution_helper.py" \
         "${ATTRIBUTION_ARGS[@]}" \
         > "${LOG_DIR}/attribution.log" 2>&1 &
     echo "$!" > "${ATTRIBUTION_PID_FILE}"
@@ -408,19 +438,9 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     cat "${CA_DIR}/ca-key.pem" "${CA_DIR}/ca.pem" \
         | sudo tee /home/pipewardenuser/.mitmproxy/mitmproxy-ca.pem > /dev/null
     sudo chown -R pipewardenuser:pipewardenuser /home/pipewardenuser/.mitmproxy
-
-    # Ensure addon.py and the policy package it imports are readable.
-    # addon.py does `from policy.matcher import ...` — if policy/ is not
-    # readable by pipewardenuser the addon fails to load and mitmproxy
-    # records nothing.
-    sudo chmod -R o+rX "${PROJECT_ROOT}/proxy" 2>/dev/null || true
-    sudo chmod -R o+rX "${PROJECT_ROOT}/policy" 2>/dev/null || true
-    sudo chmod o+r "$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" 2>/dev/null || true
-    CURRENT_DIR="${PROJECT_ROOT}"
-    while [ "${CURRENT_DIR}" != "/" ]; do
-        sudo chmod o+rx "${CURRENT_DIR}" 2>/dev/null || true
-        CURRENT_DIR="$(dirname "${CURRENT_DIR}")"
-    done
+    sudo chmod 700 /home/pipewardenuser/.mitmproxy
+    # Only the proxy needs the signing key; any later step could read this copy.
+    rm -f "${CA_DIR}/ca-key.pem"
 
     if [ "${WATCH_SECRETS_WRITTEN}" = "true" ]; then
         sudo chown pipewardenuser "${WATCH_SECRETS_FILE}" 2>/dev/null || true
@@ -434,13 +454,14 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
             EXFIL_SECRETS_FILE="${WATCH_SECRETS_FILE}" \
             ATTRIBUTION_MODE="${ATTRIBUTION_MODE}" \
             ATTRIBUTION_SOCKET="${ATTRIBUTION_SOCKET}" \
+            DNS_IP_MAP_PATH="${RUNTIME_ROOT}/run/dns_ip_map.json" \
         "${MITMDUMP_PATH}" \
         --mode transparent \
         --listen-host 0.0.0.0 \
         --listen-port "${PROXY_PORT}" \
         --ssl-insecure \
         --showhost \
-        -s "${PROJECT_ROOT}/proxy/addon.py" \
+        -s "${RUNTIME_ROOT}/proxy/addon.py" \
         --set confdir="/home/pipewardenuser/.mitmproxy" \
         > "${LOG_DIR}/proxy.log" 2>&1 &
     PROXY_PID=$!
@@ -456,13 +477,14 @@ else
     LOG_PATH="${LOG_DIR}/connections.jsonl" \
     ATTRIBUTION_MODE="${ATTRIBUTION_MODE}" \
     ATTRIBUTION_SOCKET="${ATTRIBUTION_SOCKET}" \
+    DNS_IP_MAP_PATH="${RUNTIME_ROOT}/run/dns_ip_map.json" \
     nohup mitmdump \
         --mode regular \
         --listen-host 127.0.0.1 \
         --listen-port "${PROXY_PORT}" \
         --ssl-insecure \
         --showhost \
-        -s "${PROJECT_ROOT}/proxy/addon.py" \
+        -s "${RUNTIME_ROOT}/proxy/addon.py" \
         --set confdir="$HOME/.mitmproxy" \
         > "${LOG_DIR}/proxy.log" 2>&1 &
     PROXY_PID=$!
@@ -558,6 +580,22 @@ if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     if command -v ip6tables &>/dev/null; then
         sudo ip6tables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null \
             && IP6TABLES_INSTALLED="true" || true
+    fi
+    # Without these, DNS-layer enforcement is advisory: a step can query an
+    # external resolver (or DoT) directly and never meet the interceptor.
+    if [ "${MODE}" = "enforce" ]; then
+        if [ "${ENABLE_DNS}" = "true" ]; then
+            sudo iptables -A OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+            sudo iptables -A OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+            sudo iptables -A OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+            sudo iptables -A OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+            IPTABLES_INSTALLED="true"
+            if [ "${IP6TABLES_INSTALLED}" = "true" ]; then
+                sudo ip6tables -A OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+                sudo ip6tables -A OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+            fi
+            echo "Enforce: blocked direct DNS and DoT (queries must go through the interceptor)"
+        fi
     fi
     echo "::endgroup::"
 elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
@@ -675,8 +713,8 @@ if [ "${ENABLE_DNS}" = "true" ]; then
         POLICY_FILE="$(realpath "${POLICY_FILE}" 2>/dev/null || echo "${POLICY_FILE}")" \
         MODE="${MODE}" \
         LOG_PATH="${LOG_DIR}/connections.jsonl" \
-        DNS_IP_MAP_PATH="${LOG_DIR}/dns_ip_map.json" \
-        python3 "${PROJECT_ROOT}/proxy/dns_server.py" \
+        DNS_IP_MAP_PATH="${RUNTIME_ROOT}/run/dns_ip_map.json" \
+        python3 "${RUNTIME_ROOT}/proxy/dns_server.py" \
         > "${LOG_DIR}/dns.log" 2>&1 &
     DNS_PID=$!
 

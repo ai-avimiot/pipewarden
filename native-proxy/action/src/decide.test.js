@@ -12,6 +12,9 @@ const cases = [
   ["enforce + blocked + 'true' -> fail", { blockedCount: 1, mode: "enforce", failOnBlock: "true" }, true],
   ["enforce + zero blocked -> pass", { blockedCount: 0, mode: "enforce", failOnBlock: "true" }, false],
   ["monitor + blocked -> never fail", { blockedCount: 9, mode: "monitor", failOnBlock: "true" }, false],
+  ["enforce + unverified + zero blocked -> fail", { blockedCount: 0, mode: "enforce", failOnBlock: "true", unverified: true }, true],
+  ["enforce + unverified + fail-on-block false -> continue", { blockedCount: 0, mode: "enforce", failOnBlock: "false", unverified: true }, false],
+  ["monitor + unverified -> never fail", { blockedCount: 0, mode: "monitor", failOnBlock: "true", unverified: true }, false],
 ];
 
 let failures = 0;
