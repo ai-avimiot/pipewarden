@@ -180,7 +180,7 @@ if [ "${USE_ACT}" = "true" ]; then
     # proxy from outside as it starts: the job then needs neither NET_ADMIN
     # nor iproute2 (which it could not install before it has a route).
     PROXY_ID="$(docker inspect -f '{{.Id}}' "${PROXY_CONTAINER}")"
-    docker events --filter type=container --filter event=start --format '{{.ID}}' |
+    docker events --filter type=container --filter event=start --format '{{.Actor.ID}}' |
         while read -r cid; do
             [ "${cid}" = "${PROXY_ID}" ] && continue
             nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "${cid}" 2>/dev/null || true)"
