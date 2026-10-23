@@ -39,6 +39,25 @@ def load_connections(report_path: str) -> list[dict]:
     return [c for c in conns if isinstance(c, dict)]
 
 
+def _direct_to_ip(conn: dict) -> bool:
+    """Was *conn* addressed to an IP rather than a name?
+
+    Discriminates a direct-to-IP request from the hostname control case, which
+    otherwise satisfies a port+protocol match and keeps the suite green even if
+    direct-to-IP interception broke. The proxy maps such a request back to the
+    name the DNS interceptor saw resolve to that IP, so a literal IP host is not
+    the only signature: HTTPS without SNI is, since clients send none for an IP.
+    """
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(str(conn.get("host", "")))
+        return True
+    except ValueError:
+        pass
+    return conn.get("protocol") == "https" and not conn.get("tls_sni")
+
+
 def matches(conn: dict, case: dict) -> bool:
     """Does *conn* satisfy the identifying fields of *case*?
 
@@ -46,18 +65,8 @@ def matches(conn: dict, case: dict) -> bool:
     case can be as loose as "anything on port 853" or as tight as a hostname
     plus protocol.
     """
-    if case.get("host_is_ip"):
-        # Discriminates a direct-to-IP request from the control case: a
-        # connection made without DNS records the literal IP as its host,
-        # while the hostname-based control never does. Matching on
-        # port+protocol alone let the control satisfy this case, so the suite
-        # stayed green even if direct-to-IP interception broke.
-        import ipaddress
-
-        try:
-            ipaddress.ip_address(str(conn.get("host", "")))
-        except ValueError:
-            return False
+    if case.get("host_is_ip") and not _direct_to_ip(conn):
+        return False
     host = case.get("host")
     if host:
         haystack = " ".join(

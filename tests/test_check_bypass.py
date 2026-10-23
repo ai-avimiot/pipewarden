@@ -223,11 +223,15 @@ class TestHostIsIp:
     def test_matches_only_ip_hosts(self):
         case = {"port": 443, "protocol": "https", "host_is_ip": True}
         assert matches(_conn(host="140.82.121.6"), case)
-        assert not matches(_conn(host="api.github.com"), case)
+        assert not matches(_conn(host="api.github.com", tls_sni="api.github.com"), case)
+
+    def test_ip_mapped_back_to_a_name_still_counts(self):
+        case = {"port": 443, "protocol": "https", "host_is_ip": True}
+        assert matches(_conn(host="api.github.com", tls_sni="", server_ip="140.82.121.6"), case)
 
     def test_control_case_cannot_satisfy_it(self):
         results = evaluate(
-            [_conn(host="api.github.com")],
+            [_conn(host="api.github.com", tls_sni="api.github.com")],
             [{"name": "direct-ip", "port": 443, "protocol": "https",
               "host_is_ip": True, "expect": "observed"}],
         )
