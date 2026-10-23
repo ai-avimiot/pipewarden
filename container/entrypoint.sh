@@ -174,6 +174,7 @@ WORKSPACE_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
 if [ "${USE_ACT}" = "true" ]; then
     # --- Act mode: run workflow natively via nektos/act ---
     CONTAINER_OPTS="--dns ${PROXY_IP}"
+    CONTAINER_OPTS="${CONTAINER_OPTS} --cap-drop=NET_RAW"
     CONTAINER_OPTS="${CONTAINER_OPTS} -v ${CA_DIR}/ca.pem:/ca/ca.pem:ro"
 
     # act creates the job containers itself, so route each one through the
@@ -196,6 +197,7 @@ if [ "${USE_ACT}" = "true" ]; then
         -W "${MODIFIED_WORKFLOW}" \
         --network "${NETWORK_NAME}" \
         --container-options "${CONTAINER_OPTS}" \
+        --container-daemon-socket - \
         -b \
         -C "${WORKSPACE_DIR}" \
         --action-cache-path "${ACT_CACHE}" \
@@ -228,13 +230,18 @@ else
         --network "${NETWORK_NAME}" \
         --ip "${PIPELINE_IP}" \
         --dns "${PROXY_IP}" \
+        --security-opt no-new-privileges \
         --entrypoint sleep "${PROXY_IMAGE}" infinity > /dev/null
     docker run --rm --network "container:${NETNS_CONTAINER}" --cap-add NET_ADMIN \
         --entrypoint ip "${PROXY_IMAGE}" route replace default via "${PROXY_IP}"
 
     # Every TLS connection is intercepted, so the per-run CA is the only root needed.
+    # Not --cap-drop ALL: apt-get as root still needs CHOWN, SETUID and friends.
     docker run --name "${PIPELINE_CONTAINER}" \
         --network "container:${NETNS_CONTAINER}" \
+        --security-opt no-new-privileges \
+        --cap-drop NET_RAW \
+        --cap-drop NET_ADMIN \
         -v "${WORKSPACE_DIR}:/workspace" \
         -v "${CA_DIR}/ca.pem:/ca/ca.pem:ro" \
         -w /workspace \

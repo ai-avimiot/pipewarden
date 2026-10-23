@@ -136,6 +136,9 @@ class TestPolicyRule:
             "paths": [],
             "appears": "always",
             "allow_request_body": False,
+            "allowed_ips": [],
+            "methods": [],
+            "internal_ip_guard": True,
         }
 
     def test_from_dict(self):

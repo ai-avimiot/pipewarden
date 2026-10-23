@@ -204,6 +204,8 @@ rules:
       protocols: [https]
 ```
 
+**No DNS rule needed — and never a wildcard one.** The DNS interceptor lets a name resolve whenever *any* rule allows that name, whatever the rule's ports or protocols, so the rules above already cover their own lookups. Do not add a catch-all such as `domains: ["*"]` on port 53: every query is forwarded to a public resolver, so a wildcard turns DNS into an open exfiltration channel (`<encoded-secret>.attacker.example` reaches the attacker's nameserver even though nothing ever connects there). In `enforce` the interceptor also answers `AAAA` queries for allowed names with an empty answer, since the proxy egresses over IPv4 only.
+
 **Sometimes-used destinations.** Some allowed destinations aren't contacted on every run — e.g. a package cache that's only hit on a cache miss, or a conditional/matrix-only step. Mark those rules `appears: sometimes` so they aren't reported as "unused (candidate for removal)" when a run doesn't touch them (the default is `appears: always`). This is **report-only** — it doesn't change what traffic is allowed:
 
 ```yaml
@@ -216,6 +218,37 @@ rules:
       protocols: [https]
 ```
 
+**Internal destinations (`allowed_ips`).** Under policy `version: "2"`, an allowed name only gets through if it resolves to a public address (a `version: "1"` policy keeps its old behaviour and is not checked). If the upstream IP is loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), private (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64.0.0/10`), unique-local (`fc00::/7`), reserved (`192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`) or a cloud metadata / platform endpoint (`169.254.169.254`, `fd00:ec2::254`, Azure WireServer `168.63.129.16`, OCI `192.0.0.192`), the connection is treated as outside the policy: blocked in enforce (with a `block_reason`), `would_block` in monitor. In enforce, the DNS interceptor also answers `NXDOMAIN` when an allowed name resolves to such an address. This stops an allowlisted or rebound name from being used to reach the runner itself, your internal network or instance credentials. If a rule really is meant to reach an internal host — a self-hosted runner's artifact mirror, say — list its addresses on that rule. A rule whose `domains` name the address itself (`"10.0.0.5"`, or `"localhost"` for loopback) needs no entry:
+
+```yaml
+  - name: "internal artifact mirror"
+    allow:
+      domains: ["artifacts.corp.example"]
+      ports: [443]
+      protocols: [https]
+      allowed_ips: ["10.20.0.0/16"]   # IPs or CIDRs; each must be inside one of the ranges above
+```
+
+An entry only exempts connections that match its own rule (domain, port, protocol, path); at the DNS layer it applies to the rule's domains whatever its protocols. In enforce, `AAAA` queries are answered empty (the proxy egresses over IPv4 only), so an IPv6 entry only has effect for IP literals and in monitor. Public addresses are refused there, since they need no exemption. The check covers the upstream destination only, so the proxy's own container-mode networking is not affected.
+
+**HTTP methods (`methods`, `access`).** A rule can limit which HTTP methods it allows, so a package mirror the build only downloads from cannot also be sent a `PUT` or `POST` publish. This needs policy `version: "2"`:
+
+```yaml
+  - name: "npm registry (download only)"
+    allow:
+      domains: ["registry.npmjs.org"]
+      ports: [443]
+      protocols: [https]
+      access: read-only        # shorthand for methods: [GET, HEAD, OPTIONS]
+  - name: "artifact upload"
+    allow:
+      domains: ["uploads.example.com"]
+      protocols: [https]
+      methods: [GET, PUT]      # uppercase; GET HEAD OPTIONS POST PUT PATCH DELETE CONNECT TRACE
+```
+
+A rule without either field allows every method, as before. A request whose method is not listed does not match that rule — blocked in enforce, `would_block` in monitor — unless another rule allows it. Use `methods` or `access` on a rule, not both. They apply to `http`/`https` only: TCP and DNS traffic matched by the same rule is unaffected, and a rule whose protocols include neither is refused. Methods restrict what a request asks the server to do, not what it carries: a `GET` can still send data in its query string, headers or body, and a `GET` that upgrades to a WebSocket is allowed and its frames are not inspected. Use [exfiltration detection](#exfiltration-detection) for what leaves in a request. When every request seen for a destination was read-only, a discovery run adds `# access: read-only` to that generated rule as a comment rather than a restriction, because one run cannot show the upload that only happens on a cache miss or a release.
+
 ### Where policies live (auto-resolution)
 
 Leave `policy-file` unset and PipeWarden resolves the policy automatically, **merging two files** so a shared baseline and per-pipeline rules are both applied:
@@ -227,12 +260,44 @@ Leave `policy-file` unset and PipeWarden resolves the policy automatically, **me
   release.network-policy.yml     # rules for release.yml
 ```
 
-- **Both are watched:** the effective allowlist is the **union** of `common.network-policy.yml` and the per-workflow `<workflow>.network-policy.yml` (named after the workflow *file*, e.g. `ci.yml` → `ci.network-policy.yml`). Per-pipeline rules override same-named common rules.
+- **Both are watched:** the effective allowlist is the **union** of `common.network-policy.yml` and the per-workflow `<workflow>.network-policy.yml` (named after the workflow *file*, e.g. `ci.yml` → `ci.network-policy.yml`). Per-pipeline rules override same-named common rules. If either file declares `version: "2"`, the merged policy is version 2, so the internal-destination guard then applies to the common rules too.
 - **PipeWarden auto-generates the per-pipeline file**, not the common one. In monitor/discovery the report tells you to download the generated `network-policy.yml` and commit it to `.github/pipewarden/<workflow>.network-policy.yml`.
 - **Fallback:** if no `.github/pipewarden/` files exist, a repo-root `network-policy.yml` is used; if nothing exists, the run is discovery (monitor all, generate a policy).
 - Setting `policy-file:` explicitly bypasses auto-resolution and uses exactly that file.
 
 > **Workflows with multiple jobs?** Each job runs on its own runner, so add the action to every job you want covered — they all auto-resolve the same per-workflow policy. For matrix jobs, aggregating reports, and the union vs. least-privilege tradeoff, see [docs/multi-job-workflows.md](docs/multi-job-workflows.md).
+
+### Org boundary check (`scripts/policy_boundary.py`)
+
+A platform team can cap what any repo policy may allow. The boundary is an ordinary policy file (its `mode` is ignored); the check runs offline and passes only if every rule of every checked policy is covered:
+
+```bash
+python3 scripts/policy_boundary.py --boundary org-boundary.yml .github/pipewarden/*.yml
+```
+
+Each domain pattern of a rule must be matched, for every name it can match, by a domain of one boundary rule whose other fields are at least as broad: `ports` and `protocols` are subsets (empty `ports` means all ports, so it is only covered by a boundary rule with empty `ports`), `paths` are glob subsets (empty means all paths), `methods` are a subset (empty means all methods), each `allowed_ips` CIDR lies inside a boundary CIDR (checked on every rule, including one with no protocols, since the DNS layer honours it), a domain that literally names an internal address or `localhost` is exempt in the boundary rule too, a `version: "1"` rule (which skips the internal-destination guard) only passes a `version: "1"` boundary, and `allow_request_body: true` needs a boundary rule that also sets it. Wildcards are compared as globs: `*.a.com` covers `*.b.a.com` and `x.a.com` but not the apex `a.com`, and `a.com` never covers `*.a.com`. Anything the checker cannot prove counts as a violation. Exit code: `0` all covered, `1` violations (one explanation per rule, plus `::error::` annotations under GitHub Actions), `2` an unreadable or invalid file.
+
+As a required status check on policy changes:
+
+```yaml
+on:
+  pull_request:
+    paths: [".github/pipewarden/**"]
+jobs:
+  policy-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: ai-avimiot/pipewarden
+          ref: v2
+          path: .pipewarden
+      - run: python3 -m pip install --quiet pyyaml
+      - run: python3 .pipewarden/scripts/policy_boundary.py --boundary .github/org-boundary.yml .github/pipewarden/*.yml
+```
+
+Keep the boundary file somewhere repo authors cannot change in the same PR (CODEOWNERS on it, or check it out from an org repo), then mark `policy-boundary` required in branch protection.
 
 ### 3. Enforce — block unauthorized traffic
 
@@ -275,6 +340,8 @@ PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions 
 
 Every report also includes an **intercept health** section (`health.json` + a block in the Job Summary): whether the proxy and DNS server were still alive at teardown and how many entries each interception leg recorded. A broken intercept is reported as broken — it can no longer masquerade as a clean run with zero connections.
 
+Before any rule is removed, teardown also re-checks the boundary (`iptables -C` / `ip6tables -C`): every rule setup installed — the 80/443 redirects, the connection LOG rules, and in enforce mode the QUIC/DoT/DNS rejects (including the `tls-intercept: false` DNS/DoT rejects) — must still be present, and the proxy and DNS server must still be running. The result is recorded as `boundary_intact` and `boundary_missing` in `health.json` and in the Job Summary. A broken boundary is a warning in monitor mode and fails the job in enforce mode (a warning when `fail-on-block: false`), because a rule deleted mid-job means part of the job ran unenforced. Setup fails in enforce mode if it cannot install the IPv6 rejects in the first place (a kernel without `ip6t_REJECT`, say), so that shows up at setup rather than as a broken boundary at teardown.
+
 PipeWarden generates detailed reports for every run:
 
 | File | Format | Contents |
@@ -290,6 +357,7 @@ Each report includes:
 - **TLS certificate info** — issuer CA, validity, warnings for untrusted/self-signed certs
 - **IP enrichment** — ASN owner, country, reverse DNS (via Team Cymru)
 - **DNS query log** — every domain lookup with resolved IPs
+- **Possible DNS tunnelling** — query names that carry more random-looking hex, base32 or base36 data than one hashed label (a 32-hex ELB or ECR name is not flagged), or 10+ distinct such names under one zone (data split into short chunks). Each label segment is compared with the entropy random text over its own alphabet would have, so hex is caught too. It is a heuristic and a careful tunnel can stay under it; the control that stops DNS exfiltration is not having a wildcard DNS rule. Report only — it never blocks a query
 - **Policy analysis** — which rules matched, which are unused, suggested allowlist YAML for unmatched destinations
 
 ### GitHub Security tab integration
@@ -350,6 +418,32 @@ Logs all connections. Traffic outside the allowlist is flagged as `would_block` 
 ### Enforce
 
 Blocks connections outside the allowlist. HTTP/HTTPS requests get `403`. DNS queries for blocked domains get `NXDOMAIN`.
+
+**Actionable denials.** The `403` body is a short plain-text message naming the host, port, protocol, method, path (query string redacted) and the reason, and the `X-PipeWarden-Block-Reason` header carries a machine-readable token. Request headers and bodies are never echoed back.
+
+| `X-PipeWarden-Block-Reason` | Meaning | Body suggests a rule? |
+| --- | --- | --- |
+| `policy-miss` | No rule allows this destination | Yes — a ready-to-paste rule for exactly this host, port, protocol and path |
+| `private-ip` | An allowed name reached a private, loopback or metadata address | No |
+| `domain-fronting` | The `Host` header names a host the policy does not allow | No |
+| `cert-identity` | The upstream TLS certificate is invalid for the host | No |
+| `exfil` | The request carries secret material | No |
+
+Security blocks never suggest widening the policy. A failing `curl`/`npm` call therefore shows what to add right in the job log:
+
+```text
+reason:   policy-miss: no rule in the network policy allows this destination
+
+If this destination is expected, add this rule under the policy's
+`rules:` (review it first; widen or drop `paths` only as needed):
+
+  - name: "allow evil.example.com"
+    allow:
+      domains: ["evil.example.com"]
+      ports: [443]
+      protocols: [https]
+      paths: ["/steal"]
+```
 
 **Stopping the pipeline (default).** A blocked connection is a policy violation, so by default **the job fails** — the pipeline stops. This holds even when the build step that made the connection swallowed the error and kept going: the block is detected at teardown and the job is failed there (`::error::` in the log, exit code 1). This is true for all three entry points — the single-step action, the two-step `setup`/`teardown` actions, and container mode.
 
@@ -562,6 +656,8 @@ For full raw TCP data inspection, PipeWarden can also run your workflow inside a
 | Docker required | No | Yes |
 | Traffic coverage | HTTP/HTTPS + DNS + TCP metadata | All TCP + DNS |
 | Workflow changes | Add 1 step | Wrapper workflow |
+
+In workflow-file mode, job containers do not get the Docker socket: with it, a step could start a host-network container and leave the firewall. A workflow that runs `docker build` or `docker compose` itself needs native mode. See [Container mode](SECURITY.md#container-mode) in SECURITY.md.
 
 ## Development
 

@@ -17,9 +17,3 @@ rules:
         - "*.githubusercontent.com"
       ports: [443]
       protocols: [https]
-
-  - name: "DNS"
-    allow:
-      domains: ["*"]
-      ports: [53]
-      protocols: [tcp, udp]

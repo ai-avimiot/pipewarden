@@ -14,12 +14,16 @@ and generates copy-paste YAML for blocked destinations.
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from policy.matcher import PolicyEngine  # noqa: E402
+from policy.models import READ_ONLY_METHODS, ConnectionEntry  # noqa: E402
 
 try:
     from policy.attribution import summarise as _summarise_attribution
@@ -250,6 +254,11 @@ def _build_access_summary(connections: list[dict]) -> dict:
         sip = c.get("server_ip", "")
         if sip and "server_ip" not in entry:
             entry["server_ip"] = sip
+        if c.get("protocol") in ("http", "https"):
+            method = c.get("method", "")
+            methods = entry.setdefault("methods", [])
+            if method not in methods:
+                methods.append(method)
     cert_warnings = [
         e for e in domains.values() if e.get("tls_cert_valid") is False
     ]
@@ -269,6 +278,68 @@ def _is_ip(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+# A segment counts as encoded data when its entropy is close to that of random
+# text over its own alphabet; hex can never reach a fixed bits/char threshold.
+DNS_TUNNEL_SEGMENT_MIN_LEN = 12
+DNS_TUNNEL_ENTROPY_MARGIN = 0.3
+# Above one hashed label (a 32-hex ELB/ECR name is 128 bits) per query.
+DNS_TUNNEL_PAYLOAD_BITS = 150
+DNS_TUNNEL_DISTINCT_NAMES = 10
+_MAX_TUNNEL_SUSPECTS_SHOWN = 20
+_HEX = frozenset("0123456789abcdef")
+_BASE32 = frozenset("abcdefghijklmnopqrstuvwxyz234567")
+
+
+def _shannon_entropy(text: str) -> float:
+    if not text:
+        return 0.0
+    n = len(text)
+    return -sum((k / n) * math.log2(k / n) for k in (text.count(ch) for ch in set(text)))
+
+
+def _alphabet_size(segment: str) -> int:
+    chars = set(segment)
+    if chars <= _HEX:
+        return 16
+    if chars <= _BASE32:
+        return 32
+    return 36
+
+
+def _encoded_bits(segment: str) -> float:
+    """Bits of data *segment* carries if it looks like encoded random data, else 0."""
+    if len(segment) < DNS_TUNNEL_SEGMENT_MIN_LEN or not re.fullmatch(r"[a-z0-9]+", segment):
+        return 0.0
+    digits = sum(c.isdigit() for c in segment)
+    if digits < 2 or digits == len(segment):
+        return 0.0
+    k = _alphabet_size(segment)
+    # Miller-Madow: expected entropy of len(segment) random symbols from k.
+    expected = math.log2(k) - (k - 1) / (2 * len(segment) * math.log(2))
+    if _shannon_entropy(segment) < expected - DNS_TUNNEL_ENTROPY_MARGIN:
+        return 0.0
+    return len(segment) * math.log2(k)
+
+
+def _split_encoded(qname: str) -> tuple[float, str]:
+    """(encoded bits in *qname*, the parent zone after its last encoded label)."""
+    labels = qname.strip(".").lower().split(".")
+    bits, last = 0.0, -1
+    for i, label in enumerate(labels):
+        label_bits = sum(_encoded_bits(seg) for seg in label.split("-"))
+        if label_bits:
+            bits, last = bits + label_bits, i
+    return bits, ".".join(labels[last + 1:]) if last >= 0 else ""
+
+
+def dns_tunnel_reason(qname: str) -> str:
+    """Why *qname* on its own looks like a DNS-tunnel query, or "" if it does not."""
+    bits, _ = _split_encoded(qname)
+    if bits >= DNS_TUNNEL_PAYLOAD_BITS:
+        return f"~{int(bits) // 8} bytes of encoded-looking data"
+    return ""
 
 
 def _build_dns_summary(dns_queries: list[dict]) -> dict:
@@ -295,10 +366,34 @@ def _build_dns_summary(dns_queries: list[dict]) -> dict:
         if s in ("blocked", "would_block"):
             domains[host]["status"] = s
 
+    suspects = []
+    by_parent: dict[str, list[dict]] = {}
+    for d in domains.values():
+        reason = dns_tunnel_reason(d["host"])
+        if reason:
+            suspects.append({"host": d["host"], "reason": reason,
+                             "count": d["count"], "status": d["status"]})
+            continue
+        bits, parent = _split_encoded(d["host"])
+        if bits and parent:
+            by_parent.setdefault(parent, []).append(d)
+    # Short encoded chunks spread over many names under one zone.
+    for parent, names in by_parent.items():
+        if len(names) >= DNS_TUNNEL_DISTINCT_NAMES:
+            blocked = [n["status"] for n in names if n["status"] != "allowed"]
+            suspects.append({
+                "host": f"*.{parent}",
+                "reason": f"{len(names)} distinct encoded-looking names",
+                "count": sum(n["count"] for n in names),
+                "status": blocked[0] if blocked else "allowed",
+            })
+
     return {
         "total_queries": len(dns_queries),
         "unique_domains": len(domains),
         "queries": list(domains.values()),
+        "tunnel_suspect_queries": sum(s["count"] for s in suspects),
+        "tunnel_suspects": suspects,
     }
 
 
@@ -409,10 +504,14 @@ def _run_policy_analysis(policy_path, connections, report):
     dns_queries = report.get("dns_summary", {}).get("queries", [])
     # Collect domains already present in destinations to avoid duplicates
     existing_hosts = {d["host"] for d in destinations}
+    engine = PolicyEngine(rules)
     for q in dns_queries:
         host = q.get("host", "")
         status = q.get("status", "allowed")
         if not host or status == "allowed":
+            continue
+        # An allowed name refused for its internal answer needs no new rule.
+        if engine.allows(ConnectionEntry(timestamp="", protocol="dns", host=host, port=53)):
             continue
         # Strip DNS-SD prefixes for dedup (e.g. _http._tcp.example.com)
         clean = host
@@ -539,6 +638,19 @@ def format_summary(report: dict) -> str:
                 f"  {dest['host']}:{dest['port']} — {', '.join(dest['labels'])} "
                 f"({dest['connections']}x, {verdict})"
             )
+        lines.append("")
+
+    suspects = report.get("dns_summary", {}).get("tunnel_suspects", [])
+    if suspects:
+        lines.append(
+            f"Possible DNS tunnelling: {len(suspects)} name(s) "
+            f"({report['dns_summary']['tunnel_suspect_queries']} queries) "
+            f"look like encoded data (report only, nothing blocked by this check):"
+        )
+        for sus in suspects[:_MAX_TUNNEL_SUSPECTS_SHOWN]:
+            lines.append(f"  {sus['host']} — {sus['reason']} ({sus['count']}x, {sus['status']})")
+        if len(suspects) > _MAX_TUNNEL_SUSPECTS_SHOWN:
+            lines.append(f"  (+{len(suspects) - _MAX_TUNNEL_SUSPECTS_SHOWN} more in report.json)")
         lines.append("")
 
     attribution = report.get("attribution", {})
@@ -789,6 +901,32 @@ def format_markdown_summary(report: dict) -> str:
         )
         lines.append("")
 
+    suspects = report.get("dns_summary", {}).get("tunnel_suspects", [])
+    if suspects:
+        lines.append("### ⚠️ Possible DNS tunnelling")
+        lines.append("")
+        lines.append("| Name | Why | Queries | Status |")
+        lines.append("|------|-----|--------:|--------|")
+        for sus in suspects[:_MAX_TUNNEL_SUSPECTS_SHOWN]:
+            lines.append(
+                f"| `{_md(sus['host'])}` | {_md(sus['reason'])} "
+                f"| {sus['count']} | {_md(sus['status'])} |"
+            )
+        if len(suspects) > _MAX_TUNNEL_SUSPECTS_SHOWN:
+            lines.append(
+                f"| *+{len(suspects) - _MAX_TUNNEL_SUSPECTS_SHOWN} more in "
+                f"report.json* | | | |"
+            )
+        lines.append("")
+        lines.append(
+            "> Flagged when one name carries more than one hash's worth of "
+            "random-looking hex/base32/base36 data, or when "
+            f"{DNS_TUNNEL_DISTINCT_NAMES}+ distinct such names share a zone. "
+            "A heuristic that a careful tunnel can evade. "
+            "Report only: this check never blocks a query."
+        )
+        lines.append("")
+
     attribution = report.get("attribution", {})
     actors = attribution.get("actors", [])
     if not actors and attribution.get("unattributed_connections"):
@@ -964,6 +1102,14 @@ def _format_policy_analysis_md(lines: list[str], analysis: dict) -> None:
         lines.append("")
 
 
+def _only_read_seen(dest: dict) -> bool:
+    """True if every request seen for http(s) *dest* used a read-only method."""
+    if dest.get("protocol") not in ("http", "https"):
+        return False
+    methods = dest.get("methods") or []
+    return bool(methods) and all(m in READ_ONLY_METHODS for m in methods)
+
+
 def generate_complete_policy_yaml(report: dict) -> str:
     """Generate a complete, valid network-policy.yml from observed traffic.
 
@@ -987,11 +1133,8 @@ def generate_complete_policy_yaml(report: dict) -> str:
         "# Review this file, then commit it to your repository.",
         "# Change 'mode' to 'enforce' once you have verified all rules.",
         "",
-        'version: "1"',
-        "mode: monitor",
-        "",
-        "rules:",
     ]
+    rule_lines: list[str] = []
 
     for dest in sorted(destinations, key=lambda d: (d.get("host", ""), d.get("port", 0))):
         host = dest.get("host", "")
@@ -1014,12 +1157,21 @@ def generate_complete_policy_yaml(report: dict) -> str:
         owner = ip_info.get("owner", "")
         comment = f"  # {_comment_text(owner)}" if owner else ""
 
-        lines.append(f'  - name: "{rule_name}"{comment}')
-        lines.append("    allow:")
-        lines.append(f'      domains: ["{host}"]')
-        lines.append(f"      ports: [{port}]")
-        lines.append(f"      protocols: [{proto}]")
-        lines.append("")
+        rule_lines.append(f'  - name: "{rule_name}"{comment}')
+        rule_lines.append("    allow:")
+        rule_lines.append(f'      domains: ["{host}"]')
+        rule_lines.append(f"      ports: [{port}]")
+        rule_lines.append(f"      protocols: [{proto}]")
+        # One run cannot show a write that only happens on a cache miss or a release.
+        if _only_read_seen(dest):
+            rule_lines.append(
+                "      # access: read-only  # only reads seen; needs version \"2\""
+            )
+        rule_lines.append("")
+
+    lines.append('version: "1"')
+    lines.extend(["mode: monitor", "", "rules:"])
+    lines.extend(rule_lines)
 
     # Append wildcard hints (comments only — never auto-applied).
     try:

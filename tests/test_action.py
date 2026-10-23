@@ -91,4 +91,4 @@ class TestExampleNetworkPolicy:
         rule_names = [r.name for r in rules]
         assert "npm registry" in rule_names
         assert "GitHub" in rule_names
-        assert "DNS" in rule_names
+        assert "DNS" not in rule_names, "a catch-all DNS rule is an exfil channel"

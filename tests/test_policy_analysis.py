@@ -212,3 +212,45 @@ class TestGenerateYaml:
         assert "Needed allowlist" in yaml_str
         assert "domains:" in yaml_str
         assert '"test.com:80"' in yaml_str
+
+
+class TestReasonedBlocksGetNoSuggestion:
+    def test_method_or_private_ip_block_is_not_a_missing_rule(self):
+        rules = [PolicyRule(name="npm", domains=["registry.npmjs.org"], ports=[443],
+                            protocols=["https"], methods=["GET", "HEAD", "OPTIONS"])]
+        connections = [
+            {"host": "registry.npmjs.org", "port": 443, "protocol": "https",
+             "status": "blocked", "block_reason": "method PUT not in methods"},
+            {"host": "evil.com", "port": 443, "protocol": "https", "status": "blocked"},
+        ]
+        destinations = [
+            {"host": "registry.npmjs.org", "port": 443, "protocol": "https",
+             "statuses": {"blocked": 1}},
+            {"host": "evil.com", "port": 443, "protocol": "https", "statuses": {"blocked": 1}},
+        ]
+        result = analyze_policy(rules, connections, destinations)
+        assert [r["host"] for r in result["suggested_rules"]] == ["evil.com"]
+
+    def test_plain_miss_alongside_reasoned_block_still_suggested(self):
+        connections = [
+            {"host": "x.com", "port": 443, "protocol": "https", "status": "blocked",
+             "block_reason": "exfil"},
+            {"host": "x.com", "port": 443, "protocol": "https", "status": "blocked"},
+        ]
+        destinations = [{"host": "x.com", "port": 443, "protocol": "https",
+                         "statuses": {"blocked": 2}}]
+        assert analyze_policy([], connections, destinations)["suggested_rules"]
+
+    def test_allowed_dns_name_refused_for_internal_answer_not_suggested(self, tmp_path):
+        from scripts.generate_report import _run_policy_analysis
+        policy = tmp_path / "p.yml"
+        policy.write_text(
+            'version: "2"\nmode: enforce\nrules:\n  - name: api\n    allow:\n'
+            '      domains: ["api.example.com"]\n      ports: [443]\n      protocols: [https]\n'
+        )
+        report = {"dns_summary": {"queries": [
+            {"host": "api.example.com", "status": "blocked", "count": 1},
+            {"host": "evil.com", "status": "blocked", "count": 1},
+        ]}}
+        result = _run_policy_analysis(str(policy), [], report)
+        assert [r["host"] for r in result["suggested_rules"]] == ["evil.com"]

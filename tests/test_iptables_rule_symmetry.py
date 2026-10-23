@@ -39,8 +39,8 @@ def _added_reject_rules(source: str) -> list[str]:
             continue
         body = m.group(1)
         # Trailing shell noise is not part of the rule.
-        body = body.split("2>/dev/null")[0].split("||")[0].strip()
-        rules.append(body)
+        body = body.split("2>/dev/null")[0].split("||")[0].split("; then")[0]
+        rules.append(body.rstrip(" \\"))
     return rules
 
 
@@ -117,3 +117,65 @@ class TestDnsRejectShape:
         preceding = source[:source.index(install[0])]
         assert preceding.rindex('if [ "${ENABLE_DNS}" = "true" ]') > \
             preceding.rindex('if [ "${MODE}" = "enforce" ]')
+
+
+def _rule_key(binary: str, table: str, body: str) -> tuple[str, str, str]:
+    body = body.split("2>/dev/null")[0].split("||")[0].split("; then")[0].rstrip("\\ ").strip()
+    return (binary, table or "filter", body)
+
+
+def _added_rules(source: str) -> list[tuple[str, str, str]]:
+    rules = []
+    for line in source.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            continue
+        m = re.search(r"(ip6?tables)\s+(?:-t\s+(\w+)\s+)?-A\s+(.*)", line)
+        if m:
+            rules.append(_rule_key(m.group(1), m.group(2), m.group(3)))
+    return rules
+
+
+def _integrity_checked_rules(source: str) -> list[tuple[str, str, str]]:
+    rules = []
+    for line in source.splitlines():
+        m = re.match(r"\s*boundary_has\s+(ip6?tables)\s+(?:-t\s+(\w+)\s+)?-C\s+(.*)", line)
+        if m:
+            rules.append(_rule_key(m.group(1), m.group(2), m.group(3)))
+    return rules
+
+
+class TestEveryRuleIsIntegrityChecked:
+    """A rule setup adds but teardown never re-checks could be deleted mid-job
+    and the run would still report a boundary that was intact."""
+
+    def test_teardown_checks_every_rule_setup_adds(self):
+        checked = _integrity_checked_rules(_read(TEARDOWN_SH))
+        for rule in _added_rules(_read(SETUP_SH)):
+            assert rule in checked, (
+                f"setup.sh adds a rule teardown's boundary check never verifies:\n  {rule}"
+            )
+
+    def test_every_checked_rule_is_one_setup_adds(self):
+        """A check for a rule setup never installs would fail every run."""
+        added = _added_rules(_read(SETUP_SH))
+        for rule in _integrity_checked_rules(_read(TEARDOWN_SH)):
+            assert rule in added, f"teardown checks a rule setup.sh never adds:\n  {rule}"
+
+    def test_check_runs_before_any_rule_is_removed(self):
+        source = _read(TEARDOWN_SH)
+        first_check = source.index("boundary_has iptables")
+        first_delete = re.search(r"sudo ip6?tables (-t nat )?-D ", source)
+        assert first_delete is not None
+        assert first_check < first_delete.start()
+
+    def test_there_are_rules_to_check(self):
+        assert len(_added_rules(_read(SETUP_SH))) >= 15
+        assert len(_integrity_checked_rules(_read(TEARDOWN_SH))) >= 15
+
+
+def test_enforce_ip6_rejects_fail_setup_instead_of_being_skipped():
+    """Teardown requires these rules, so setup must not tolerate their absence."""
+    for line in _read(SETUP_SH).splitlines():
+        if "ip6tables -A" in line and "-j REJECT" in line:
+            assert "|| true" not in line, line

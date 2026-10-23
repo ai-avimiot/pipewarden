@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 
 from policy.exfil import ExfilConfig
 
+# What ``access: read-only`` expands to.
+READ_ONLY_METHODS = ("GET", "HEAD", "OPTIONS")
+
 
 @dataclass
 class ConnectionEntry:
@@ -93,6 +96,13 @@ class PolicyRule:
     # unhelpful. Scoped per rule so exempting one destination does not disable
     # detection everywhere.
     allow_request_body: bool = False
+    # CIDRs this rule may reach even though they are private, loopback,
+    # link-local or cloud-metadata addresses (see matcher.internal_ip_category).
+    allowed_ips: list[str] = field(default_factory=list)
+    # HTTP methods this rule allows on http/https; empty = any method.
+    methods: list[str] = field(default_factory=list)
+    # False for version 1 rules, which predate the guard and must keep working.
+    internal_ip_guard: bool = True
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary."""
@@ -109,6 +119,9 @@ class PolicyRule:
             paths=data.get("paths", []),
             appears=data.get("appears", "always"),
             allow_request_body=data.get("allow_request_body", False),
+            allowed_ips=data.get("allowed_ips", []),
+            methods=data.get("methods", []),
+            internal_ip_guard=data.get("internal_ip_guard", True),
         )
 
 

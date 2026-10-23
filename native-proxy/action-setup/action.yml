@@ -47,7 +47,7 @@ inputs:
     required: false
     default: ""
   mitmproxy-version:
-    description: "Pinned mitmproxy version to install on the runner. Keep in lockstep with the proxy container base image."
+    description: "Pinned mitmproxy version to install on the runner. Keep in lockstep with the proxy container base image. The default installs from native-proxy/requirements-lock.txt with hash verification; any other version installs without it and logs a warning."
     required: false
     default: ""
   canary:

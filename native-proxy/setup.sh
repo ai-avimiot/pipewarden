@@ -191,7 +191,7 @@ RUNTIME_ROOT="/opt/pipewarden"
 sudo rm -rf "${RUNTIME_ROOT}"
 sudo mkdir -p "${RUNTIME_ROOT}/native-proxy" "${RUNTIME_ROOT}/run"
 sudo cp -R "${PROJECT_ROOT}/proxy" "${PROJECT_ROOT}/policy" "${PROJECT_ROOT}/scripts" "${RUNTIME_ROOT}/"
-sudo cp "${PROJECT_ROOT}"/native-proxy/*.py "${RUNTIME_ROOT}/native-proxy/"
+sudo cp "${PROJECT_ROOT}"/native-proxy/*.py "${PROJECT_ROOT}/native-proxy/requirements-lock.txt" "${RUNTIME_ROOT}/native-proxy/"
 if [ -n "${POLICY_FILE}" ]; then
     sudo cp "$(realpath "${POLICY_FILE}")" "${RUNTIME_ROOT}/policy.yml"
     POLICY_FILE="${RUNTIME_ROOT}/policy.yml"
@@ -207,6 +207,13 @@ sudo chmod -R u=rwX,go=rX "${RUNTIME_ROOT}"
 # base image (proxy/Dockerfile: mitmproxy/mitmproxy:<version>). Overridable via
 # the mitmproxy-version input for testing against a newer release.
 MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.0}"
+MITMPROXY_LOCK="${RUNTIME_ROOT}/native-proxy/requirements-lock.txt"
+LOCKED_MITMPROXY_VERSION="$(sed -n 's/^mitmproxy==\([^ ;\\]*\).*/\1/p' "${MITMPROXY_LOCK}")"
+if [ -n "${LOCKED_MITMPROXY_VERSION}" ] && [ "${MITMPROXY_VERSION}" = "${LOCKED_MITMPROXY_VERSION}" ]; then
+    MITMPROXY_PIP_ARGS=(--require-hashes -r "${MITMPROXY_LOCK}")
+else
+    MITMPROXY_PIP_ARGS=(typing_extensions "mitmproxy==${MITMPROXY_VERSION}")
+fi
 echo "::group::PipeWarden: Install proxy"
 if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     echo "TLS interception disabled — skipping proxy install (no MITM will run)."
@@ -214,26 +221,35 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     if [ -x /usr/local/bin/mitmdump ]; then
         echo "mitmproxy already installed, skipping"
     else
-        echo "Installing mitmproxy==${MITMPROXY_VERSION}..."
+        if [ "${MITMPROXY_PIP_ARGS[0]}" = "--require-hashes" ]; then
+            echo "Installing mitmproxy==${MITMPROXY_VERSION} from hash-pinned lock..."
+        else
+            echo "::warning::PipeWarden: mitmproxy-version ${MITMPROXY_VERSION} differs from the locked ${LOCKED_MITMPROXY_VERSION:-<none>} — installing without hash verification; transitive dependencies float."
+            echo "Installing mitmproxy==${MITMPROXY_VERSION}..."
+        fi
         # sudo strips the environment, so the wheel cache restored by the JS
         # action (PIP_CACHE_DIR, see action/src/main.js) is forwarded
         # explicitly. Unset means no cache was restored — plain install.
+        # --ignore-installed: pip cannot uninstall Debian's typing_extensions.
         if [ -n "${PIP_CACHE_DIR:-}" ]; then
             # pip refuses (silently disables) a cache dir not owned by the
             # current user, so ownership must follow whoever touches it:
             # root during the sudo install, the runner user afterwards so
             # the post-step can archive it for the cache save.
             sudo chown -R 0:0 "${PIP_CACHE_DIR}" 2>/dev/null || true
-            sudo PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+            sudo PIP_CACHE_DIR="${PIP_CACHE_DIR}" pip install --quiet --break-system-packages --ignore-installed "${MITMPROXY_PIP_ARGS[@]}"
             sudo chown -R "$(id -u)":"$(id -g)" "${PIP_CACHE_DIR}" 2>/dev/null || true
         else
-            sudo pip install --quiet --break-system-packages --ignore-installed typing_extensions "mitmproxy==${MITMPROXY_VERSION}"
+            sudo pip install --quiet --break-system-packages --ignore-installed "${MITMPROXY_PIP_ARGS[@]}"
         fi
     fi
 else
     if command -v mitmdump &>/dev/null; then
         echo "mitmdump already on PATH, skipping"
+    elif [ "${MITMPROXY_PIP_ARGS[0]}" = "--require-hashes" ]; then
+        pip install --quiet "${MITMPROXY_PIP_ARGS[@]}"
     else
+        echo "::warning::PipeWarden: mitmproxy-version ${MITMPROXY_VERSION} differs from the locked ${LOCKED_MITMPROXY_VERSION:-<none>} — installing without hash verification; transitive dependencies float."
         pip install --quiet "mitmproxy==${MITMPROXY_VERSION}"
     fi
 fi
@@ -591,8 +607,11 @@ if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
             sudo iptables -A OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
             IPTABLES_INSTALLED="true"
             if [ "${IP6TABLES_INSTALLED}" = "true" ]; then
-                sudo ip6tables -A OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
-                sudo ip6tables -A OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+                if ! sudo ip6tables -A OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable \
+                    || ! sudo ip6tables -A OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset; then
+                    echo "::error title=PipeWarden setup::could not add the ip6tables DNS/DoT REJECT rules (missing ip6t_REJECT or multiport support?); IPv6 DNS would bypass enforcement, failing closed"
+                    exit 1
+                fi
             fi
             echo "Enforce: blocked direct DNS and DoT (queries must go through the interceptor)"
         fi
@@ -654,8 +673,11 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
             IP6TABLES_INSTALLED="true"
             if [ "${MODE}" = "enforce" ]; then
                 # Proxy is IPv4-only, so uninspected IPv6 web/DoT is fail-closed.
-                sudo ip6tables -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
-                sudo ip6tables -A OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+                if ! sudo ip6tables -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset \
+                    || ! sudo ip6tables -A OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable; then
+                    echo "::error title=PipeWarden setup::could not add the ip6tables REJECT rules for uninspected IPv6 web/DoT (missing ip6t_REJECT or multiport support?); failing closed"
+                    exit 1
+                fi
                 echo "Enforce: rejected uninspected IPv6 web/DoT (proxy is IPv4-only)"
             fi
         fi

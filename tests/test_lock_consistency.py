@@ -31,6 +31,7 @@ BASE_CONSTRAINTS = REPO_ROOT / "proxy/base-image-constraints.json"
 LOCK_PAIRS = [
     ("proxy/requirements.txt", "proxy/requirements-lock.txt"),
     ("requirements/requirements.txt", "requirements/requirements-lock.txt"),
+    ("native-proxy/requirements.txt", "native-proxy/requirements-lock.txt"),
 ]
 
 # A lock line pins with `name==version \` before the hash block.
@@ -146,3 +147,35 @@ def test_proxy_and_test_locks_agree_on_shared_pins():
             f"{name} is pinned to {proxy[name]} in proxy/requirements-lock.txt "
             f"but {tests[name]} in requirements/requirements-lock.txt"
         )
+
+
+def test_native_lock_is_fully_hash_pinned():
+    """setup.sh installs it with --require-hashes as root; an unhashed pin
+    would abort the install on the runner, not here."""
+    text = (REPO_ROOT / "native-proxy/requirements-lock.txt").read_text("utf-8")
+    pins = _parse_pins(text)
+    assert "mitmproxy" in pins
+    blocks = re.split(r"^(?=[A-Za-z0-9._-]+==)", text, flags=re.MULTILINE)[1:]
+    assert len(blocks) == len(pins)
+    for block in blocks:
+        assert "--hash=sha256:" in block, f"unhashed pin in native lock: {block.split()[0]}"
+
+
+def test_native_requirements_keep_base_image_caps():
+    """mitmproxy is the only real requirement; the restated caps must still
+    reject what that mitmproxy forbids."""
+    reqs = {
+        r.name.lower().replace("_", "-"): r
+        for r in _parse_requirements(
+            (REPO_ROOT / "native-proxy/requirements.txt").read_text(encoding="utf-8")
+        )
+    }
+    for name, spec in _base_constraints().items():
+        req = reqs.get(name)
+        if req is None:
+            continue
+        for bad in spec["must_reject"]:
+            assert not req.specifier.contains(Version(bad), prereleases=True), (
+                f"native-proxy/requirements.txt permits {name}=={bad}, which "
+                f"mitmproxy forbids ({spec['declared']}). {spec['note']}"
+            )

@@ -62,6 +62,10 @@ def _rule_to_yaml(rule) -> dict:
         allow["protocols"] = list(rule.protocols)
     if rule.paths:
         allow["paths"] = list(rule.paths)
+    if getattr(rule, "allowed_ips", None):
+        allow["allowed_ips"] = list(rule.allowed_ips)
+    if getattr(rule, "methods", None):
+        allow["methods"] = list(rule.methods)
     out: dict = {"name": rule.name}
     if getattr(rule, "appears", "always") != "always":
         out["appears"] = rule.appears
@@ -79,8 +83,10 @@ def merge_policies(paths: list[str], mode: str) -> dict:
             if r.name not in merged:
                 order.append(r.name)
             merged[r.name] = r
+    # Any version 2 source opts the merged policy into the internal-IP guard.
+    needs_v2 = any(getattr(merged[n], "internal_ip_guard", False) for n in order)
     return {
-        "version": "1",
+        "version": "2" if needs_v2 else "1",
         "mode": mode,
         "rules": [_rule_to_yaml(merged[n]) for n in order],
     }

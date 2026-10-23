@@ -2,7 +2,8 @@
 # update-lock-files.sh
 #
 # Regenerate hash-pinned requirements lock files from the source files.
-# Run this whenever you update requirements/requirements.txt or proxy/requirements.txt.
+# Run this whenever you update requirements/requirements.txt, proxy/requirements.txt
+# or native-proxy/requirements.txt.
 #
 # Uses `uv pip compile --universal` so the locks resolve for every platform and
 # for the whole supported Python range (>=3.12), not just the machine you run
@@ -52,7 +53,15 @@ uv pip compile \
   --output-file "requirements/requirements-lock.txt" \
   "requirements/requirements.txt"
 
+echo "==> Compiling native-proxy/requirements-lock.txt..."
+uv pip compile \
+  --universal \
+  --generate-hashes \
+  --python-version "${PYTHON_VERSION}" \
+  --output-file "native-proxy/requirements-lock.txt" \
+  "native-proxy/requirements.txt"
+
 echo ""
 echo "Done. Review the generated files and commit them:"
-echo "  git add proxy/requirements-lock.txt requirements/requirements-lock.txt"
+echo "  git add proxy/requirements-lock.txt requirements/requirements-lock.txt native-proxy/requirements-lock.txt"
 echo "  git commit -m 'chore: update dependency lock files'"
