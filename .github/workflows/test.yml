@@ -93,12 +93,12 @@ jobs:
 
       - name: Verify the image is internally consistent
         run: |
-          # pip check catches a lock that installed but left conflicting metadata;
+          # pip check runs inside the Dockerfile (pip is removed afterwards);
           # importing the addon under the base image's interpreter catches a
           # dependency that resolved but cannot actually be used at runtime.
           docker run --rm --entrypoint sh pipewarden-proxy:ci -c '
             set -e
-            pip check
+            if command -v pip; then echo "pip left in image"; exit 1; fi
             python3 -c "import OpenSSL, cryptography, yaml, certifi"
             python3 -c "import sys; sys.path.insert(0, \"/app\"); import addon"
             mitmdump --version | head -1

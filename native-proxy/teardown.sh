@@ -132,8 +132,15 @@ elif [ "${CONN_LOGGING}" = "true" ]; then
     # redirect, no proxy-user exemption), so only those need removing.
     echo "::group::PipeWarden: Remove connection-log rules"
     sudo iptables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null || true
+    # Enforce-mode DNS/DoT rejects (no-ops if they were never added).
+    sudo iptables -D OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+    sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+    sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
     if command -v ip6tables &>/dev/null; then
         sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || true
+        sudo ip6tables -D OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset 2>/dev/null || true
     fi
     echo "::endgroup::"
 fi
@@ -303,6 +310,10 @@ fi
 # 4. Generate report
 # ---------------------------------------------------------------------------
 echo "::group::PipeWarden: Generate report"
+# Start from an empty directory: post.js uploads it, so anything planted or left
+# over from an earlier job would otherwise ship in the artifact.
+sudo rm -rf "${REPORT_DIR}"
+mkdir -p "${REPORT_DIR}"
 # The mode setup exported is the one that ended up in effect, which is not
 # always the one that was asked for: a helper that fails to start downgrades
 # process to client. Recording it is what separates "nothing to attribute" from
@@ -315,8 +326,10 @@ fi
 if [ -n "${POLICY_FILE}" ] && [ -f "${POLICY_FILE}" ]; then
     REPORT_ARGS="${REPORT_ARGS} --policy ${POLICY_FILE}"
 fi
+REPORT_OK="true"
 python3 "${PROJECT_ROOT}/scripts/generate_report.py" ${REPORT_ARGS} || {
     echo "Warning: Report generation failed"
+    REPORT_OK="false"
 }
 echo "::endgroup::"
 
@@ -470,8 +483,12 @@ fi
 # 6. Set outputs and compute blocked count
 # ---------------------------------------------------------------------------
 BLOCKED_COUNT=0
+MALFORMED_LINES=0
 if [ -f "${REPORT_DIR}/report.json" ]; then
     BLOCKED_COUNT=$(python3 "${PROJECT_ROOT}/scripts/count_blocked.py" "${REPORT_DIR}/report.json")
+    MALFORMED_LINES=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("malformed_log_lines", 0)))' "${REPORT_DIR}/report.json" 2>/dev/null || echo 0)
+else
+    REPORT_OK="false"
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$(dirname "${GITHUB_OUTPUT}")" ]; then
@@ -506,6 +523,7 @@ echo "::group::PipeWarden: Cleanup"
 
 # Remove CA certificate and private key
 rm -rf "${CA_DIR}"
+sudo rm -rf /opt/pipewarden
 sudo rm -f /usr/local/share/ca-certificates/nfw-ca.crt
 sudo update-ca-certificates > /dev/null 2>&1 || true
 
@@ -547,6 +565,15 @@ fi
 # ---------------------------------------------------------------------------
 # 8. Exit code
 # ---------------------------------------------------------------------------
+# A verdict computed from a missing or partly unreadable log is not a pass.
+if [ "${MODE}" = "enforce" ] && { [ "${REPORT_OK}" != "true" ] || [ "${MALFORMED_LINES}" -gt 0 ]; }; then
+    if [ "${FAIL_ON_BLOCK}" = "false" ]; then
+        echo "::warning::PipeWarden: enforce mode could not verify this run (report generated: ${REPORT_OK}, unparsable log lines: ${MALFORMED_LINES}); fail-on-block is false, so the job continues."
+    else
+        echo "::error::PipeWarden: enforce mode could not verify this run (report generated: ${REPORT_OK}, unparsable log lines: ${MALFORMED_LINES}) — failing closed."
+        exit 1
+    fi
+fi
 if [ "${MODE}" = "enforce" ] && [ "${BLOCKED_COUNT}" -gt 0 ]; then
     if [ "${FAIL_ON_BLOCK}" = "false" ]; then
         echo "::warning::PipeWarden: blocked ${BLOCKED_COUNT} connection(s) in enforce mode; fail-on-block is false, so the job continues. The traffic was still blocked."

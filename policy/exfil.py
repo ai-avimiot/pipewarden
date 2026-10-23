@@ -133,8 +133,42 @@ def _encodings(value: str) -> tuple[bytes, ...]:
         base64.urlsafe_b64encode(raw).rstrip(b"="),
         urllib.parse.quote(value, safe="").encode("ascii", errors="ignore"),
         raw.hex().encode("ascii"),
+        raw.hex().upper().encode("ascii"),
     }
+    variants.update(_embedded_base64(raw))
     return tuple(sorted((v for v in variants if v), key=len, reverse=True))
+
+
+def _embedded_base64(raw: bytes) -> set[bytes]:
+    """The base64 characters that encode only *raw*, at each of the 3 byte alignments.
+
+    Inside a larger blob (``env | base64``) the secret starts at an arbitrary
+    offset, and the characters at its edges mix in neighbouring bytes — so only
+    the interior run is stable. Dropped edge characters shrink the match by at
+    most 4 characters, which ``MIN_SECRET_LENGTH`` keeps well above noise.
+    """
+    out: set[bytes] = set()
+    for pad in range(3):
+        encoded = base64.b64encode(b"\x00" * pad + raw).rstrip(b"=")
+        lead = (0, 2, 3)[pad]
+        trail = 1 if (pad + len(raw)) % 3 else 0
+        core = encoded[lead:len(encoded) - trail]
+        if len(core) >= MIN_SECRET_LENGTH:
+            out.add(core)
+            out.add(core.replace(b"+", b"-").replace(b"/", b"_"))
+    return out
+
+
+_JSON_ESCAPE = re.compile(rb"\\u00([0-7][0-9a-fA-F])|\\(/)")
+
+
+def _json_unescape(window: bytes) -> bytes:
+    """Undo JSON ``\\u00XX`` / ``\\/`` escapes, which otherwise hide an ASCII secret."""
+    if b"\\" not in window:
+        return window
+    return _JSON_ESCAPE.sub(
+        lambda m: bytes([int(m.group(1), 16)]) if m.group(1) else b"/", window
+    )
 
 
 def load_watch_values(path: str) -> dict[str, str]:
@@ -221,7 +255,7 @@ def scan(
     if not payload:
         return []
 
-    window = payload[: max(0, cfg.max_scan_bytes)]
+    window = _json_unescape(payload[: max(0, cfg.max_scan_bytes)])
     findings: list[Finding] = []
 
     if "env-secrets" in cfg.detectors:
@@ -286,4 +320,14 @@ def blocking_findings(findings: list[Finding]) -> list[Finding]:
     cache keys and compressed blobs, so blocking on it would break ordinary
     builds — it earns its place in the report, not in the enforcement path.
     """
-    return [f for f in findings if f.detector in ("env-secrets", "patterns")]
+    return [f for f in findings if f.detector in ("env-secrets", "patterns", "encoding")]
+
+
+def undecodable_body_finding(salt: bytes) -> Finding:
+    """A body whose Content-Encoding cannot be undone cannot be shown to be clean."""
+    return Finding(
+        detector="encoding",
+        label="undecodable-body",
+        count=1,
+        fingerprint=_fingerprint(salt, b"undecodable-body"),
+    )

@@ -4,6 +4,10 @@ updates:
     directory: "/requirements"
     schedule:
       interval: "weekly"
+    # Fresh releases are where compromised packages live; security updates
+    # ignore this.
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
@@ -84,6 +88,8 @@ updates:
     directory: "/proxy"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
     # Same mitmproxy 12.3.0 ceilings as /requirements above: the proxy image is
@@ -106,6 +112,8 @@ updates:
     directory: "/native-proxy/action"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
     # @actions/artifact 6.x is ESM-only and pulls in @azure/storage-common's
@@ -128,6 +136,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -135,6 +145,8 @@ updates:
     directory: "/native-proxy/action"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -142,6 +154,8 @@ updates:
     directory: "/native-proxy/action-setup"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -149,6 +163,8 @@ updates:
     directory: "/native-proxy/action-teardown"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -156,6 +172,8 @@ updates:
     directory: "/container"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -163,6 +181,8 @@ updates:
     directory: "/proxy"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
 
@@ -170,5 +190,7 @@ updates:
     directory: "/runner"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"

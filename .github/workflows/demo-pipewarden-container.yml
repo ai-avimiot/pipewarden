@@ -11,6 +11,11 @@ on:
   pull_request:
     paths:
       - 'demo-nodejs/**'
+      - 'container/**'
+      - 'proxy/**'
+      - 'scripts/**'
+      - 'policy/**'
+      - '.github/workflows/demo-pipewarden-container.yml'
   workflow_dispatch:
 
 # A commit and its release tag are pushed together; without this the demo runs
@@ -53,6 +58,15 @@ jobs:
       # PIPEWARDEN CONTAINER MODE (runs your entire workflow in a monitored network)
       # ============================================================================
       
+      # A PR must be tested against its own images: :latest is the last release.
+      - name: Build images from this checkout (pull requests)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker build -q -f proxy/Dockerfile -t pipewarden-proxy:ci .
+          docker build -q -f container/Dockerfile -t pipewarden:ci .
+          echo "PIPEWARDEN_IMAGE=pipewarden:ci" >> "$GITHUB_ENV"
+          echo "PIPEWARDEN_PROXY_IMAGE=pipewarden-proxy:ci" >> "$GITHUB_ENV"
+
       - name: "🔒 Run CI commands in monitored container network"
         run: |
           docker run --rm \
@@ -75,3 +89,20 @@ jobs:
         # - All HTTP/HTTPS traffic is automatically routed through the proxy
         # - Generates network monitoring report after commands complete
         # - Cleanup happens automatically when container exits
+
+      # The workload must not reach a non-allowlisted host by any route. This
+      # once succeeded: pipeline-command mode never routed HTTP via the proxy.
+      - name: "Bypass check: enforce blocks a non-allowlisted host"
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /tmp:/tmp \
+            -v "${{ github.workspace }}:${{ github.workspace }}" \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            -e GITHUB_WORKSPACE="${{ github.workspace }}" \
+            -e INPUT_PIPELINE_CMD='exec 3<>/dev/tcp/1.1.1.1/80 && printf "GET / HTTP/1.0\r\nHost: one.one.one.one\r\n\r\n" >&3 && reply=$(timeout 10 head -1 <&3); echo "raw reply: ${reply:-<none>}"; case "$reply" in *" 200 "*|*" 301 "*|*" 302 "*) echo "LEAK: reached an unlisted host"; exit 1;; esac; echo "blocked as expected"' \
+            -e INPUT_POLICY_FILE="${{ github.workspace }}/.github/pipewarden/demo-pipewarden-enforce.network-policy.yml" \
+            -e INPUT_MODE=enforce \
+            -e INPUT_FAIL_ON_BLOCK=false \
+            -e PIPEWARDEN_PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE}" \
+            "$PIPEWARDEN_IMAGE"

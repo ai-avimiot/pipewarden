@@ -7,6 +7,7 @@ Produces:
 """
 
 import fnmatch
+import re
 
 from policy.models import ConnectionEntry, PolicyRule
 
@@ -145,6 +146,9 @@ def _rule_matches(rule: PolicyRule, conn: ConnectionEntry) -> bool:
     return domain_ok and port_ok and proto_ok
 
 
+_SAFE_HOST = re.compile(r"(?:\*\.)?[A-Za-z0-9_](?:[A-Za-z0-9_.:-]{0,252})")
+
+
 def _generate_yaml(suggested_rules: list[dict]) -> str:
     """Generate a needed allowlist for blocked destinations.
 
@@ -181,8 +185,12 @@ def _generate_yaml(suggested_rules: list[dict]) -> str:
             comment_parts.append(f"{blocked}x blocked")
         comment_parts.append(today)
 
-        comment = "  # " + " | ".join(comment_parts)
+        comment = "  # " + "".join(ch for ch in " | ".join(comment_parts) if ch.isprintable())[:160]
 
+        # Observed hosts are attacker-influenced; anything but a plain name or IP
+        # could break out of the quoted YAML scalar.
+        if not _SAFE_HOST.fullmatch(str(host)) or not str(port).isdigit():
+            continue
         if _is_ip_str(host):
             prefix = sr.get("prefix", "")
             value = prefix if prefix else host

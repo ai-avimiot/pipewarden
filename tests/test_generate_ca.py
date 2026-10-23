@@ -65,12 +65,12 @@ class TestGenerateCa:
         assert ku.critical is True
         assert ku.value.key_cert_sign is True
 
-    def test_cert_valid_for_one_year(self, tmp_path):
+    def test_cert_is_short_lived(self, tmp_path):
         generate_ca(str(tmp_path))
         cert_data = (tmp_path / "ca.pem").read_bytes()
         cert = x509.load_pem_x509_certificate(cert_data)
         delta = cert.not_valid_after_utc - cert.not_valid_before_utc
-        assert 364 <= delta.days <= 366
+        assert 6 <= delta.days <= 8
 
     def test_returns_file_paths(self, tmp_path):
         cert_path, key_path = generate_ca(str(tmp_path))

@@ -15,6 +15,7 @@ import logging
 import os
 import ssl
 import sys
+import zlib
 from datetime import datetime, timezone
 
 # mitmproxy may not be installed in the test environment.
@@ -45,6 +46,7 @@ from policy.exfil import (  # noqa: E402
     build_watchlist,
     load_watch_values,
     scan,
+    undecodable_body_finding,
 )
 from policy.matcher import PolicyEngine  # noqa: E402
 from policy.models import ConnectionEntry  # noqa: E402
@@ -53,7 +55,7 @@ from policy.parser import parse_policy_file, parse_policy_file_full  # noqa: E40
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOG_PATH = "/var/log/connections.jsonl"
-DNS_IP_MAP_PATH = "/var/log/dns_ip_map.json"
+DNS_IP_MAP_PATH = os.environ.get("DNS_IP_MAP_PATH", "/var/log/dns_ip_map.json")
 
 # One entry per client TCP connection, not per request: keep-alive means a
 # single npm install is dozens of requests over a handful of sockets, and the
@@ -238,15 +240,48 @@ def verify_server_cert(cert_pem: bytes, hostname: str,
     except Exception as e:
         return None, f"certificate verification error: {e}"
 
+    if not _allows_server_auth(cert):
+        return False, "certificate not issued for TLS server authentication (EKU)"
+
     # Chain is trusted — now confirm the cert was issued for this host, so a
     # spoofed SNI can't borrow an allowlisted domain's identity.
     if hostname:
+        if _looks_like_ip(hostname.strip("[]")):
+            if not _cert_matches_ip(cert, hostname.strip("[]")):
+                return False, f"certificate not valid for {hostname} (no matching IP SAN)"
+            return True, ""
         names = _cert_dns_names(cert)
-        if names and not _hostname_matches_cert_names(hostname, names):
+        if not names:
+            # An IP-only cert (e.g. Let's Encrypt short-lived IP certs) names no host at all.
+            return False, f"certificate not valid for {hostname} (cert names no DNS host)"
+        if not _hostname_matches_cert_names(hostname, names):
             shown = ", ".join(names[:5])
             return False, f"certificate not valid for {hostname} (cert names: {shown})"
 
     return True, ""
+
+
+def _allows_server_auth(cert) -> bool:
+    """False only when an EKU extension is present and omits serverAuth."""
+    from cryptography import x509 as crypto_x509
+    from cryptography.x509.oid import ExtendedKeyUsageOID
+
+    try:
+        eku = cert.extensions.get_extension_for_class(crypto_x509.ExtendedKeyUsage)
+    except crypto_x509.ExtensionNotFound:
+        return True
+    return ExtendedKeyUsageOID.SERVER_AUTH in eku.value
+
+
+def _cert_matches_ip(cert, ip: str) -> bool:
+    from cryptography import x509 as crypto_x509
+
+    try:
+        san = cert.extensions.get_extension_for_class(crypto_x509.SubjectAlternativeName)
+    except crypto_x509.ExtensionNotFound:
+        return False
+    wanted = ipaddress.ip_address(ip)
+    return any(addr == wanted for addr in san.value.get_values_for_type(crypto_x509.IPAddress))
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +523,22 @@ class NetworkMonitorAddon:
 
         status = self.engine.evaluate(entry)
 
+        # Domain fronting: the SNI (or resolved name) passes while the Host
+        # header routes the request to another vhost on the same front end.
+        authority = _authority_host(req)
+        if status == "allowed" and authority and authority != _norm_host(host):
+            fronted = ConnectionEntry(
+                timestamp=entry.timestamp, protocol=entry.protocol, host=authority,
+                port=entry.port, path=entry.path, method=entry.method,
+            )
+            if self.engine.evaluate(fronted) != "allowed":
+                status = "blocked" if self.mode == "enforce" else "would_block"
+                entry.block_reason = (
+                    f"Host header {authority!r} does not match {host!r} "
+                    f"and is not allowed by policy"
+                )
+                logger.warning("Blocking %s:%s — %s", host, req.port, entry.block_reason)
+
         # Certificate-based enforcement: in enforce mode, a connection the
         # policy would allow but whose upstream cert is *definitively* invalid
         # (self-signed, untrusted chain, or not issued for this SNI host) is a
@@ -502,6 +553,7 @@ class NetworkMonitorAddon:
         ):
             status = "blocked"
             reason = entry.tls_cert_error or "invalid TLS certificate"
+            entry.block_reason = reason
             logger.warning(
                 "Blocking %s:%s — allowed by policy but %s",
                 host, req.port, reason,
@@ -618,7 +670,7 @@ class NetworkMonitorAddon:
             return []
 
         try:
-            payload = _request_payload(
+            payload, decoded = _request_payload(
                 req, self.exfil_cfg.max_scan_bytes, self.exfil_cfg.scan_headers
             )
         except Exception as exc:  # noqa: BLE001 - never break a request to scan it
@@ -628,6 +680,8 @@ class NetworkMonitorAddon:
         findings = scan(
             payload, self.exfil_watchlist, self.exfil_cfg, self._exfil_salt
         )
+        if not decoded:
+            findings.append(undecodable_body_finding(self._exfil_salt))
         if not findings:
             return []
 
@@ -746,12 +800,36 @@ class NetworkMonitorAddon:
     # TCP connection logging
     # ------------------------------------------------------------------
 
+    def tcp_start(self, flow) -> None:
+        """Kill a raw TCP flow the policy does not allow, before any byte is relayed."""
+        if self.mode != "enforce":
+            return
+        if self.engine.evaluate(self._tcp_entry(flow, 0)) == "blocked":
+            _kill(flow)
+
     def tcp_message(self, flow) -> None:
-        """Log a raw TCP connection message."""
-        server_addr = flow.server_conn.address
+        """Log a raw TCP connection message; blank it when the flow is blocked."""
         message = flow.messages[-1] if flow.messages else None
         bytes_transferred = len(message.content) if message else 0
 
+        entry = self._tcp_entry(flow, bytes_transferred)
+
+        # No User-Agent on a raw TCP stream, so this is process-mode only —
+        # and it is where process attribution earns its keep, since nothing
+        # else in the entry says what made the connection.
+        entry.attribution = self._attribute(flow, None, entry)
+
+        status = self.engine.evaluate(entry)
+        entry.status = status
+        if status == "blocked":
+            # mitmproxy's TCP layer ignores flow.kill(), so the relayed bytes are emptied instead.
+            if message is not None:
+                message.content = b""
+            _kill(flow)
+        self._write_log(entry)
+
+    def _tcp_entry(self, flow, bytes_transferred: int) -> ConnectionEntry:
+        server_addr = flow.server_conn.address
         host = server_addr[0]
         if _looks_like_ip(host):
             dns_domain = self._resolve_host_from_dns(host)
@@ -766,15 +844,7 @@ class NetworkMonitorAddon:
             bytes_transferred=bytes_transferred,
             server_ip=server_addr[0] if host != server_addr[0] else "",
         )
-
-        # No User-Agent on a raw TCP stream, so this is process-mode only —
-        # and it is where process attribution earns its keep, since nothing
-        # else in the entry says what made the connection.
-        entry.attribution = self._attribute(flow, None, entry)
-
-        status = self.engine.evaluate(entry)
-        entry.status = status
-        self._write_log(entry)
+        return entry
 
     # ------------------------------------------------------------------
     # JSONL logging
@@ -857,6 +927,40 @@ def _client_port(flow) -> int:
     return 0
 
 
+def _kill(flow) -> None:
+    kill = getattr(flow, "kill", None)
+    if kill is None:
+        return
+    try:
+        kill()
+    except Exception:  # noqa: BLE001 - already killed / no longer live
+        pass
+
+
+def _norm_host(host: str) -> str:
+    return host.strip().lower().rstrip(".")
+
+
+def _authority_host(req) -> str:
+    """Host named by the Host header (HTTP/2 ``:authority``), port stripped; "" if absent."""
+    raw = getattr(req, "host_header", None)
+    if raw is None:
+        headers = getattr(req, "headers", None)
+        try:
+            raw = headers.get("host", "") if headers is not None else ""
+        except Exception:  # noqa: BLE001 - header containers vary across versions
+            raw = ""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("["):
+        return _norm_host(raw[1:raw.find("]")] if "]" in raw else raw[1:])
+    name, sep, port = raw.rpartition(":")
+    if sep and port.isdigit() and ":" not in name:
+        raw = name
+    return _norm_host(raw)
+
+
 def _looks_like_ip(host: str) -> bool:
     """Return True if host looks like an IP address rather than a domain."""
     try:
@@ -866,7 +970,9 @@ def _looks_like_ip(host: str) -> bool:
         return False
 
 
-def _request_payload(req, max_bytes: int, scan_headers: bool = False) -> bytes:
+def _request_payload(
+    req, max_bytes: int, scan_headers: bool = False
+) -> tuple[bytes, bool]:
     """Assemble the bytes worth scanning from a request.
 
     Query string and body by default; headers only when *scan_headers* is set.
@@ -890,11 +996,9 @@ def _request_payload(req, max_bytes: int, scan_headers: bool = False) -> bytes:
     if "?" in path:
         parts.append(path.split("?", 1)[1].encode("utf-8", errors="ignore"))
 
-    # A streamed request has no materialised content; mitmproxy raises rather
-    # than block, and a scan is not worth stalling the flow for.
-    content = getattr(req, "content", None)
-    if content:
-        parts.append(content[:max_bytes])
+    body, decoded = _request_body(req, max_bytes)
+    if body:
+        parts.append(body)
 
     if scan_headers:
         headers = getattr(req, "headers", None)
@@ -905,7 +1009,69 @@ def _request_payload(req, max_bytes: int, scan_headers: bool = False) -> bytes:
             except Exception:  # noqa: BLE001 - header containers vary across versions
                 pass
 
-    return b"\n".join(p for p in parts if p)
+    return b"\n".join(p for p in parts if p), decoded
+
+
+def _request_body(req, max_bytes: int) -> tuple[bytes, bool]:
+    """Return (up to *max_bytes* of the decoded body, whether decoding succeeded).
+
+    An undecodable body falls back to its wire bytes, so a bogus
+    ``Content-Encoding`` cannot hide the payload from the scanner.
+    """
+    headers = getattr(req, "headers", None)
+    try:
+        encoding = (headers.get("content-encoding", "") if headers is not None else "") or ""
+    except Exception:  # noqa: BLE001 - header containers vary across versions
+        encoding = ""
+    encoding = encoding.strip().lower()
+    raw = getattr(req, "raw_content", None) or b""
+
+    if encoding in ("", "identity"):
+        # A streamed request has no materialised content; mitmproxy raises rather
+        # than block, and a scan is not worth stalling the flow for.
+        content = getattr(req, "content", None)
+        return (content or b"")[:max_bytes], True
+    if encoding in ("gzip", "x-gzip", "deflate"):
+        for wbits in ((31,) if encoding != "deflate" else (15, -15)):
+            try:
+                return _bounded_inflate(raw, wbits, max_bytes)
+            except zlib.error:
+                continue
+        return raw[:max_bytes], False
+    try:
+        content = req.content
+    except Exception:  # noqa: BLE001 - mitmproxy raises ValueError on a bad encoding
+        return raw[:max_bytes], False
+    return (content or b"")[:max_bytes], True
+
+
+_MAX_GZIP_MEMBERS = 64
+
+
+def _bounded_inflate(raw: bytes, wbits: int, max_bytes: int) -> tuple[bytes, bool]:
+    """Inflate every gzip member of *raw*, output capped at *max_bytes*.
+
+    zlib stops at the end of the first member, so a secret in a second member
+    would otherwise go unscanned. Anything not cleanly decoded (a truncated
+    member, trailing bytes, too many members) reports False so the caller
+    scans the wire bytes and flags the body.
+    """
+    out = bytearray()
+    view = memoryview(raw)
+    offset = 0
+    for _ in range(_MAX_GZIP_MEMBERS):
+        d = zlib.decompressobj(wbits)
+        out += d.decompress(view[offset:], max_bytes - len(out))
+        if len(out) >= max_bytes:
+            return bytes(out[:max_bytes]), True
+        if not d.eof:
+            return bytes(out), False
+        offset = len(raw) - len(d.unused_data)
+        if offset >= len(raw):
+            return bytes(out), True
+        if wbits != 31:
+            return bytes(out), False
+    return bytes(out), False
 
 
 def _redact_path(path: str) -> str:

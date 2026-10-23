@@ -7,7 +7,7 @@ FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install runtime essentials
+# Install runtime essentials (pebble is unused and ships a lagging Go stdlib)
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
        iproute2 \
@@ -16,7 +16,8 @@ RUN apt-get update -qq \
        curl \
        git \
        sudo \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/bin/pebble
 
 # Create runner user (required by act)
 RUN useradd -m -s /bin/bash runner \

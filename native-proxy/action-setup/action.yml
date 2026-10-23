@@ -60,7 +60,7 @@ runs:
   steps:
     - name: Run native proxy setup
       shell: bash
-      run: bash ${{ github.action_path }}/../setup.sh
+      run: bash "${GITHUB_ACTION_PATH}/../setup.sh"
       env:
         INPUT_POLICY_FILE: ${{ inputs.policy-file }}
         INPUT_MODE: ${{ inputs.mode }}

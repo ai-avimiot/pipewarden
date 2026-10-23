@@ -28,11 +28,11 @@ PipeWarden publishes three images to GHCR, each signed with [cosign](https://git
 ```bash
 cosign verify \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp='^https://github.com/ai-avimiot/pipewarden/\.github/workflows/build-image\.yml@refs/' \
+  --certificate-identity-regexp='^https://github.com/ai-avimiot/pipewarden/\.github/workflows/build-image\.yml@refs/(heads/main|tags/v.*)$' \
   ghcr.io/ai-avimiot/pipewarden:latest
 ```
 
-The identity regex asserts the image was built by this repository's `build-image.yml` workflow. To pin to an exact release, replace it with `--certificate-identity` and the full ref, e.g. `https://github.com/ai-avimiot/pipewarden/.github/workflows/build-image.yml@refs/tags/v1.0.8`.
+The identity regex asserts the image was built by this repository's `build-image.yml` workflow from `main` or a release tag, not from a manually dispatched run on another branch. To pin to an exact release, replace it with `--certificate-identity` and the full ref, e.g. `https://github.com/ai-avimiot/pipewarden/.github/workflows/build-image.yml@refs/tags/v1.0.8`.
 
 Verify by digest rather than tag when you need immutability — a tag can be repointed:
 
@@ -55,7 +55,7 @@ An SPDX SBOM is attested alongside each image:
 ```bash
 cosign verify-attestation --type https://spdx.dev/Document/v2.3 \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp='^https://github.com/ai-avimiot/pipewarden/\.github/workflows/build-image\.yml@refs/' \
+  --certificate-identity-regexp='^https://github.com/ai-avimiot/pipewarden/\.github/workflows/build-image\.yml@refs/(heads/main|tags/v.*)$' \
   ghcr.io/ai-avimiot/pipewarden:latest \
   | jq -r '.payload | @base64d | fromjson | .predicate'
 ```
@@ -64,7 +64,7 @@ cosign verify-attestation --type https://spdx.dev/Document/v2.3 \
 
 `enforce` mode inspects and blocks at the application layer via mitmproxy, which is reached by redirecting **TCP ports 80 and 443, IPv4, in the host network namespace** into the proxy. Understand the edges before relying on it:
 
-> **With `tls-intercept: false` this whole section does not apply.** No proxy runs and no CA is installed, so nothing below about TLS-terminated inspection holds. Enforcement is then DNS-layer only (a disallowed domain gets NXDOMAIN and never resolves), with connections logged as IP/port metadata via conntrack. Use it when the workflow certificate-pins or uses mutual TLS — see [Certificate pinning and mTLS](README.md#certificate-pinning-and-mtls).
+> **With `tls-intercept: false` this whole section does not apply.** No proxy runs and no CA is installed, so nothing below about TLS-terminated inspection holds. Enforcement is then DNS-layer only (a disallowed domain gets NXDOMAIN and never resolves; direct DNS to other resolvers and DoT on 853 are rejected for every user except root), with connections logged as IP/port metadata via conntrack. A hard-coded IP or `curl --resolve` still connects: DNS-layer enforcement cannot stop traffic that never asks for a name. Use it when the workflow certificate-pins or uses mutual TLS — see [Certificate pinning and mTLS](README.md#certificate-pinning-and-mtls).
 
 A blocked connection fails the job by default (the pipeline stops); `fail-on-block: false` blocks the traffic but lets the job continue, and `monitor` mode only observes. See the README's Enforce section.
 
@@ -74,17 +74,28 @@ A blocked connection fails the job by default (the pipeline stops); `fail-on-blo
 - Plain DNS (TCP/UDP 53) to anything other than the local interceptor — **rejected** in enforce mode when `dns: true`, for every user except root. `resolv.conf` points at the interceptor, but that is a default rather than a control: a step addressing `8.8.8.8` directly resolved names that never appeared in the DNS log. Root is exempt because the interceptor itself forwards upstream on that port as root. Note what this does and does not change: resolving a name elsewhere never granted egress in the first place, because enforcement happens at connection time against the SNI, not at resolution time. This closes a **visibility** gap, not a bypass.
 - IPv6 HTTP/HTTPS/DoT — **rejected** in enforce mode (the proxy is IPv4-only, so uninspected IPv6 egress is failed closed rather than allowed through).
 
+**Raw TCP on 80/443.** A connection on an intercepted port that speaks neither TLS nor HTTP is checked against the policy at connection start and killed before any byte is relayed when the destination is not allowed.
+
+**Upstream identity.** A policy-allowed connection whose upstream certificate is not issued for the requested name (including IP-only certificates, and certificates without the `serverAuth` usage) is blocked in enforce mode. A request whose `Host` header names a different host than the SNI must be allowed for both names (domain fronting).
+
 **Logged but NOT blocked or TLS-inspected** (visible as IP/port metadata in the report; each raises a `::warning::` and a `health.json` flag so it is never silent)
 - Traffic on non-standard TCP ports (e.g. 8443, git-over-SSH on 22, git:9418). It appears in the report but is not policy-enforced.
 - Egress from **Docker containers a job launches** — it traverses the `FORWARD` chain, not `OUTPUT`, so it is logged as IP metadata but not TLS-inspected. Full container interception is tracked in `docs/container-visibility-plan.md`.
 - IPv6 egress on a runner that has it (logged via `ip6tables`; inspected on neither mode, rejected in enforce).
 
 **Not covered**
-- Any code able to run as the `pipewardenuser` UID (e.g. `sudo -u pipewardenuser`, which passwordless-sudo runners allow) is exempt from the redirect by design and can reach 443 directly.
+- **Steps that use `sudo`.** On GitHub-hosted runners the job user has passwordless sudo, and PipeWarden cannot take it away without breaking ordinary builds. Root can flush the iptables rules, stop the proxy, or run as `pipewardenuser` (exempt from the redirect by design). PipeWarden protects against code that runs *without* root; a dependency that escalates with `sudo` is outside the boundary. PipeWarden's own setup and teardown need sudo too, so on GitHub-hosted runners this gap cannot currently be closed.
+- **The verdict and report are computed by code the job user can modify.** The action's files under `_actions/` belong to the runner user, so a malicious step can edit the teardown or post-step and make the job pass or the report look clean. What it cannot undo without root is the blocking itself: the proxy runs as `pipewardenuser` from a root-owned copy (`/opt/pipewarden`), so the addon and policy cannot be swapped mid-job, and blocked traffic stays blocked. Treat enforce as "disallowed egress does not leave the runner", not as a tamper-proof audit log.
+- **After teardown.** Teardown removes the rules before the report is uploaded, so a background process started by the build can send traffic in that window, unmonitored. Stop long-lived background processes in your own steps if this matters.
+- **`transparent: false`.** The proxy then runs as the job user and relies on `HTTP_PROXY`; any process can ignore the variables or stop the proxy. It is a convenience mode, not an enforcement boundary.
 - **Connections already established when PipeWarden starts.** The redirect is a `nat` rule, which the kernel consults once per connection, and the conntrack logging matches `--ctstate NEW`. A socket opened by an earlier step — before the setup action ran — therefore keeps flowing on its original path: not redirected, not inspected, not logged. In the normal case PipeWarden is the first step and there is nothing open yet; the gap is real when it is placed after steps that start long-lived connections. Put it first.
 - Full IPv6 and in-container TLS interception are roadmap items, not current guarantees.
 
 If you run in `enforce` on a job holding live credentials, treat the metadata-only report and these boundaries as the contract. The report itself is metadata-only by construction: connection host/port/path/method/bytes/SNI/cert-chain, with **URL query strings redacted** before logging, and request/response headers and bodies never written to it.
+
+### Container mode
+
+The monitored Docker network is created `--internal`: it has no route off the host except through the proxy container, which is attached to it as the gateway. In `pipeline-command` mode the route is set from a separate namespace-holder container, and the pipeline joins that namespace without `NET_ADMIN`, so it cannot change its route. In `workflow-file` (act) mode the job container keeps `NET_ADMIN` (the injected setup step needs it), but rerouting gains nothing on an internal network. Ports other than 80/443/53 are forwarded and logged, as in native mode. Releases up to v2.1.2 routed `pipeline-command` HTTP/HTTPS around the proxy entirely; upgrade.
 
 ## Payload scanning
 

@@ -46,41 +46,55 @@ let enforceViolation = false;
 
 try {
   const reportJson = path.join(reportDir, "report.json");
-  if (fs.existsSync(reportJson)) {
-    const report = JSON.parse(fs.readFileSync(reportJson, "utf8"));
-    // total_blocked includes DNS-layer blocks (NXDOMAIN); fall back to
-    // blocked_connections for reports produced before that field existed.
-    const blockedCount =
-      report.total_blocked != null ? report.total_blocked : (report.blocked_connections || 0);
-    const mode = process.env.NFW_MODE || "monitor";
-    // setup.sh persists NFW_FAIL_ON_BLOCK to GITHUB_ENV, so the post-step sees it.
-    const decision = decideEnforceExit({
-      blockedCount,
-      mode,
-      failOnBlock: process.env.NFW_FAIL_ON_BLOCK,
-    });
+  let report = null;
+  try {
+    report = JSON.parse(fs.readFileSync(reportJson, "utf8"));
+  } catch (e) {
+    console.log(`::warning::PipeWarden could not read ${reportJson}: ${e.message}`);
+  }
+  // total_blocked includes DNS-layer blocks (NXDOMAIN); fall back to
+  // blocked_connections for reports produced before that field existed.
+  const blockedCount = report
+    ? (report.total_blocked != null ? report.total_blocked : (report.blocked_connections || 0))
+    : 0;
+  const malformedLines = report ? Number(report.malformed_log_lines) || 0 : 0;
+  const mode = process.env.NFW_MODE || "monitor";
+  // setup.sh persists NFW_FAIL_ON_BLOCK to GITHUB_ENV, so the post-step sees it.
+  const decision = decideEnforceExit({
+    blockedCount,
+    mode,
+    failOnBlock: process.env.NFW_FAIL_ON_BLOCK,
+    unverified: report === null || malformedLines > 0,
+  });
 
-    if (githubOutput) {
-      const outputLines = [
-        `report-path=${reportDir}`,
-        `blocked-count=${blockedCount}`,
-        `status=${decision.status}`,
-      ];
-      fs.appendFileSync(githubOutput, outputLines.join("\n") + "\n");
-    }
-    console.log(`NFW outputs: status=${decision.status}, blocked=${blockedCount}, report=${reportDir}`);
+  if (githubOutput) {
+    const outputLines = [
+      `report-path=${reportDir}`,
+      `blocked-count=${blockedCount}`,
+      `status=${decision.status}`,
+    ];
+    fs.appendFileSync(githubOutput, outputLines.join("\n") + "\n");
+  }
+  console.log(`NFW outputs: status=${decision.status}, blocked=${blockedCount}, report=${reportDir}`);
 
-    if (decision.shouldFail) {
-      enforceViolation = true;
+  if (decision.unverifiedInEnforce) {
+    console.log(
+      `::${decision.shouldFail ? "error" : "warning"}::PipeWarden: enforce mode could not verify this run ` +
+      `(report ${report ? "present" : "missing"}, unparsable log lines: ${malformedLines}) — treating it as a violation.`
+    );
+  }
+  if (decision.shouldFail) {
+    enforceViolation = true;
+    if (decision.blockedInEnforce) {
       console.log(
         `::error::PipeWarden: blocked ${blockedCount} connection(s) in enforce mode — stopping the pipeline. ` +
         "Set fail-on-block: false to block the traffic but let the job continue, or use monitor mode to only observe."
       );
-    } else if (decision.blockedInEnforce) {
-      console.log(
-        `::warning::PipeWarden: blocked ${blockedCount} connection(s) in enforce mode; fail-on-block is false, so the job continues. The traffic was still blocked.`
-      );
     }
+  } else if (decision.blockedInEnforce) {
+    console.log(
+      `::warning::PipeWarden: blocked ${blockedCount} connection(s) in enforce mode; fail-on-block is false, so the job continues. The traffic was still blocked.`
+    );
   }
 } catch (e) {
   console.log(`::warning::Could not read report outputs: ${e.message}`);
@@ -141,12 +155,20 @@ async function uploadReport() {
     console.log("PipeWarden: no /tmp/report/ to upload");
     return;
   }
+  // Only files the report generator writes: anything else in /tmp/report was put
+  // there by someone else and must not ride out on the runtime token.
+  const reportFiles = new Set([
+    "report.json", "summary.txt", "summary.md", "health.json",
+    "network-policy.yml", "pipewarden.sarif",
+  ]);
   let files = [];
   try {
     files = fs.readdirSync(reportDir)
+      .filter((f) => reportFiles.has(f))
       .map((f) => path.join(reportDir, f))
       .filter((f) => {
-        try { return fs.statSync(f).isFile(); } catch (e) { return false; }
+        // lstat: a symlink planted here would otherwise upload whatever it points at.
+        try { return fs.lstatSync(f).isFile(); } catch (e) { return false; }
       });
   } catch (e) {
     console.log(`::warning::PipeWarden could not list report dir: ${e.message}`);

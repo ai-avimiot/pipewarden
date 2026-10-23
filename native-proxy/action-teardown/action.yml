@@ -34,7 +34,7 @@ runs:
     - name: Run native proxy teardown
       id: teardown
       shell: bash
-      run: bash ${{ github.action_path }}/../teardown.sh
+      run: bash "${GITHUB_ACTION_PATH}/../teardown.sh"
       env:
         INPUT_ACTION_PATH: ${{ github.action_path }}/..
 
@@ -43,7 +43,14 @@ runs:
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.artifact-name || format('network-report-{0}', github.job) }}
-        path: ${{ steps.teardown.outputs.report-path }}
+        # Named files only: anything else dropped into the report dir is not ours.
+        path: |
+          ${{ steps.teardown.outputs.report-path }}/report.json
+          ${{ steps.teardown.outputs.report-path }}/summary.txt
+          ${{ steps.teardown.outputs.report-path }}/summary.md
+          ${{ steps.teardown.outputs.report-path }}/health.json
+          ${{ steps.teardown.outputs.report-path }}/network-policy.yml
+          ${{ steps.teardown.outputs.report-path }}/pipewarden.sarif
         if-no-files-found: warn
 
     - name: Upload generated network policy as artifact
