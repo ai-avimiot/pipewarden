@@ -15,6 +15,7 @@ on:
       - 'proxy/**'
       - 'scripts/**'
       - 'policy/**'
+      - 'tests/fixtures/**'
       - '.github/workflows/demo-pipewarden-container.yml'
   workflow_dispatch:
 
@@ -101,6 +102,23 @@ jobs:
             -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
             -e GITHUB_WORKSPACE="${{ github.workspace }}" \
             -e INPUT_PIPELINE_CMD='exec 3<>/dev/tcp/1.1.1.1/80 && printf "GET / HTTP/1.0\r\nHost: one.one.one.one\r\n\r\n" >&3 && reply=$(timeout 10 head -1 <&3); echo "raw reply: ${reply:-<none>}"; case "$reply" in *" 200 "*|*" 301 "*|*" 302 "*) echo "LEAK: reached an unlisted host"; exit 1;; esac; echo "blocked as expected"' \
+            -e INPUT_POLICY_FILE="${{ github.workspace }}/.github/pipewarden/demo-pipewarden-enforce.network-policy.yml" \
+            -e INPUT_MODE=enforce \
+            -e INPUT_FAIL_ON_BLOCK=false \
+            -e PIPEWARDEN_PROXY_IMAGE="${PIPEWARDEN_PROXY_IMAGE}" \
+            "$PIPEWARDEN_IMAGE"
+
+      # workflow-file mode with act's default runner image, which lacks
+      # iproute2: the route through the proxy must be set from outside.
+      - name: "workflow-file mode: allowed passes, unlisted blocked"
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /tmp:/tmp \
+            -v "${{ github.workspace }}:${{ github.workspace }}" \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            -e GITHUB_WORKSPACE="${{ github.workspace }}" \
+            -e INPUT_WORKFLOW_FILE="${{ github.workspace }}/tests/fixtures/act-smoke-workflow.yml" \
             -e INPUT_POLICY_FILE="${{ github.workspace }}/.github/pipewarden/demo-pipewarden-enforce.network-policy.yml" \
             -e INPUT_MODE=enforce \
             -e INPUT_FAIL_ON_BLOCK=false \

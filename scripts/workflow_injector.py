@@ -50,7 +50,9 @@ def _str_representer(dumper, data):
 _Dumper.add_representer(str, _str_representer)
 
 # The NFW init step — prepended to the first job's steps.
-# Installs minimal deps, trusts the CA, and switches the route.
+# Trusts the CA and waits for the orchestrator to route the job through the
+# proxy. The route is set from outside the container (see entrypoint.sh), so
+# the job needs neither NET_ADMIN nor iproute2 — and cannot undo it.
 NFW_INIT_STEP = {
     "name": "NFW: Setup monitoring",
     "run": (
@@ -58,17 +60,21 @@ NFW_INIT_STEP = {
         "if [ \"$(id -u)\" != \"0\" ] && command -v sudo &>/dev/null; then\n"
         "  SUDO=sudo\n"
         "fi\n"
-        "if ! command -v ip &>/dev/null; then\n"
-        "  $SUDO apt-get update -qq > /dev/null 2>&1\n"
-        "  $SUDO apt-get install -y -qq iproute2 > /dev/null 2>&1\n"
-        "fi\n"
         "if [ -f /ca/ca.pem ]; then\n"
         "  $SUDO cp /ca/ca.pem /usr/local/share/ca-certificates/cicd-monitor.crt\n"
         "  $SUDO update-ca-certificates > /dev/null 2>&1 || true\n"
         "fi\n"
         "if [ -n \"${PROXY_GATEWAY:-}\" ]; then\n"
-        "  $SUDO ip route del default 2>/dev/null || true\n"
-        "  $SUDO ip route add default via \"${PROXY_GATEWAY}\"\n"
+        "  IFS=. read -r a b c d <<< \"${PROXY_GATEWAY}\"\n"
+        "  want=$(printf '%02X%02X%02X%02X' \"$d\" \"$c\" \"$b\" \"$a\")\n"
+        "  for _ in $(seq 1 60); do\n"
+        "    awk -v w=\"$want\" '$2==\"00000000\" && toupper($3)==w {f=1} END {exit !f}' /proc/net/route && break\n"
+        "    sleep 0.5\n"
+        "  done\n"
+        "  if ! awk -v w=\"$want\" '$2==\"00000000\" && toupper($3)==w {f=1} END {exit !f}' /proc/net/route; then\n"
+        "    echo \"::error::PipeWarden: default route via the proxy (${PROXY_GATEWAY}) was never set\"\n"
+        "    exit 1\n"
+        "  fi\n"
         "fi\n"
         "git config --global --add safe.directory '*' 2>/dev/null || true\n"
     ),

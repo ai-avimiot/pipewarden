@@ -174,8 +174,23 @@ WORKSPACE_DIR="${GITHUB_WORKSPACE:-$(pwd)}"
 if [ "${USE_ACT}" = "true" ]; then
     # --- Act mode: run workflow natively via nektos/act ---
     CONTAINER_OPTS="--dns ${PROXY_IP}"
-    CONTAINER_OPTS="${CONTAINER_OPTS} --cap-add=NET_ADMIN"
     CONTAINER_OPTS="${CONTAINER_OPTS} -v ${CA_DIR}/ca.pem:/ca/ca.pem:ro"
+
+    # act creates the job containers itself, so route each one through the
+    # proxy from outside as it starts: the job then needs neither NET_ADMIN
+    # nor iproute2 (which it could not install before it has a route).
+    PROXY_ID="$(docker inspect -f '{{.Id}}' "${PROXY_CONTAINER}")"
+    docker events --filter type=container --filter event=start --format '{{.Actor.ID}}' |
+        while read -r cid; do
+            [ "${cid}" = "${PROXY_ID}" ] && continue
+            nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "${cid}" 2>/dev/null || true)"
+            case " ${nets} " in *" ${NETWORK_NAME} "*) ;; *) continue ;; esac
+            docker run --rm --network "container:${cid}" --cap-add NET_ADMIN \
+                --entrypoint ip "${PROXY_IMAGE}" route replace default via "${PROXY_IP}" \
+                || echo "Warning: could not route container ${cid:0:12} through the proxy"
+        done &
+    ROUTER_PID=$!
+    sleep 1  # let the event stream subscribe before act starts containers
 
     act push \
         -W "${MODIFIED_WORKFLOW}" \
@@ -202,6 +217,7 @@ if [ "${USE_ACT}" = "true" ]; then
         -P ubuntu-24.04="${RUNNER_IMAGE}" \
         --rm
     PIPELINE_EXIT=$?
+    kill "${ROUTER_PID}" 2>/dev/null || true
 else
     # --- Pipeline-command mode: run directly in a container ---
     PIPELINE_IP="172.30.0.3"
