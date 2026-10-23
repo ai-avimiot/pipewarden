@@ -1045,24 +1045,33 @@ def _request_body(req, max_bytes: int) -> tuple[bytes, bool]:
     return (content or b"")[:max_bytes], True
 
 
+_MAX_GZIP_MEMBERS = 64
+
+
 def _bounded_inflate(raw: bytes, wbits: int, max_bytes: int) -> tuple[bytes, bool]:
     """Inflate every gzip member of *raw*, output capped at *max_bytes*.
 
     zlib stops at the end of the first member, so a secret in a second member
-    would otherwise go unscanned; bytes that are not a further member make the
-    body undecodable. max_length bounds memory against decompression bombs.
+    would otherwise go unscanned. Anything not cleanly decoded (a truncated
+    member, trailing bytes, too many members) reports False so the caller
+    scans the wire bytes and flags the body.
     """
-    out = b""
-    data = raw
-    while data and len(out) < max_bytes:
+    out = bytearray()
+    view = memoryview(raw)
+    offset = 0
+    for _ in range(_MAX_GZIP_MEMBERS):
         d = zlib.decompressobj(wbits)
-        out += d.decompress(data, max_bytes - len(out))
+        out += d.decompress(view[offset:], max_bytes - len(out))
+        if len(out) >= max_bytes:
+            return bytes(out[:max_bytes]), True
         if not d.eof:
-            break  # output cap reached mid-member
-        data = d.unused_data
-        if data and wbits != 31:
-            return out, False
-    return out[:max_bytes], True
+            return bytes(out), False
+        offset = len(raw) - len(d.unused_data)
+        if offset >= len(raw):
+            return bytes(out), True
+        if wbits != 31:
+            return bytes(out), False
+    return bytes(out), False
 
 
 def _redact_path(path: str) -> str:

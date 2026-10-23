@@ -304,3 +304,27 @@ def test_deflate_trailing_garbage_is_undecodable():
     _, ok = _request_body(req, 1 << 20)
     assert not ok
 
+
+def test_truncated_gzip_member_is_undecodable():
+    import gzip
+
+    from proxy.addon import _request_body
+
+    body = gzip.compress(("token=" + SECRET).encode())[:-12]
+    req = MockRequest(method="POST", raw_content=body,
+                      headers=MockHeaders({"Content-Encoding": "gzip"}))
+    _, ok = _request_body(req, 1 << 20)
+    assert not ok
+
+
+def test_many_gzip_members_are_undecodable():
+    import gzip
+
+    from proxy.addon import _request_body
+
+    body = gzip.compress(b"") * 10_000
+    req = MockRequest(method="POST", raw_content=body,
+                      headers=MockHeaders({"Content-Encoding": "gzip"}))
+    _, ok = _request_body(req, 1 << 20)
+    assert not ok
+
