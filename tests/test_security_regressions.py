@@ -126,7 +126,7 @@ class TestCertIdentity:
         ctx = self.trust(ca)
         ok, err = verify_server_cert(pem, "github.com", ctx)
         assert ok is False
-        assert "github.com" in err
+        assert err == "certificate not valid for github.com (cert names no DNS host)"
 
     def test_client_auth_only_cert_rejected(self):
         from cryptography.x509.oid import ExtendedKeyUsageOID
@@ -279,3 +279,28 @@ def test_truncated_compression_pointer_gets_formerr():
     handle_query(header + b"\xc0", ("127.0.0.1", 5353), sock)
     assert sock.sent and sock.sent[0][:2] == b"\xbe\xef"
     assert sock.sent[0][3] & 0x0F == 1
+
+
+def test_second_gzip_member_is_scanned():
+    import gzip
+
+    from proxy.addon import _request_body
+
+    body = gzip.compress(b"harmless=1&") + gzip.compress(("token=" + SECRET).encode())
+    req = MockRequest(method="POST", raw_content=body,
+                      headers=MockHeaders({"Content-Encoding": "gzip"}))
+    decoded, ok = _request_body(req, 1 << 20)
+    assert ok and SECRET.encode() in decoded
+
+
+def test_deflate_trailing_garbage_is_undecodable():
+    import zlib
+
+    from proxy.addon import _request_body
+
+    body = zlib.compress(b"a=1") + b"SECRET_TRAILER"
+    req = MockRequest(method="POST", raw_content=body,
+                      headers=MockHeaders({"Content-Encoding": "deflate"}))
+    _, ok = _request_body(req, 1 << 20)
+    assert not ok
+

@@ -1032,10 +1032,9 @@ def _request_body(req, max_bytes: int) -> tuple[bytes, bool]:
         content = getattr(req, "content", None)
         return (content or b"")[:max_bytes], True
     if encoding in ("gzip", "x-gzip", "deflate"):
-        # zlib's max_length bounds the output, so a decompression bomb costs max_bytes, not RAM.
         for wbits in ((31,) if encoding != "deflate" else (15, -15)):
             try:
-                return zlib.decompressobj(wbits).decompress(raw, max_bytes), True
+                return _bounded_inflate(raw, wbits, max_bytes)
             except zlib.error:
                 continue
         return raw[:max_bytes], False
@@ -1044,6 +1043,26 @@ def _request_body(req, max_bytes: int) -> tuple[bytes, bool]:
     except Exception:  # noqa: BLE001 - mitmproxy raises ValueError on a bad encoding
         return raw[:max_bytes], False
     return (content or b"")[:max_bytes], True
+
+
+def _bounded_inflate(raw: bytes, wbits: int, max_bytes: int) -> tuple[bytes, bool]:
+    """Inflate every gzip member of *raw*, output capped at *max_bytes*.
+
+    zlib stops at the end of the first member, so a secret in a second member
+    would otherwise go unscanned; bytes that are not a further member make the
+    body undecodable. max_length bounds memory against decompression bombs.
+    """
+    out = b""
+    data = raw
+    while data and len(out) < max_bytes:
+        d = zlib.decompressobj(wbits)
+        out += d.decompress(data, max_bytes - len(out))
+        if not d.eof:
+            break  # output cap reached mid-member
+        data = d.unused_data
+        if data and wbits != 31:
+            return out, False
+    return out[:max_bytes], True
 
 
 def _redact_path(path: str) -> str:
