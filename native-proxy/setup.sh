@@ -812,7 +812,8 @@ elif [ "${CANARY}" != "false" ]; then
         # it either way — a blocked canary entry passes the check too.
         CANARY_IP=""
         if [ -n "${UPSTREAM_DNS}" ] && command -v dig &>/dev/null; then
-            CANARY_IP="$(dig +short +time=3 +tries=1 @"${UPSTREAM_DNS%%,*}" A "${CANARY_HOST}" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+            # As root: the enforce DNS reject rules exempt only uid 0.
+            CANARY_IP="$(sudo dig +short +time=3 +tries=1 @"${UPSTREAM_DNS%%,*}" A "${CANARY_HOST}" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
         fi
         if [ -n "${CANARY_IP}" ]; then
             curl --silent --show-error --max-time 15 --output /dev/null \
@@ -829,14 +830,26 @@ elif [ "${CANARY}" != "false" ]; then
     fi
     # Poll for the canary entry (the proxy writes it a beat after the request
     # returns) instead of a flat 1s wait — break as soon as it lands.
+    canary_recorded() {
+        for _ in $(seq 1 10); do
+            if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q "\"protocol\": \"$1\""; then
+                return 0
+            fi
+            sleep 0.1
+        done
+        return 1
+    }
     CANARY_SEEN="false"
-    for _ in $(seq 1 10); do
-        if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q '"protocol": "https"'; then
-            CANARY_SEEN="true"
-            break
-        fi
-        sleep 0.1
-    done
+    if canary_recorded https; then
+        CANARY_SEEN="true"
+    elif [ "${ENABLE_TRANSPARENT}" != "true" ]; then
+        # An HTTPS CONNECT dies at mitmproxy's eager upstream lookup, before
+        # any hook, when enforce DNS refuses the name; plain HTTP is hooked first.
+        curl --silent --show-error --max-time 15 --output /dev/null \
+            --proxy "http://127.0.0.1:${PROXY_PORT}" "http://${CANARY_HOST}/" \
+            || echo "Plain-HTTP canary request failed (not fatal by itself — checking the connection log)"
+        canary_recorded http && CANARY_SEEN="true"
+    fi
     if [ "${CANARY_SEEN}" = "true" ]; then
         echo "Canary OK — ${CANARY_HOST} was recorded by the proxy leg"
         # Drop startup noise (including the canary itself) so the report and
