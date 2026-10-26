@@ -173,6 +173,23 @@ class TestEveryRuleIsIntegrityChecked:
         assert len(_added_rules(_read(SETUP_SH))) >= 15
         assert len(_integrity_checked_rules(_read(TEARDOWN_SH))) >= 15
 
+    def test_intercept_off_branch_checks_its_own_rules(self):
+        """The LOG rule text also appears in the transparent branch, so the
+        file-wide match above would pass even if this branch skipped it."""
+        setup = _read(SETUP_SH)
+        start = setup.index("Configure connection logging (no interception)")
+        added = _added_rules(setup[start:setup.index('elif [ "${ENABLE_TRANSPARENT}" = "true" ]', start)])
+        teardown = _read(TEARDOWN_SH)
+        start = teardown.index('elif [ "${TLS_INTERCEPT}" != "true" ]')
+        checked = _integrity_checked_rules(
+            teardown[start:teardown.index('if [ "${BOUNDARY_INTACT}" = "true" ]', start)])
+        assert len(added) >= 8
+        assert any("NFW-CONN: " in r[2] for r in added)
+        for rule in added:
+            assert rule in checked, (
+                f"tls-intercept: false adds a rule its boundary check never verifies:\n  {rule}"
+            )
+
 
 def test_enforce_ip6_rejects_fail_setup_instead_of_being_skipped():
     """Teardown requires these rules, so setup must not tolerate their absence."""

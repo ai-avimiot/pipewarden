@@ -8,6 +8,8 @@
 
 The major version marks a new policy schema and a new capability, not a break. This guide covers what changed and what you may want to opt into.
 
+> **Moving on to v3?** v3.0 does contain breaking changes (the internal-address guard on `version: "2"` policies, no Docker socket in container-mode job containers, IPv6 and teardown checks that fail closed). They are covered in [Migrating to v3.0](migrating-to-v3.md); this guide describes v2.x only.
+
 ## What changed without asking you
 
 ### QUIC and UDP entries no longer disappear from reports
@@ -17,10 +19,6 @@ Connections were deduplicated by `(destination IP, port)` with no regard for tra
 That hid essentially all QUIC: an HTTP/3 client contacts a host over TCP/443 first, so every subsequent UDP/443 datagram to it looked like a duplicate. Enforce mode still *rejected* the traffic — those rules are independent — but monitor mode, the mode you run first to learn what your pipeline does, showed nothing.
 
 **What you may notice:** monitor-mode reports can now contain more entries than before for the same pipeline. Those connections were always happening; they were being dropped from the report.
-
-### Container mode: the job no longer gets the Docker socket
-
-In container mode with a workflow file, act used to bind-mount the host's Docker socket into each job container. A job holding that socket can start a container on the host network (`docker run --network host`) and leave the firewall entirely, so v2 no longer passes it in. The default runner image ships no `docker` CLI, so a `run: docker ...` step did not work there before either; if you point `PIPEWARDEN_RUNNER_IMAGE` at an image that has one, those steps now fail with "Cannot connect to the Docker daemon". `uses: docker://` steps and Docker container actions are started by act itself and are unaffected. Use the native runner mode for workflows that build images.
 
 ## What you can opt into
 
@@ -92,21 +90,9 @@ Note that `attribution: client` needs TLS interception to have anything to read.
 | Policy | Behaviour |
 | --- | --- |
 | `version: "1"` | Parses exactly as before. Payload scanning off and unavailable. |
-| `version: "1"` | Parses exactly as before. Payload scanning off and unavailable. Allowed traffic may reach internal addresses, as it always could. |
-| `version: "2"` | Everything from v1, plus `exfiltration:`, `allow_request_body`, `allowed_ips`, `methods` and `access`, and the internal-destination guard. |
+| `version: "2"` | Everything from v1, plus `exfiltration:` and `allow_request_body`. |
 
-Under `version: "2"`, allowed traffic whose upstream IP is private, loopback, link-local, CGNAT, unique-local, reserved or cloud metadata is refused (see [Internal destinations](../README.md#2-review--tune-the-generated-policy)). A rule that names the address itself (`domains: ["10.0.0.5"]`, or `localhost` for loopback) is exempt; a rule that reaches an internal host by name needs `allowed_ips`. A `version: "1"` policy keeps reaching internal hosts unchanged, so bumping the version is the point at which to check: a service on `localhost` or an internal mirror reached by name will need, for example:
-
-```yaml
-version: "2"
-rules:
-  - name: "internal mirror"
-    allow:
-      domains: ["mirror.corp.example"]
-      ports: [443]
-      protocols: [https]
-      allowed_ips: ["10.20.0.0/16"]
-```
+From v3.0, `version: "2"` also turns on the internal-destination guard and accepts `allowed_ips`, `methods` and `access`; see [Migrating to v3.0](migrating-to-v3.md#internal-address-guard-on-every-version-2-rule).
 
 v2 keys in a v1 policy are **refused, not ignored**. A file that says `exfiltration: {mode: block}` under `version: "1"` fails to parse rather than running silently without the control — a security feature that quietly does nothing is worse than one that is absent, because you would believe you had it.
 

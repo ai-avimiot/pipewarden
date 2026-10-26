@@ -102,6 +102,7 @@ PROJECT_ROOT="$(dirname "${ACTION_PATH}")"
 # back the network changes made so far.
 RESOLVED_STOPPED="false"
 IPTABLES_INSTALLED="false"
+CONN_LOG4_INSTALLED="false"
 FORWARD_LOG_INSTALLED="false"
 IP6TABLES_INSTALLED="false"
 BLINDSPOT_IPV6="false"
@@ -173,7 +174,7 @@ EFFECTIVE_POLICY_OUT="/tmp/pipewarden-effective-policy.yml"
 POLICY_FILE="$(python3 "${PROJECT_ROOT}/scripts/resolve_policy.py" \
     --explicit "${POLICY_FILE_INPUT}" \
     --mode "${MODE}" \
-    --out "${EFFECTIVE_POLICY_OUT}" 2>/tmp/pw-resolve.log)"
+    --out "${EFFECTIVE_POLICY_OUT}" 2>/tmp/pw-resolve.log)" || { cat /tmp/pw-resolve.log; exit 1; }
 cat /tmp/pw-resolve.log || true
 # Per-pipeline policy path (for the report's "commit this" tip).
 PIPELINE_POLICY_PATH="$(python3 -c "import os, sys; sys.path.insert(0, '${PROJECT_ROOT}'); from scripts.resolve_policy import workflow_stem, pipeline_policy_name, PIPEWARDEN_DIR; s = workflow_stem(os.environ.get('GITHUB_WORKFLOW_REF', '')); print(os.path.join(PIPEWARDEN_DIR, pipeline_policy_name(s)) if s else os.path.join(PIPEWARDEN_DIR, 'network-policy.yml'))" 2>/dev/null || echo "")"
@@ -589,6 +590,7 @@ if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     echo "::group::PipeWarden: Configure connection logging (no interception)"
     if sudo iptables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid 2>/dev/null; then
         IPTABLES_INSTALLED="true"
+        CONN_LOG4_INSTALLED="true"
         echo "Connection logging enabled (no TLS interception)."
     else
         echo "::warning::could not add connection log rule — outbound connections will not be logged this run."
@@ -736,6 +738,7 @@ if [ "${ENABLE_DNS}" = "true" ]; then
         MODE="${MODE}" \
         LOG_PATH="${LOG_DIR}/connections.jsonl" \
         DNS_IP_MAP_PATH="${RUNTIME_ROOT}/run/dns_ip_map.json" \
+        DNS_SUPPRESS_AAAA="$([ "${ENABLE_TRANSPARENT}" = "true" ] && [ "${ENABLE_TLS_INTERCEPT}" = "true" ] && echo true || echo false)" \
         python3 "${RUNTIME_ROOT}/proxy/dns_server.py" \
         > "${LOG_DIR}/dns.log" 2>&1 &
     DNS_PID=$!
@@ -941,6 +944,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     # teardown. True in transparent mode and in intercept-off logging mode;
     # decoupled from TRANSPARENT so the intercept-off path is handled too.
     echo "NFW_CONN_LOGGING=${IPTABLES_INSTALLED}" >> "${GITHUB_ENV}"
+    echo "NFW_CONN_LOG4=${CONN_LOG4_INSTALLED}" >> "${GITHUB_ENV}"
     echo "NFW_DNS_ENABLED=${ENABLE_DNS}" >> "${GITHUB_ENV}"
     if [ -n "${DNS_PID}" ]; then
         echo "NFW_DNS_PID=${DNS_PID}" >> "${GITHUB_ENV}"

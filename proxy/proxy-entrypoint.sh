@@ -16,7 +16,7 @@ fi
 # Start DNS resolver in background
 # ---------------------------------------------------------------------------
 echo "[proxy] Starting DNS resolver..."
-python3 /dns_server.py &
+DNS_SUPPRESS_AAAA=true python3 /dns_server.py &
 DNS_PID=$!
 sleep 0.5
 

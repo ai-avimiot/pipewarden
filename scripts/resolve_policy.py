@@ -8,6 +8,10 @@ Auto-resolution (used when no explicit policy-file is given):
 
 All that exist are merged (union of rules; same-name rules from the
 pipeline file override the common one) into a single effective policy file.
+All merged files must declare the same ``version``: v1 rules are unguarded
+and v2 rules are guarded against internal IPs, and one file can only say one.
+An ``exfiltration:`` block is taken whole from the last file that declares
+one, the same way a same-name rule is.
 Fallbacks: repo-root network-policy.yml, then discovery mode (no policy).
 
 The action's ``mode`` governs enforce/monitor; the merged file's ``mode`` is
@@ -16,12 +20,15 @@ line means discovery mode); human-readable details go to stderr.
 """
 
 import argparse
+import dataclasses
 import os
 import sys
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from policy.parser import parse_policy_file  # noqa: E402
+from policy.parser import parse_policy  # noqa: E402
 
 PIPEWARDEN_DIR = ".github/pipewarden"
 COMMON_NAME = "common.network-policy.yml"
@@ -69,6 +76,8 @@ def _rule_to_yaml(rule) -> dict:
     out: dict = {"name": rule.name}
     if getattr(rule, "appears", "always") != "always":
         out["appears"] = rule.appears
+    if getattr(rule, "allow_request_body", False):
+        out["allow_request_body"] = True
     out["allow"] = allow
     return out
 
@@ -77,19 +86,35 @@ def merge_policies(paths: list[str], mode: str) -> dict:
     """Parse and union rules from ``paths`` (later files override same-name)."""
     merged: dict[str, object] = {}
     order: list[str] = []
+    versions: dict[str, str] = {}
+    exfil = None
     for p in paths:
-        _, rules = parse_policy_file(p)
-        for r in rules:
+        with open(p, encoding="utf-8") as f:
+            content = f.read()
+        policy = parse_policy(content)
+        data = yaml.safe_load(content)
+        versions[p] = str(data["version"])
+        if "exfiltration" in data:
+            exfil = policy.exfil
+        for r in policy.rules:
             if r.name not in merged:
                 order.append(r.name)
             merged[r.name] = r
-    # Any version 2 source opts the merged policy into the internal-IP guard.
-    needs_v2 = any(getattr(merged[n], "internal_ip_guard", False) for n in order)
-    return {
-        "version": "2" if needs_v2 else "1",
+    if len(set(versions.values())) > 1:
+        listing = ", ".join(f"{p} (version {v})" for p, v in versions.items())
+        raise ValueError(
+            f"Cannot merge policies with different versions: {listing}. "
+            f"Set every file to version \"2\" (add allowed_ips to rules that must "
+            f"reach private addresses), or every file to version \"1\"."
+        )
+    out: dict = {
+        "version": next(iter(versions.values()), "1"),
         "mode": mode,
-        "rules": [_rule_to_yaml(merged[n]) for n in order],
     }
+    if exfil is not None:
+        out["exfiltration"] = dataclasses.asdict(exfil)
+    out["rules"] = [_rule_to_yaml(merged[n]) for n in order]
+    return out
 
 
 def resolve(explicit: str, workflow_ref: str, pipewarden_dir: str,
@@ -116,7 +141,6 @@ def resolve(explicit: str, workflow_ref: str, pipewarden_dir: str,
         candidates.append(pipeline)
 
     if candidates:
-        import yaml
         merged = merge_policies(candidates, mode)
         with open(out, "w") as f:
             yaml.safe_dump(merged, f, sort_keys=False)
@@ -144,10 +168,14 @@ def main() -> None:
     ap.add_argument("--mode", default="monitor")
     ap.add_argument("--out", default="/tmp/pipewarden-effective-policy.yml")
     args = ap.parse_args()
-    resolved = resolve(
-        args.explicit, args.workflow_ref, args.pipewarden_dir,
-        args.root_policy, args.mode, args.out,
-    )
+    try:
+        resolved = resolve(
+            args.explicit, args.workflow_ref, args.pipewarden_dir,
+            args.root_policy, args.mode, args.out,
+        )
+    except (ValueError, OSError) as exc:
+        print(f"::error::PipeWarden policy: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(resolved)
 
 

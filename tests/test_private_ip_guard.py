@@ -1,9 +1,11 @@
 """Tests for the private / metadata destination guard and ``allow.allowed_ips``."""
 
+import asyncio
 import json
 import os
 import struct
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ import dns_server  # noqa: E402
 from policy.matcher import PolicyEngine, internal_ip_category  # noqa: E402
 from policy.models import ConnectionEntry, PolicyRule  # noqa: E402
 from policy.parser import parse_policy_string  # noqa: E402
+from proxy import addon as addon_module  # noqa: E402
 from proxy.addon import NetworkMonitorAddon  # noqa: E402
 from scripts.resolve_policy import merge_policies  # noqa: E402
 from tests.conftest import (  # noqa: E402
@@ -215,8 +218,10 @@ class TestParser:
         v1.write_text(plain.format(v="1"))
         v2.write_text(plain.format(v="2").replace("name: a", "name: b"))
         assert merge_policies([str(v1)], "enforce")["version"] == "1"
-        # A v2 file opts the merged policy into the guard even without v2-only fields.
-        assert merge_policies([str(v1), str(v2)], "enforce")["version"] == "2"
+        assert merge_policies([str(v2)], "enforce")["version"] == "2"
+        # Upgrading would silently guard the v1 rules.
+        with pytest.raises(ValueError, match="different versions"):
+            merge_policies([str(v1), str(v2)], "enforce")
 
 
 @pytest.fixture
@@ -293,6 +298,127 @@ class TestAddonHttp:
         entry = _read(log_file)[0]
         assert entry["status"] == "blocked"
         assert "block_reason" not in entry
+
+
+POLICY_V2_HTTP = POLICY_V2 + """\
+  - name: "plain http api"
+    allow:
+      domains: ["plain.example.com"]
+      ports: [80]
+      protocols: [http]
+"""
+
+
+class _Upstream:
+    """A regular-mode upstream before connect: no peername, address set later."""
+
+    def __init__(self, address=None):
+        self.address = address
+        self.peername = None
+        self.error = None
+
+
+class TestAddonRegularModePlainHttp:
+    """Regular mode: the request hook fires before mitmproxy picks an upstream."""
+
+    @pytest.fixture
+    def policy(self, tmp_path):
+        p = tmp_path / "network-policy.yml"
+        p.write_text(POLICY_V2_HTTP)
+        return str(p)
+
+    def _run(self, policy, log_file, mode, monkeypatch, ips):
+        addon = NetworkMonitorAddon(policy_file=policy, mode=mode, log_path=log_file)
+
+        async def fake_resolve(host, port):
+            return list(ips)
+
+        monkeypatch.setattr(addon_module, "_resolve", fake_resolve)
+        flow = MockHTTPFlow(
+            MockRequest(scheme="http", host="plain.example.com", port=80, path="/", method="GET"),
+            server_conn=_Upstream(),
+        )
+        killed = []
+        flow.kill = lambda: killed.append(True)
+        addon.request(flow)
+        assert _read_or_empty(log_file) == []
+        server = _Upstream(address=("plain.example.com", 80))
+        asyncio.run(addon.server_connect(SimpleNamespace(server=server, client=flow.client_conn)))
+        return addon, flow, server, killed
+
+    def test_enforce_kills_on_private_upstream(self, policy, log_file, monkeypatch):
+        _, flow, server, killed = self._run(policy, log_file, "enforce", monkeypatch, ["10.0.0.5"])
+        entries = _read(log_file)
+        assert len(entries) == 1
+        assert entries[0]["status"] == "blocked"
+        assert entries[0]["server_ip"] == "10.0.0.5"
+        assert "private" in entries[0]["block_reason"]
+        assert server.error and killed
+
+    def test_enforce_blocks_when_any_answer_is_metadata(self, policy, log_file, monkeypatch):
+        _, _, server, _ = self._run(policy, log_file, "enforce", monkeypatch,
+                                    ["93.184.216.34", "169.254.169.254"])
+        assert "cloud metadata" in _read(log_file)[0]["block_reason"]
+        assert server.error
+
+    def test_monitor_logs_would_block_once_and_passes(self, policy, log_file, monkeypatch):
+        addon, flow, server, killed = self._run(policy, log_file, "monitor", monkeypatch, ["127.0.0.1"])
+        entries = _read(log_file)
+        assert [e["status"] for e in entries] == ["would_block"]
+        assert server.error is None and not killed
+        addon.response(flow)
+        assert len(_read(log_file)) == 1
+
+    def test_public_upstream_is_allowed_and_pinned(self, policy, log_file, monkeypatch):
+        _, _, server, killed = self._run(policy, log_file, "enforce", monkeypatch,
+                                         ["2606:4700::1", "93.184.216.34"])
+        entry = _read(log_file)[0]
+        assert entry["status"] == "allowed"
+        assert entry["server_ip"] == "93.184.216.34"
+        assert server.address == ("93.184.216.34", 80)
+        assert server.error is None and not killed
+
+    def test_unresolvable_name_is_left_to_mitmproxy(self, policy, log_file, monkeypatch):
+        _, _, server, _ = self._run(policy, log_file, "enforce", monkeypatch, [])
+        assert _read(log_file)[0]["status"] == "allowed"
+        assert server.address == ("plain.example.com", 80)
+
+    def test_request_hook_block_is_not_logged_again(self, policy, log_file, monkeypatch):
+        addon = NetworkMonitorAddon(policy_file=policy, mode="enforce", log_path=log_file)
+        flow = MockHTTPFlow(
+            MockRequest(scheme="http", host="plain.example.com", port=80, path="/", method="GET"),
+            server_conn=_Upstream(address=("10.0.0.5", 80)),
+        )
+        addon.request(flow)
+        server = _Upstream(address=("plain.example.com", 80))
+        asyncio.run(addon.server_connect(SimpleNamespace(server=server, client=flow.client_conn)))
+        assert [e["status"] for e in _read(log_file)] == ["blocked"]
+        assert server.error is None
+
+    def test_deferred_entry_is_logged_on_error(self, policy, log_file):
+        addon = NetworkMonitorAddon(policy_file=policy, mode="enforce", log_path=log_file)
+        flow = MockHTTPFlow(
+            MockRequest(scheme="http", host="plain.example.com", port=80, path="/", method="GET"),
+            server_conn=_Upstream(),
+        )
+        addon.request(flow)
+        addon.error(flow)
+        assert [e["status"] for e in _read(log_file)] == ["allowed"]
+
+    def test_v1_policy_is_not_deferred(self, tmp_path, log_file):
+        p = tmp_path / "v1.yml"
+        p.write_text(TestCompatibility.LITERALS.format(v="1"))
+        addon = NetworkMonitorAddon(policy_file=str(p), mode="enforce", log_path=log_file)
+        flow = MockHTTPFlow(
+            MockRequest(scheme="http", host="localhost", port=80, path="/", method="GET"),
+            server_conn=_Upstream(),
+        )
+        addon.request(flow)
+        assert [e["status"] for e in _read(log_file)] == ["allowed"]
+
+
+def _read_or_empty(path):
+    return _read(path) if os.path.exists(path) else []
 
 
 class TestAddonTcp:

@@ -23,18 +23,27 @@ The same scheme applies to the container images
 - **Major** (`X.y.z`) — **breaking changes**, for example:
   - policy-schema changes that invalidate existing `network-policy.yml` files,
   - renaming/removing an action input or output,
-  - changing a default that can break existing pipelines (e.g. default mode).
+  - changing a default that can break existing pipelines (e.g. default mode),
+  - tightening enforcement so traffic an existing policy allowed is refused.
 
-When a breaking change ships, we cut a new major (e.g. `v2`) and publish a new
-floating `v2` tag. `latest` then advances to it; `v1` keeps tracking the latest
-`1.x` so pinned consumers are not broken.
+When a breaking change ships, we cut a new major (e.g. `v3`) and publish a new
+floating `v3` tag. `latest` then advances to it; `v2` keeps tracking the latest
+`2.x` so pinned consumers are not broken.
+
+## Majors
+
+| Major | Floating tag | Points to | Upgrade guide |
+|-------|--------------|--------|---------------|
+| 3 | `v3` | latest 3.x (current major) | [Migrating to v3.0](docs/migrating-to-v3.md) |
+| 2 | `v2` | 2.2.1 | [Migrating to v2.0](docs/migrating-to-v2.md) |
+| 1 | `v1` | 1.4.1 | |
 
 ## Recommendation
 
 - **Production / security-sensitive pipelines:** pin to an exact `vX.Y.Z` or a
   commit SHA. PipeWarden is a supply-chain tool — a mutable tag is a moving
   dependency.
-- **Convenience within a major:** use `@v1` to get fixes and features without
+- **Convenience within a major:** use `@v3` to get fixes and features without
   breaking changes.
 - **`@latest`** follows everything, including future majors — convenient for
   demos, but it can pull in breaking changes, so avoid it in production.

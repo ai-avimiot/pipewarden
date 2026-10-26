@@ -8,11 +8,13 @@ SNI (Server Name Indication) in the ClientHello. Server certificates are
 verified against the system trust store to detect rogue/private certs.
 """
 
+import asyncio
 import fcntl
 import ipaddress
 import json
 import logging
 import os
+import socket
 import ssl
 import sys
 import zlib
@@ -435,6 +437,9 @@ class NetworkMonitorAddon:
         # errors don't stick.
         self._cert_verify_cache: dict[tuple, tuple[bool, str]] = {}
         self._log_dir_ready = False
+        # Allowed requests whose upstream IP was unknown at the request hook
+        # (regular mode, plain HTTP), keyed by (client, host, port).
+        self._awaiting_upstream: dict[tuple, list[tuple[object, ConnectionEntry]]] = {}
 
     def _resolve_host_from_dns(self, ip: str) -> str:
         """Look up a domain name for an IP from the DNS resolver's map."""
@@ -530,8 +535,11 @@ class NetworkMonitorAddon:
                 entry.block_reason = method_reason
                 block_kind, block_detail = "method", method_reason
 
+        upstream_unknown = False
         if status == "allowed":
-            status = self._guard_internal_ip(entry, _upstream_ip(flow))
+            upstream_ip = _upstream_ip(flow)
+            upstream_unknown = not upstream_ip and not is_https
+            status = self._guard_internal_ip(entry, upstream_ip)
             if status != "allowed":
                 block_kind, block_detail = "private-ip", entry.block_reason
 
@@ -604,6 +612,11 @@ class NetworkMonitorAddon:
             except NameError:
                 flow.response = _make_blocked_response(body, headers)
 
+        if status == "allowed" and upstream_unknown and self._guards_internal_ips():
+            key = (_conn_key(flow.client_conn), req.host, req.port)
+            self._awaiting_upstream.setdefault(key, []).append((flow, entry))
+            return
+
         self._write_log(entry)
 
     def _guard_internal_ip(self, entry: ConnectionEntry, ip: str,
@@ -616,6 +629,59 @@ class NetworkMonitorAddon:
         if not quiet:
             logger.warning("Blocking %s:%s — %s", entry.host, entry.port, reason)
         return "blocked" if self.mode == "enforce" else "would_block"
+
+    def _guards_internal_ips(self) -> bool:
+        return any(rule.internal_ip_guard for rule in self.engine.rules)
+
+    async def server_connect(self, data) -> None:
+        """Finish the internal-IP guard for a request deferred by ``request``.
+
+        In regular mode a plain-HTTP request hook fires before mitmproxy picks
+        an upstream, so the name is resolved here and the connection pinned to
+        the checked address; mitmproxy then connects without a second lookup.
+        """
+        server = data.server
+        address = getattr(server, "address", None)
+        if not address:
+            return
+        waiting = self._awaiting_upstream.get((_conn_key(data.client), address[0], address[1]))
+        if not waiting:
+            return
+        flow, entry = waiting.pop(0)
+        if not waiting:
+            del self._awaiting_upstream[(_conn_key(data.client), address[0], address[1])]
+
+        ips = await _resolve(address[0], address[1])
+        status = "allowed"
+        for ip in ips:
+            status = self._guard_internal_ip(entry, ip)
+            if status != "allowed":
+                entry.server_ip = ip
+                break
+        if ips:
+            pinned = next((ip for ip in ips if ":" not in ip), ips[0])
+            server.address = (pinned, address[1], *address[2:])
+            if status == "allowed":
+                entry.server_ip = pinned
+        if status == "blocked":
+            server.error = entry.block_reason
+            _kill(flow)
+        entry.status = status
+        self._write_log(entry)
+
+    def error(self, flow) -> None:
+        """Log a deferred request that failed before any upstream connect."""
+        self._flush_awaiting(flow)
+
+    def _flush_awaiting(self, flow) -> None:
+        for key, waiting in list(self._awaiting_upstream.items()):
+            for item in waiting:
+                if item[0] is flow:
+                    waiting.remove(item)
+                    if not waiting:
+                        del self._awaiting_upstream[key]
+                    self._write_log(item[1])
+                    return
 
     def _attribute(self, flow, req, entry: ConnectionEntry) -> dict:
         """Work out who sent this request.
@@ -731,6 +797,7 @@ class NetworkMonitorAddon:
 
     def response(self, flow) -> None:
         """Capture response size after the server replies."""
+        self._flush_awaiting(flow)
         resp = flow.response
         if resp is None:
             return
@@ -977,6 +1044,24 @@ def _upstream_ip(flow) -> str:
         if isinstance(host, str) and _looks_like_ip(host.split("%", 1)[0]):
             return host
     return ""
+
+
+def _conn_key(conn) -> object:
+    return getattr(conn, "id", None) or id(conn)
+
+
+async def _resolve(host: str, port: int) -> list[str]:
+    """Every address *host* resolves to; empty when it does not resolve."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return []
+    ips: list[str] = []
+    for info in infos:
+        ip = str(info[4][0])
+        if ip not in ips:
+            ips.append(ip)
+    return ips
 
 
 def _kill(flow) -> None:

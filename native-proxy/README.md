@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v3
         with:
           policy-file: network-policy.yml
           mode: monitor
@@ -31,7 +31,7 @@ jobs:
       - name: PipeWarden Teardown
         if: always()
         id: nfw
-        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v3
         # Generates the report AND uploads it as the `network-report-<job id>`
         # artifact. Disable with `upload-artifact: false`, or rename via
         # `artifact-name:`.
@@ -48,7 +48,7 @@ jobs:
           key: nfw-pip-${{ runner.os }}
 
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v3
         with:
           policy-file: network-policy.yml
 ```
@@ -119,7 +119,7 @@ Set `transparent: 'false'` to disable iptables and rely solely on `HTTP_PROXY`/`
 
 ```yaml
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v3
         with:
           policy-file: network-policy.yml
           transparent: 'false'

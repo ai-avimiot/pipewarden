@@ -48,6 +48,9 @@ MAP_FLUSH_INTERVAL = float(os.environ.get("DNS_MAP_FLUSH_INTERVAL", "0.5"))
 # make "<stolen-data>.readiness.pipewarden.invalid" an unlogged exfil channel.
 READINESS_PROBE_NAME = "readiness.pipewarden.invalid"
 QTYPE_AAAA = 28
+# Set "false" only when no IPv4-only proxy is in the egress path (native
+# tls-intercept: false); unset means suppress, the safe default for container mode.
+SUPPRESS_AAAA = os.environ.get("DNS_SUPPRESS_AAAA", "true").lower() != "false"
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
@@ -307,7 +310,7 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
         sock.sendto(response, addr)
         return
 
-    if (qtype == QTYPE_AAAA and status == "allowed"
+    if (SUPPRESS_AAAA and qtype == QTYPE_AAAA and status == "allowed"
             and getattr(policy_engine, "mode", None) == "enforce"):
         # The proxy only egresses over IPv4, so an AAAA answer is a dead end
         # at best and an unproxied IPv6 path at worst.

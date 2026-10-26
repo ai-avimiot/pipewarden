@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v3
         with:
           mode: monitor
           artifact-name: network-report-build   # unique per job to avoid collisions
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v3
         with:
           mode: monitor
           artifact-name: network-report-test-node${{ matrix.node }}

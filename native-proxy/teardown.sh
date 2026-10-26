@@ -91,14 +91,23 @@ if [ "${TRANSPARENT}" = "true" ]; then
         BOUNDARY_MISSING="${BOUNDARY_MISSING}process: mitmdump (proxy)"$'\n'
     fi
     BOUNDARY_INTACT="true"
-elif [ "${TLS_INTERCEPT}" != "true" ] && [ "${MODE}" = "enforce" ] && [ "${DNS_ENABLED}" = "true" ]; then
-    boundary_has iptables -C OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
-    boundary_has iptables -C OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
-    boundary_has iptables -C OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
-    boundary_has iptables -C OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+elif [ "${TLS_INTERCEPT}" != "true" ] && [ "${CONN_LOGGING}" = "true" ]; then
+    # Setup adds this LOG rule best-effort here, so only a rule that went in can go missing.
+    if [ "${NFW_CONN_LOG4:-true}" = "true" ]; then
+        boundary_has iptables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
+    fi
     if [ "${IP6TABLES}" = "true" ]; then
-        boundary_has ip6tables -C OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable
-        boundary_has ip6tables -C OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset
+        boundary_has ip6tables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid
+    fi
+    if [ "${MODE}" = "enforce" ] && [ "${DNS_ENABLED}" = "true" ]; then
+        boundary_has iptables -C OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+        boundary_has iptables -C OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+        boundary_has iptables -C OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+        boundary_has iptables -C OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+        if [ "${IP6TABLES}" = "true" ]; then
+            boundary_has ip6tables -C OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable
+            boundary_has ip6tables -C OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset
+        fi
     fi
     BOUNDARY_INTACT="true"
 fi

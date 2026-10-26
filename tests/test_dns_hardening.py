@@ -2,7 +2,9 @@
 
 import os
 import random
+import socket
 import struct
+import subprocess
 import sys
 
 import pytest
@@ -111,6 +113,82 @@ class TestAaaaNodata:
         q = _query("registry.npmjs.org", 28)
         _, forwarded, _ = _run(monkeypatch, q, None)
         assert forwarded == [q]
+
+
+def _aaaa_response(query: bytes, ip6: str) -> bytes:
+    header = query[:2] + b"\x81\x80" + struct.pack("!HHHH", 1, 1, 0, 0)
+    _, end = dns_server.parse_dns_name(query, 12)
+    question = query[12:end + 4]
+    rr = struct.pack("!HHHIH", 0xC00C, 28, 1, 60, 16) + socket.inet_pton(socket.AF_INET6, ip6)
+    return header + question + rr
+
+
+class _InternalEngine(_Engine):
+    def internal_ip_violation(self, entry, ip):
+        return f"{entry.host} resolved to internal {ip}" if ip.startswith("fd") else ""
+
+
+class TestAaaaWithoutIpv4OnlyProxy:
+    """tls-intercept: false puts no IPv4-only proxy in the path, so AAAA must resolve."""
+
+    def test_enforce_aaaa_forwarded_when_suppression_off(self, monkeypatch):
+        monkeypatch.setattr(dns_server, "SUPPRESS_AAAA", False)
+        q = _query("registry.npmjs.org", 28)
+        resp = _aaaa_response(q, "2606:4700::1")
+        sent, forwarded, logged = _run(monkeypatch, q, _InternalEngine("enforce"), resp)
+        assert forwarded == [q]
+        assert sent == [resp]
+        assert logged[0][3] == "allowed"
+
+    def test_enforce_internal_aaaa_answer_refused(self, monkeypatch):
+        monkeypatch.setattr(dns_server, "SUPPRESS_AAAA", False)
+        q = _query("rebind.example", 28)
+        resp = _aaaa_response(q, "fd00::7")
+        sent, _, logged = _run(monkeypatch, q, _InternalEngine("enforce"), resp)
+        assert sent[0][3] & 0x0F == 3
+        assert logged[0][2] == ["fd00::7"]
+        assert logged[0][3] == "blocked"
+
+    def test_monitor_internal_aaaa_answer_would_block(self, monkeypatch):
+        monkeypatch.setattr(dns_server, "SUPPRESS_AAAA", False)
+        q = _query("rebind.example", 28)
+        resp = _aaaa_response(q, "fd00::7")
+        sent, _, logged = _run(monkeypatch, q, _InternalEngine("monitor"), resp)
+        assert sent == [resp]
+        assert logged[0][3] == "would_block"
+
+
+class TestSuppressAaaaSignal:
+    @pytest.mark.parametrize("value,expected", [(None, True), ("true", True), ("false", False), ("FALSE", False)])
+    def test_env_parsing_defaults_to_suppress(self, value, expected):
+        env = {k: v for k, v in os.environ.items() if k != "DNS_SUPPRESS_AAAA"}
+        if value is not None:
+            env["DNS_SUPPRESS_AAAA"] = value
+        out = subprocess.run(
+            [sys.executable, "-c", "import dns_server; print(dns_server.SUPPRESS_AAAA)"],
+            cwd=os.path.join(REPO, "proxy"), env=env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert out == str(expected)
+
+    def test_container_proxy_launch_suppresses(self):
+        with open(os.path.join(REPO, "proxy", "proxy-entrypoint.sh")) as f:
+            assert "DNS_SUPPRESS_AAAA=true python3 /dns_server.py" in f.read()
+
+    @pytest.mark.parametrize("transparent,intercept,expected", [
+        ("true", "true", "true"),
+        ("false", "true", "false"),
+        ("false", "false", "false"),
+    ])
+    def test_native_launch_suppresses_only_behind_transparent_proxy(self, transparent, intercept, expected):
+        with open(os.path.join(REPO, "native-proxy", "setup.sh")) as f:
+            line = next(ln for ln in f if "DNS_SUPPRESS_AAAA=" in ln)
+        expr = line.strip().rstrip("\\").strip().split("=", 1)[1]
+        out = subprocess.run(
+            ["bash", "-c", f"printf %s {expr}"],
+            env={"ENABLE_TRANSPARENT": transparent, "ENABLE_TLS_INTERCEPT": intercept, "PATH": os.environ["PATH"]},
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert out == expected
 
 
 class TestTunnelHeuristic:

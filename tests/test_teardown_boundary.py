@@ -115,16 +115,45 @@ class TestBoundaryCheck:
 
     def test_intercept_off_enforce_checks_dns_rejects(self, tmp_path):
         intact, missing, calls = _run_check(
-            tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false",
+            tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false", CONN_LOGGING="true",
             proxy_alive="no", missing=["--dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset"])
         assert intact == "false"
         assert len(missing) == 1
         assert not any("REDIRECT" in c for c in calls)
         assert sum("--uid-owner 0" in c for c in calls) == 6
 
-    def test_intercept_off_monitor_is_unchecked(self, tmp_path):
-        intact, _, calls = _run_check(tmp_path, TRANSPARENT="false",
-                                      NFW_TLS_INTERCEPT="false", MODE="monitor")
+    @pytest.mark.parametrize("mode", ["enforce", "monitor"])
+    def test_intercept_off_checks_conn_log_rules(self, tmp_path, mode):
+        intact, missing, calls = _run_check(
+            tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false", CONN_LOGGING="true",
+            MODE=mode, proxy_alive="no", missing=["NFW-CONN6"])
+        assert intact == "false"
+        assert len(missing) == 1 and "ip6tables" in missing[0]
+        assert sum("-j LOG" in c for c in calls) == 2
+        assert not any("FORWARD" in c for c in calls)
+
+    def test_intercept_off_skips_conn_log_rule_setup_could_not_add(self, tmp_path):
+        intact, missing, calls = _run_check(
+            tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false", CONN_LOGGING="true",
+            NFW_CONN_LOG4="false", proxy_alive="no", missing=["NFW-CONN: "])
+        assert intact == "true"
+        assert missing == []
+        assert not any("NFW-CONN: " in c for c in calls)
+
+    def test_intercept_off_monitor_skips_dns_rejects(self, tmp_path):
+        intact, _, calls = _run_check(tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false",
+                                      CONN_LOGGING="true", MODE="monitor", proxy_alive="no")
+        assert intact == "true"
+        assert not any("REJECT" in c for c in calls)
+
+    def test_intercept_off_no_ip6tables_skips_ip6_rules(self, tmp_path):
+        _, _, calls = _run_check(tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false",
+                                 CONN_LOGGING="true", IP6TABLES="false", proxy_alive="no")
+        assert not any(c.startswith("ip6tables") for c in calls)
+
+    def test_intercept_off_without_installed_rules_is_unchecked(self, tmp_path):
+        intact, _, calls = _run_check(tmp_path, TRANSPARENT="false", NFW_TLS_INTERCEPT="false",
+                                      CONN_LOGGING="false", MODE="monitor")
         assert intact == "unchecked"
         assert calls == []
 
