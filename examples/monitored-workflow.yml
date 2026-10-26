@@ -19,7 +19,7 @@ jobs:
 
       # ── Start network monitor ──────────────────────────
       - name: PipeWarden Setup
-        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-setup@v3
         with:
           policy-file: network-policy.yml
           mode: monitor
@@ -37,7 +37,7 @@ jobs:
       - name: PipeWarden Teardown
         if: always()
         id: nfw
-        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v1
+        uses: ai-avimiot/pipewarden/native-proxy/action-teardown@v3
 
       - uses: actions/upload-artifact@v7
         if: always()

@@ -63,11 +63,18 @@ def analyze_policy(rules: list[PolicyRule],
         if r["match_count"] == 0 and r.get("appears", "always") == "sometimes"
     ]
 
-    # Build suggested rules for blocked destinations
+    # A block with a reason (method, private IP, fronting, exfil, cert) is not a
+    # missing allowlist entry, and a widening rule would undo the restriction.
+    plain_misses: set[tuple] = set()
+    reasoned: set[tuple] = set()
+    for c in connections:
+        if c.get("status") in ("blocked", "would_block"):
+            key = (c.get("host"), c.get("port"), c.get("protocol"))
+            (reasoned if c.get("block_reason") else plain_misses).add(key)
     blocked_dests = [
         d for d in destinations
-        if any(s in ("blocked", "would_block")
-               for s in d.get("statuses", {}))
+        if any(s in ("blocked", "would_block") for s in d.get("statuses", {}))
+        and not _only_reasoned(d, reasoned, plain_misses)
     ]
 
     suggested_rules = []
@@ -104,6 +111,11 @@ def analyze_policy(rules: list[PolicyRule],
         "suggested_rules": suggested_rules,
         "suggested_yaml": suggested_yaml,
     }
+
+
+def _only_reasoned(dest: dict, reasoned: set[tuple], plain: set[tuple]) -> bool:
+    key = (dest.get("host"), dest.get("port"), dest.get("protocol", "https"))
+    return key in reasoned and key not in plain
 
 
 def _to_entry(c: dict) -> ConnectionEntry:
@@ -143,7 +155,12 @@ def _rule_matches(rule: PolicyRule, conn: ConnectionEntry) -> bool:
         return domain_ok
     port_ok = not rule.ports or conn.port in rule.ports
     proto_ok = conn.protocol in rule.protocols
-    return domain_ok and port_ok and proto_ok
+    method_ok = (
+        not rule.methods
+        or conn.protocol not in ("http", "https")
+        or conn.method in rule.methods
+    )
+    return domain_ok and port_ok and proto_ok and method_ok
 
 
 _SAFE_HOST = re.compile(r"(?:\*\.)?[A-Za-z0-9_](?:[A-Za-z0-9_.:-]{0,252})")

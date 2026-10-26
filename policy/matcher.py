@@ -1,10 +1,113 @@
 """Policy matching engine for PipeWarden."""
 
 import fnmatch
+import functools
+import ipaddress
 import re
 from urllib.parse import unquote
 
 from policy.models import ConnectionEntry, PolicyRule
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+# Metadata first so the more specific label wins over "link-local".
+_INTERNAL_NETWORKS: tuple[tuple[IPNetwork, str], ...] = tuple(
+    (ipaddress.ip_network(cidr), label)
+    for cidr, label in (
+        ("169.254.169.254/32", "cloud metadata"),
+        ("fd00:ec2::254/128", "cloud metadata"),
+        ("168.63.129.16/32", "cloud metadata"),
+        ("192.0.0.192/32", "cloud metadata"),
+        ("127.0.0.0/8", "loopback"),
+        ("::1/128", "loopback"),
+        ("0.0.0.0/8", "unspecified"),
+        ("::/128", "unspecified"),
+        ("169.254.0.0/16", "link-local"),
+        ("fe80::/10", "link-local"),
+        ("10.0.0.0/8", "private"),
+        ("172.16.0.0/12", "private"),
+        ("192.168.0.0/16", "private"),
+        ("100.64.0.0/10", "CGNAT"),
+        ("fc00::/7", "unique-local"),
+        ("192.0.0.0/24", "reserved"),
+        ("198.18.0.0/15", "reserved"),
+        ("240.0.0.0/4", "reserved"),
+    )
+)
+
+
+def internal_network_category(network: IPNetwork) -> str:
+    """Label of the internal range wholly containing *network*, or ""."""
+    for internal, label in _INTERNAL_NETWORKS:
+        if (
+            network.version == internal.version
+            and network.network_address in internal
+            and network.broadcast_address in internal
+        ):
+            return label
+    return ""
+
+
+def internal_ip_category(ip: str) -> str:
+    """Why *ip* is an internal destination (loopback, private, metadata, ...).
+
+    Returns "" for a public address or a value that is not an IP literal, so
+    a hostname that was never resolved is left to the ordinary policy check.
+    """
+    addr = _parse_ip(ip)
+    if addr is None:
+        return ""
+    return internal_network_category(ipaddress.ip_network(addr))
+
+
+def _parse_ip(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        addr = ipaddress.ip_address(ip.strip().strip("[]").split("%", 1)[0])
+    except (ValueError, AttributeError):
+        return None
+    # ::ffff:10.0.0.1 reaches 10.0.0.1, so it must be judged as that address.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def rule_exempts_ip(rule: PolicyRule, ip: str) -> bool:
+    """True if *rule* may reach internal *ip*: a v1 rule, ``allowed_ips``, or the IP named literally."""
+    return (
+        not rule.internal_ip_guard
+        or _ip_listed(rule.allowed_ips, ip)
+        or _names_ip(rule.domains, ip)
+    )
+
+
+def _names_ip(domains: list[str], ip: str) -> bool:
+    addr = _parse_ip(ip)
+    if addr is None:
+        return False
+    for pattern in domains:
+        if pattern.lower() == "localhost" and addr.is_loopback:
+            return True
+        if _parse_ip(pattern) == addr:
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=1024)
+def _network(cidr: str) -> IPNetwork:
+    return ipaddress.ip_network(cidr, strict=False)
+
+
+def _ip_listed(allowed: list[str], ip: str) -> bool:
+    addr = _parse_ip(ip)
+    if addr is None:
+        return False
+    for cidr in allowed:
+        try:
+            if addr in _network(cidr):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 class PolicyEngine:
@@ -67,6 +170,16 @@ class PolicyEngine:
             return "would_block"
         return "blocked"
 
+    def method_miss(self, connection: ConnectionEntry) -> str:
+        """Block reason if *connection* fails only on its HTTP method, else ""."""
+        for rule in self.rules:
+            if rule.methods and self._matches_except_method(rule, connection):
+                return (
+                    f"method {connection.method} not in methods "
+                    f"[{', '.join(rule.methods)}] of rule {rule.name!r}"
+                )
+        return ""
+
     def allows_request_body(self, connection: ConnectionEntry) -> bool:
         """True if *any* rule matching *connection* opts it out of payload
         scanning.
@@ -86,8 +199,46 @@ class PolicyEngine:
             for rule in self.rules
         )
 
+    def internal_ip_violation(self, connection: ConnectionEntry, ip: str) -> str:
+        """Block reason if *ip* is an internal address no matching rule exempts, else "".
+
+        Only meaningful for a connection the policy otherwise allows: an
+        allowlisted name that resolves (or is rebound) to loopback, a private
+        range or the cloud metadata endpoint is the classic SSRF pivot, so the
+        destination needs its own explicit ``allowed_ips`` entry.
+        """
+        category = internal_ip_category(ip)
+        if not category:
+            return ""
+        if connection.protocol == "dns":
+            if self.dns_allows_internal_ip(connection.host, ip):
+                return ""
+        elif any(
+            rule_exempts_ip(rule, ip) and self._matches(rule, connection)
+            for rule in self.rules
+        ):
+            return ""
+        return (
+            f"destination {ip} is a {category} address not listed in "
+            f"allowed_ips of any rule matching {connection.host!r}"
+        )
+
+    def dns_allows_internal_ip(self, qname: str, ip: str) -> bool:
+        """True if a rule whose domains match *qname* lists *ip* in ``allowed_ips``."""
+        name = qname.rstrip(".")
+        return any(
+            rule_exempts_ip(rule, ip) and self._domain_matches(rule.domains, name)
+            for rule in self.rules
+        )
+
     def _matches(self, rule: PolicyRule, conn: ConnectionEntry) -> bool:
         """Check if a single rule matches a connection."""
+        return (
+            self._matches_except_method(rule, conn)
+            and self._method_matches(rule.methods, conn)
+        )
+
+    def _matches_except_method(self, rule: PolicyRule, conn: ConnectionEntry) -> bool:
         return (
             self._domain_matches(rule.domains, conn.host)
             and self._port_matches(rule.ports, conn.port)
@@ -121,6 +272,16 @@ class PolicyEngine:
         An empty ports list means all ports are allowed.
         """
         return not ports or port in ports
+
+    @staticmethod
+    def _method_matches(methods: list[str], conn: ConnectionEntry) -> bool:
+        """Check if an HTTP request's method is allowed; non-HTTP traffic is unaffected.
+
+        Case-sensitive (RFC 9110 9.1): a lowercase ``get`` is not ``GET``.
+        """
+        if not methods or conn.protocol not in ("http", "https"):
+            return True
+        return conn.method in methods
 
     @staticmethod
     def _path_matches(patterns: list[str], path: str) -> bool:

@@ -1,5 +1,6 @@
 """YAML policy file parser for PipeWarden."""
 
+import ipaddress
 from pathlib import Path
 
 import yaml
@@ -11,10 +12,15 @@ from policy.exfil import (
     ExfilConfig,
 )
 from policy.exfil import VALID_MODES as VALID_EXFIL_MODES
-from policy.models import Policy, PolicyRule
+from policy.matcher import internal_network_category
+from policy.models import READ_ONLY_METHODS, Policy, PolicyRule
 
 VALID_MODES = ("monitor", "enforce")
 VALID_PROTOCOLS = ("http", "https", "tcp", "udp", "dns")
+VALID_METHODS = (
+    "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "TRACE",
+)
+VALID_ACCESS = ("read-only",)
 
 # v1 policies stay valid forever: they are committed in users' repositories and
 # a major release is not a licence to break files that still express exactly
@@ -263,6 +269,9 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
                 f"version 2"
             )
 
+        allowed_ips = _parse_allowed_ips(allow, i, name, version)
+        methods = _parse_methods(allow, protocols, i, name, version)
+
         rules.append(
             PolicyRule(
                 name=name,
@@ -272,10 +281,87 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
                 paths=paths,
                 appears=appears,
                 allow_request_body=allow_request_body,
+                allowed_ips=allowed_ips,
+                methods=methods,
+                internal_ip_guard=str(version) != "1",
             )
         )
 
     return mode, rules
+
+
+def _parse_allowed_ips(allow: dict, i: int, name: str, version) -> list[str]:
+    """Validate ``allow.allowed_ips`` and return the entries in canonical CIDR form."""
+    raw = allow.get("allowed_ips", [])
+    prefix = f"Rule {i} ('{name}'): 'allowed_ips'"
+    if not isinstance(raw, list):
+        raise ValueError(f"{prefix} must be a list")
+    if raw and str(version) == "1":
+        raise ValueError(f"{prefix} requires policy version 2")
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(
+                f"{prefix} entries must be IP addresses or CIDRs, got {entry!r}"
+            )
+        try:
+            network = ipaddress.ip_network(entry.strip(), strict=True)
+        except ValueError as exc:
+            raise ValueError(f"{prefix}: invalid IP/CIDR {entry!r} ({exc})") from None
+        # A public or straddling entry would read as "allow this IP" while
+        # granting nothing, or quietly switch the guard off for that rule.
+        if not internal_network_category(network):
+            raise ValueError(
+                f"{prefix}: {entry!r} is not inside a private, loopback, "
+                f"link-local, CGNAT, unique-local, reserved or cloud-metadata range — allowed_ips only "
+                f"exempts internal destinations; public addresses need no entry"
+            )
+        out.append(str(network))
+    return out
+
+
+def _parse_methods(allow: dict, protocols: list, i: int, name: str,
+                   version) -> list[str]:
+    """Validate ``allow.methods`` / ``allow.access`` and return the allowed methods."""
+    prefix = f"Rule {i} ('{name}')"
+    has_methods = "methods" in allow
+    has_access = "access" in allow
+    if not has_methods and not has_access:
+        return []
+    if str(version) == "1":
+        field_name = "methods" if has_methods else "access"
+        raise ValueError(f"{prefix}: '{field_name}' requires policy version 2")
+    if has_methods and has_access:
+        raise ValueError(f"{prefix}: use either 'methods' or 'access', not both")
+    if not any(p in ("http", "https") for p in protocols):
+        raise ValueError(
+            f"{prefix}: 'methods'/'access' only apply to http/https, "
+            f"but the rule's protocols are {protocols!r}"
+        )
+    if has_access:
+        access = allow["access"]
+        if access not in VALID_ACCESS:
+            raise ValueError(
+                f"{prefix}: invalid access {access!r} (expected one of {VALID_ACCESS})"
+            )
+        return list(READ_ONLY_METHODS)
+    raw = allow["methods"]
+    if not isinstance(raw, list) or not raw:
+        # An empty list would read as "no methods" yet match every method.
+        raise ValueError(f"{prefix}: 'methods' must be a non-empty list")
+    out: list[str] = []
+    for method in raw:
+        if not isinstance(method, str):
+            raise ValueError(f"{prefix}: methods must be strings, got {method!r}")
+        if method not in VALID_METHODS:
+            hint = " (methods are uppercase)" if method.upper() in VALID_METHODS else ""
+            raise ValueError(
+                f"{prefix}: invalid method {method!r}{hint} "
+                f"(expected one of {VALID_METHODS})"
+            )
+        if method not in out:
+            out.append(method)
+    return out
 
 
 def parse_policy_file(path: str) -> tuple[str, list[PolicyRule]]:

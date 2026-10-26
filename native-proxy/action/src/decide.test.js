@@ -15,6 +15,9 @@ const cases = [
   ["enforce + unverified + zero blocked -> fail", { blockedCount: 0, mode: "enforce", failOnBlock: "true", unverified: true }, true],
   ["enforce + unverified + fail-on-block false -> continue", { blockedCount: 0, mode: "enforce", failOnBlock: "false", unverified: true }, false],
   ["monitor + unverified -> never fail", { blockedCount: 0, mode: "monitor", failOnBlock: "true", unverified: true }, false],
+  ["enforce + boundary broken + zero blocked -> fail", { blockedCount: 0, mode: "enforce", failOnBlock: undefined, boundaryBroken: true }, true],
+  ["enforce + boundary broken + fail-on-block false -> continue", { blockedCount: 0, mode: "enforce", failOnBlock: "false", boundaryBroken: true }, false],
+  ["monitor + boundary broken -> never fail", { blockedCount: 0, mode: "monitor", failOnBlock: "true", boundaryBroken: true }, false],
 ];
 
 let failures = 0;
@@ -32,6 +35,7 @@ for (const [name, args, expected] of cases) {
 // status/blockedInEnforce sanity
 assert.strictEqual(decideEnforceExit({ blockedCount: 3, mode: "enforce", failOnBlock: "true" }).status, "fail");
 assert.strictEqual(decideEnforceExit({ blockedCount: 0, mode: "enforce", failOnBlock: "true" }).status, "pass");
+assert.strictEqual(decideEnforceExit({ blockedCount: 0, mode: "enforce", failOnBlock: "false", boundaryBroken: true }).status, "fail");
 
 if (failures > 0) {
   console.error(`${failures} decision test(s) failed`);

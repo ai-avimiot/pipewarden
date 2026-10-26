@@ -8,6 +8,8 @@
 
 The major version marks a new policy schema and a new capability, not a break. This guide covers what changed and what you may want to opt into.
 
+> **Moving on to v3?** v3.0 does contain breaking changes (the internal-address guard on `version: "2"` policies, no Docker socket in container-mode job containers, IPv6 and teardown checks that fail closed). They are covered in [Migrating to v3.0](migrating-to-v3.md); this guide describes v2.x only.
+
 ## What changed without asking you
 
 ### QUIC and UDP entries no longer disappear from reports
@@ -89,6 +91,8 @@ Note that `attribution: client` needs TLS interception to have anything to read.
 | --- | --- |
 | `version: "1"` | Parses exactly as before. Payload scanning off and unavailable. |
 | `version: "2"` | Everything from v1, plus `exfiltration:` and `allow_request_body`. |
+
+From v3.0, `version: "2"` also turns on the internal-destination guard and accepts `allowed_ips`, `methods` and `access`; see [Migrating to v3.0](migrating-to-v3.md#internal-address-guard-on-every-version-2-rule).
 
 v2 keys in a v1 policy are **refused, not ignored**. A file that says `exfiltration: {mode: block}` under `version: "1"` fails to parse rather than running silently without the control — a security feature that quietly does nothing is worse than one that is absent, because you would believe you had it.
 

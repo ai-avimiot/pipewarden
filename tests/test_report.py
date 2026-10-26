@@ -465,6 +465,7 @@ class TestGenerateReport:
         with open(policy_file) as f:
             content = f.read()
         assert 'version: "1"' in content
+        assert "# access: read-only" in content
         assert "mode: monitor" in content
         assert "a.com" in content
 

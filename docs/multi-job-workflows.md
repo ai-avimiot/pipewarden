@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v3
         with:
           mode: monitor
       - run: npm ci && npm test
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1   # cover this job too
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v3   # cover this job too
         with:
           mode: monitor
       - run: npm run e2e
@@ -72,7 +72,7 @@ that differ:
 ```yaml
   deploy:
     steps:
-      - uses: ai-avimiot/pipewarden/native-proxy/action-setup@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action-setup@v3
         with:
           policy-file: .github/pipewarden/deploy.network-policy.yml   # tighter, deploy-only
 ```
@@ -116,7 +116,7 @@ Make the name unique per leg:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ai-avimiot/pipewarden/native-proxy/action@v1
+      - uses: ai-avimiot/pipewarden/native-proxy/action@v3
         with:
           mode: monitor
           artifact-name: network-report-node${{ matrix.node }}

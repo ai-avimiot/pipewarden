@@ -8,11 +8,13 @@ SNI (Server Name Indication) in the ClientHello. Server certificates are
 verified against the system trust store to detect rogue/private certs.
 """
 
+import asyncio
 import fcntl
 import ipaddress
 import json
 import logging
 import os
+import socket
 import ssl
 import sys
 import zlib
@@ -48,7 +50,7 @@ from policy.exfil import (  # noqa: E402
     scan,
     undecodable_body_finding,
 )
-from policy.matcher import PolicyEngine  # noqa: E402
+from policy.matcher import PolicyEngine, _normalise_path  # noqa: E402
 from policy.models import ConnectionEntry  # noqa: E402
 from policy.parser import parse_policy_file, parse_policy_file_full  # noqa: E402
 
@@ -435,6 +437,9 @@ class NetworkMonitorAddon:
         # errors don't stick.
         self._cert_verify_cache: dict[tuple, tuple[bool, str]] = {}
         self._log_dir_ready = False
+        # Allowed requests whose upstream IP was unknown at the request hook
+        # (regular mode, plain HTTP), keyed by (client, host, port).
+        self._awaiting_upstream: dict[tuple, list[tuple[object, ConnectionEntry]]] = {}
 
     def _resolve_host_from_dns(self, ip: str) -> str:
         """Look up a domain name for an IP from the DNS resolver's map."""
@@ -522,6 +527,21 @@ class NetworkMonitorAddon:
         entry.attribution = self._attribute(flow, req, entry)
 
         status = self.engine.evaluate(entry)
+        block_kind = "policy-miss"
+        block_detail = "no rule in the network policy allows this destination"
+        if status != "allowed":
+            method_reason = self.engine.method_miss(entry)
+            if method_reason:
+                entry.block_reason = method_reason
+                block_kind, block_detail = "method", method_reason
+
+        upstream_unknown = False
+        if status == "allowed":
+            upstream_ip = _upstream_ip(flow)
+            upstream_unknown = not upstream_ip and not is_https
+            status = self._guard_internal_ip(entry, upstream_ip)
+            if status != "allowed":
+                block_kind, block_detail = "private-ip", entry.block_reason
 
         # Domain fronting: the SNI (or resolved name) passes while the Host
         # header routes the request to another vhost on the same front end.
@@ -536,6 +556,11 @@ class NetworkMonitorAddon:
                 entry.block_reason = (
                     f"Host header {authority!r} does not match {host!r} "
                     f"and is not allowed by policy"
+                )
+                block_kind = "domain-fronting"
+                block_detail = (
+                    "Host header names a different host than the connection "
+                    "and that host is not allowed by policy"
                 )
                 logger.warning("Blocking %s:%s — %s", host, req.port, entry.block_reason)
 
@@ -554,6 +579,8 @@ class NetworkMonitorAddon:
             status = "blocked"
             reason = entry.tls_cert_error or "invalid TLS certificate"
             entry.block_reason = reason
+            block_kind = "cert-identity"
+            block_detail = f"upstream certificate rejected: {reason}"
             logger.warning(
                 "Blocking %s:%s — allowed by policy but %s",
                 host, req.port, reason,
@@ -569,6 +596,8 @@ class NetworkMonitorAddon:
             if findings and self.exfil_cfg.mode == "block" and self.mode == "enforce":
                 status = "blocked"
                 labels = ", ".join(sorted({f.label for f in findings}))
+                block_kind = "exfil"
+                block_detail = f"request carries secret material ({labels})"
                 logger.warning(
                     "Blocking %s:%s — request carries secret material (%s)",
                     host, req.port, labels,
@@ -577,16 +606,82 @@ class NetworkMonitorAddon:
         entry.status = status
 
         if status == "blocked":
+            body, headers = _denial(entry, block_kind, block_detail)
             try:
-                flow.response = http.Response.make(
-                    403,
-                    b"Blocked by network policy",
-                    {"Content-Type": "text/plain"},
-                )
+                flow.response = http.Response.make(403, body, headers)
             except NameError:
-                flow.response = _make_blocked_response()
+                flow.response = _make_blocked_response(body, headers)
+
+        if status == "allowed" and upstream_unknown and self._guards_internal_ips():
+            key = (_conn_key(flow.client_conn), req.host, req.port)
+            self._awaiting_upstream.setdefault(key, []).append((flow, entry))
+            return
 
         self._write_log(entry)
+
+    def _guard_internal_ip(self, entry: ConnectionEntry, ip: str,
+                           quiet: bool = False) -> str:
+        """Status for an allowed *entry* once its upstream *ip* is known."""
+        reason = self.engine.internal_ip_violation(entry, ip) if ip else ""
+        if not reason:
+            return "allowed"
+        entry.block_reason = reason
+        if not quiet:
+            logger.warning("Blocking %s:%s — %s", entry.host, entry.port, reason)
+        return "blocked" if self.mode == "enforce" else "would_block"
+
+    def _guards_internal_ips(self) -> bool:
+        return any(rule.internal_ip_guard for rule in self.engine.rules)
+
+    async def server_connect(self, data) -> None:
+        """Finish the internal-IP guard for a request deferred by ``request``.
+
+        In regular mode a plain-HTTP request hook fires before mitmproxy picks
+        an upstream, so the name is resolved here and the connection pinned to
+        the checked address; mitmproxy then connects without a second lookup.
+        """
+        server = data.server
+        address = getattr(server, "address", None)
+        if not address:
+            return
+        waiting = self._awaiting_upstream.get((_conn_key(data.client), address[0], address[1]))
+        if not waiting:
+            return
+        flow, entry = waiting.pop(0)
+        if not waiting:
+            del self._awaiting_upstream[(_conn_key(data.client), address[0], address[1])]
+
+        ips = await _resolve(address[0], address[1])
+        status = "allowed"
+        for ip in ips:
+            status = self._guard_internal_ip(entry, ip)
+            if status != "allowed":
+                entry.server_ip = ip
+                break
+        if ips:
+            pinned = next((ip for ip in ips if ":" not in ip), ips[0])
+            server.address = (pinned, address[1], *address[2:])
+            if status == "allowed":
+                entry.server_ip = pinned
+        if status == "blocked":
+            server.error = entry.block_reason
+            _kill(flow)
+        entry.status = status
+        self._write_log(entry)
+
+    def error(self, flow) -> None:
+        """Log a deferred request that failed before any upstream connect."""
+        self._flush_awaiting(flow)
+
+    def _flush_awaiting(self, flow) -> None:
+        for key, waiting in list(self._awaiting_upstream.items()):
+            for item in waiting:
+                if item[0] is flow:
+                    waiting.remove(item)
+                    if not waiting:
+                        del self._awaiting_upstream[key]
+                    self._write_log(item[1])
+                    return
 
     def _attribute(self, flow, req, entry: ConnectionEntry) -> dict:
         """Work out who sent this request.
@@ -702,6 +797,7 @@ class NetworkMonitorAddon:
 
     def response(self, flow) -> None:
         """Capture response size after the server replies."""
+        self._flush_awaiting(flow)
         resp = flow.response
         if resp is None:
             return
@@ -804,7 +900,11 @@ class NetworkMonitorAddon:
         """Kill a raw TCP flow the policy does not allow, before any byte is relayed."""
         if self.mode != "enforce":
             return
-        if self.engine.evaluate(self._tcp_entry(flow, 0)) == "blocked":
+        entry = self._tcp_entry(flow, 0)
+        status = self.engine.evaluate(entry)
+        if status == "allowed":
+            status = self._guard_internal_ip(entry, _upstream_ip(flow))
+        if status == "blocked":
             _kill(flow)
 
     def tcp_message(self, flow) -> None:
@@ -820,6 +920,9 @@ class NetworkMonitorAddon:
         entry.attribution = self._attribute(flow, None, entry)
 
         status = self.engine.evaluate(entry)
+        if status == "allowed":
+            # Quiet: tcp_start already warned once; this runs per message.
+            status = self._guard_internal_ip(entry, _upstream_ip(flow), quiet=True)
         entry.status = status
         if status == "blocked":
             # mitmproxy's TCP layer ignores flow.kill(), so the relayed bytes are emptied instead.
@@ -925,6 +1028,40 @@ def _client_port(flow) -> int:
     except Exception:  # noqa: BLE001 - connection shapes vary across versions
         pass
     return 0
+
+
+def _upstream_ip(flow) -> str:
+    """The upstream server's IP: the connected peer, else an IP-literal address.
+
+    Only the upstream side is inspected — the client side is the pipeline (and
+    in container mode a private docker network), which is not a destination.
+    """
+    server = getattr(flow, "server_conn", None)
+    if server is None:
+        return ""
+    for candidate in (getattr(server, "peername", None), getattr(server, "address", None)):
+        host = candidate[0] if isinstance(candidate, tuple) and candidate else candidate
+        if isinstance(host, str) and _looks_like_ip(host.split("%", 1)[0]):
+            return host
+    return ""
+
+
+def _conn_key(conn) -> object:
+    return getattr(conn, "id", None) or id(conn)
+
+
+async def _resolve(host: str, port: int) -> list[str]:
+    """Every address *host* resolves to; empty when it does not resolve."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return []
+    ips: list[str] = []
+    for info in infos:
+        ip = str(info[4][0])
+        if ip not in ips:
+            ips.append(ip)
+    return ips
 
 
 def _kill(flow) -> None:
@@ -1091,17 +1228,95 @@ def _redact_path(path: str) -> str:
     return base + "?<redacted>" if "?" in path else base
 
 
+_DENIAL_FIELD_MAX = 256
+_PATH_GLOB_CHARS = frozenset("*?[]")
+
+
+def _clip(value: str) -> str:
+    if len(value) <= _DENIAL_FIELD_MAX:
+        return value
+    return value[:_DENIAL_FIELD_MAX] + "..."
+
+
+def _suggested_rule(entry: ConnectionEntry) -> str:
+    """A ready-to-paste policy rule allowing exactly *entry*'s destination."""
+    # JSON strings are valid YAML double-quoted scalars, so this quotes safely.
+    q = json.dumps
+    lines = [
+        f"  - name: {q('allow ' + entry.host)}",
+        "    allow:",
+        f"      domains: [{q(entry.host)}]",
+        f"      ports: [{entry.port}]",
+        f"      protocols: [{entry.protocol}]",
+    ]
+    path = entry.path.split("?", 1)[0]
+    normalised = _normalise_path(path) if path not in ("", "/") else None
+    # A glob character in a literal path would widen the rule beyond this request.
+    if normalised and not _PATH_GLOB_CHARS & set(normalised):
+        if len(normalised) > _DENIAL_FIELD_MAX:
+            normalised = normalised[:_DENIAL_FIELD_MAX] + "*"
+        lines.append(f"      paths: [{q(normalised)}]")
+    return "\n".join(lines)
+
+
+def _denial(entry: ConnectionEntry, kind: str, detail: str) -> tuple[bytes, dict[str, str]]:
+    """Body and headers of the 403 sent for a blocked request.
+
+    Built only from metadata already in the log (the path is query-redacted);
+    request headers and bodies are never echoed back.
+    """
+    text = [
+        "Blocked by PipeWarden network policy (enforce mode).",
+        "",
+        f"host:     {_clip(entry.host)}",
+        f"port:     {entry.port}",
+        f"protocol: {entry.protocol}",
+        f"method:   {_clip(entry.method)}",
+        f"path:     {_clip(entry.path)}",
+        f"reason:   {kind}: {_clip(detail)}",
+        "",
+    ]
+    if kind == "policy-miss" and not _PATH_GLOB_CHARS & set(entry.host):
+        text += [
+            "If this destination is expected, add this rule under the policy's",
+            "`rules:` (review it first; widen or drop `paths` only as needed):",
+            "",
+            _suggested_rule(entry),
+            "",
+        ]
+    elif kind == "policy-miss":
+        text += ["No rule suggested: the host contains glob characters.", ""]
+    elif kind == "method":
+        text += [
+            "The destination is allowed, but not for this method. If the request",
+            "is expected, add the method to that rule's `methods` (or drop",
+            "`access: read-only`); do not add a second rule without `methods`.",
+            "",
+        ]
+    else:
+        text += [
+            "This is a security block, not a missing allowlist entry. Do not widen",
+            "the policy to work around it; investigate the request instead.",
+            "",
+        ]
+    headers = {
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-PipeWarden-Block-Reason": kind,
+    }
+    return "\n".join(text).encode("utf-8", "replace"), headers
+
+
 class _BlockedResponse:
     """Minimal stand-in for ``mitmproxy.http.Response`` used in tests."""
 
-    def __init__(self):
+    def __init__(self, content: bytes, headers: dict[str, str]):
         self.status_code = 403
-        self.content = b"Blocked by network policy"
-        self.headers = {"Content-Type": "text/plain"}
+        self.content = content
+        self.headers = headers
 
 
-def _make_blocked_response() -> _BlockedResponse:
-    return _BlockedResponse()
+def _make_blocked_response(content: bytes, headers: dict[str, str]) -> _BlockedResponse:
+    return _BlockedResponse(content, headers)
 
 
 # ------------------------------------------------------------------

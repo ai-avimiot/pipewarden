@@ -58,6 +58,13 @@ try {
     ? (report.total_blocked != null ? report.total_blocked : (report.blocked_connections || 0))
     : 0;
   const malformedLines = report ? Number(report.malformed_log_lines) || 0 : 0;
+  let health = null;
+  try {
+    health = JSON.parse(fs.readFileSync(path.join(reportDir, "health.json"), "utf8"));
+  } catch (e) {
+    console.log(`::warning::PipeWarden could not read health.json: ${e.message}`);
+  }
+  const boundaryBroken = Boolean(health && health.boundary_intact === false);
   const mode = process.env.NFW_MODE || "monitor";
   // setup.sh persists NFW_FAIL_ON_BLOCK to GITHUB_ENV, so the post-step sees it.
   const decision = decideEnforceExit({
@@ -65,6 +72,7 @@ try {
     mode,
     failOnBlock: process.env.NFW_FAIL_ON_BLOCK,
     unverified: report === null || malformedLines > 0,
+    boundaryBroken,
   });
 
   if (githubOutput) {
@@ -81,6 +89,13 @@ try {
     console.log(
       `::${decision.shouldFail ? "error" : "warning"}::PipeWarden: enforce mode could not verify this run ` +
       `(report ${report ? "present" : "missing"}, unparsable log lines: ${malformedLines}) — treating it as a violation.`
+    );
+  }
+  if (decision.boundaryBrokenInEnforce) {
+    const missing = (health.boundary_missing || []).join("; ") || "see health.json";
+    console.log(
+      `::${decision.shouldFail ? "error" : "warning"}::PipeWarden: the firewall boundary was not intact at teardown ` +
+      `(${missing}) — part of this job ran unenforced.`
     );
   }
   if (decision.shouldFail) {

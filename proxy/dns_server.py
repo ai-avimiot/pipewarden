@@ -47,6 +47,10 @@ MAP_FLUSH_INTERVAL = float(os.environ.get("DNS_MAP_FLUSH_INTERVAL", "0.5"))
 # with a real name. Matched exactly, never as a suffix — suffix matching would
 # make "<stolen-data>.readiness.pipewarden.invalid" an unlogged exfil channel.
 READINESS_PROBE_NAME = "readiness.pipewarden.invalid"
+QTYPE_AAAA = 28
+# Set "false" only when no IPv4-only proxy is in the egress path (native
+# tls-intercept: false); unset means suppress, the safe default for container mode.
+SUPPRESS_AAAA = os.environ.get("DNS_SUPPRESS_AAAA", "true").lower() != "false"
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
@@ -128,8 +132,8 @@ def parse_dns_query(data: bytes) -> tuple[int, str, int]:
     return txn_id, qname, qtype
 
 
-def parse_dns_response(data: bytes) -> list[str]:
-    """Extract A record IPs from a DNS response."""
+def parse_dns_response(data: bytes, include_aaaa: bool = False) -> list[str]:
+    """Extract A record IPs (and AAAA, if asked) from a DNS response."""
     if len(data) < 12:
         return []
     # Header: ID(2) FLAGS(2) QDCOUNT(2) ANCOUNT(2) NSCOUNT(2) ARCOUNT(2)
@@ -156,6 +160,8 @@ def parse_dns_response(data: bytes) -> list[str]:
             # A record
             ip = socket.inet_ntoa(data[offset:offset + 4])
             ips.append(ip)
+        elif include_aaaa and rtype == 28 and rdlength == 16 and offset + 16 <= len(data):
+            ips.append(socket.inet_ntop(socket.AF_INET6, data[offset:offset + 16]))
         offset += rdlength
 
     return ips
@@ -204,7 +210,7 @@ _conn_log_dir_ready = False
 
 
 def log_dns_query(qname: str, qtype: int, resolved_ips: list[str],
-                  status: str) -> None:
+                  status: str, block_reason: str = "") -> None:
     """Write a DNS query log entry to the connections JSONL."""
     global _conn_log_dir_ready
     qtype_name = {1: "A", 28: "AAAA", 5: "CNAME", 15: "MX", 16: "TXT",
@@ -218,6 +224,8 @@ def log_dns_query(qname: str, qtype: int, resolved_ips: list[str],
         "status": status,
         "dns_resolved_ips": resolved_ips,
     }
+    if block_reason:
+        entry["block_reason"] = block_reason
     try:
         if not _conn_log_dir_ready:
             log_dir = os.path.dirname(CONN_LOG_PATH)
@@ -284,6 +292,7 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
 
     # Evaluate against policy
     status = "allowed"
+    entry = None
     if policy_engine:
         from policy.models import ConnectionEntry
         entry = ConnectionEntry(
@@ -301,6 +310,14 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
         sock.sendto(response, addr)
         return
 
+    if (SUPPRESS_AAAA and qtype == QTYPE_AAAA and status == "allowed"
+            and getattr(policy_engine, "mode", None) == "enforce"):
+        # The proxy only egresses over IPv4, so an AAAA answer is a dead end
+        # at best and an unproxied IPv6 path at worst.
+        log_dns_query(qname, qtype, [], "allowed")
+        sock.sendto(_make_nodata(data), addr)
+        return
+
     # Forward to upstream (allowed or would_block in monitor mode)
     response = forward_query(data)
     if response is None:
@@ -310,22 +327,62 @@ def handle_query(data: bytes, addr: tuple, sock: socket.socket,
     # Parse resolved IPs and update the map
     try:
         resolved_ips = parse_dns_response(response)
+        answer_ips = parse_dns_response(response, include_aaaa=True)
     except (ValueError, struct.error):
         resolved_ips = []
+        answer_ips = []
+
+    reason = ""
+    if entry is not None and status == "allowed":
+        reason = _internal_answer_violation(policy_engine, entry, answer_ips)
+    if reason and policy_engine.mode == "enforce":
+        # Refusing the whole answer, not just the internal records, keeps a
+        # rebinding name from handing out its public half and then flipping.
+        logger.warning("DNS %s refused — %s", qname, reason)
+        log_dns_query(qname, qtype, answer_ips, "blocked", reason)
+        sock.sendto(_make_nxdomain(data), addr)
+        return
+    if reason:
+        status = "would_block"
+
     for ip in resolved_ips:
         _remember_ip(ip, qname)
 
     if resolved_ips:
         _map_dirty.set()
 
-    log_dns_query(qname, qtype, resolved_ips, status)
+    log_dns_query(qname, qtype, resolved_ips, status, reason)
     sock.sendto(response, addr)
+
+
+def _internal_answer_violation(policy_engine, entry, ips: list[str]) -> str:
+    """First block reason among *ips* that resolve an allowed name to an internal address."""
+    for ip in ips:
+        reason = policy_engine.internal_ip_violation(entry, ip)
+        if reason:
+            return reason
+    return ""
 
 
 def _make_formerr(query: bytes) -> bytes:
     """Header-only FORMERR reply echoing the query's transaction ID."""
     txn = query[:2].ljust(2, b"\x00")
     return txn + b"\x81\x81" + b"\x00" * 8
+
+
+def _make_nodata(query: bytes) -> bytes:
+    """NOERROR reply with no answers (NODATA), echoing only the question."""
+    if len(query) < 12:
+        return query
+    try:
+        _, end = parse_dns_name(query, 12)
+    except (ValueError, struct.error):
+        return _make_formerr(query)
+    response = bytearray(query[:min(end + 4, len(query))])
+    response[2] = 0x80 | (query[2] & 0x01)  # QR=1, echo RD
+    response[3] = 0x80  # RA=1, RCODE=0
+    response[4:12] = b"\x00\x01" + b"\x00" * 6  # QDCOUNT=1, AN=NS=AR=0
+    return bytes(response)
 
 
 def _make_nxdomain(query: bytes) -> bytes:

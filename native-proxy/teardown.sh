@@ -10,7 +10,6 @@ set -euo pipefail
 # Read state from environment variables set by setup.sh
 # ---------------------------------------------------------------------------
 PROXY_PID="${NFW_PROXY_PID:-}"
-DNS_PID="${NFW_DNS_PID:-}"
 DNS_ENABLED="${NFW_DNS_ENABLED:-false}"
 LOG_DIR="${NFW_LOG_DIR:-/tmp/monitor-logs}"
 CA_DIR="${NFW_CA_DIR:-/tmp/nfw-ca}"
@@ -50,6 +49,76 @@ if [ "${DNS_ENABLED}" = "true" ]; then
     DNS_ALIVE_AT_TEARDOWN="no"
     if pgrep -f "dns_server.py" > /dev/null 2>&1; then
         DNS_ALIVE_AT_TEARDOWN="yes"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 0.1. Boundary integrity — did every rule setup installed survive the job?
+# ---------------------------------------------------------------------------
+# A step with sudo can flush or delete a rule mid-job; nothing else would ever
+# notice. Must run before section 1.5 removes the rules. Every `-A` in setup.sh
+# has to appear here (tests/test_iptables_rule_symmetry.py enforces it).
+TLS_INTERCEPT="${NFW_TLS_INTERCEPT:-true}"
+BOUNDARY_INTACT="unchecked"
+BOUNDARY_MISSING=""
+boundary_has() {
+    sudo "$@" > /dev/null 2>&1 || BOUNDARY_MISSING="${BOUNDARY_MISSING}$*"$'\n'
+}
+if [ "${TRANSPARENT}" = "true" ]; then
+    boundary_has iptables -t nat -C OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 443 -j REDIRECT --to-port "${PROXY_PORT}"
+    boundary_has iptables -t nat -C OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}"
+    boundary_has iptables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
+    if [ "${MODE}" = "enforce" ]; then
+        boundary_has iptables -C OUTPUT -p udp --dport 443 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable
+        boundary_has iptables -C OUTPUT -p tcp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with tcp-reset
+        boundary_has iptables -C OUTPUT -p udp --dport 853 -m owner ! --uid-owner pipewardenuser -j REJECT --reject-with icmp-port-unreachable
+        if [ "${DNS_ENABLED}" = "true" ]; then
+            boundary_has iptables -C OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+            boundary_has iptables -C OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+        fi
+    fi
+    if [ "${FORWARD_LOG}" = "true" ]; then
+        boundary_has iptables -C FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: "
+    fi
+    if [ "${IP6TABLES}" = "true" ]; then
+        boundary_has ip6tables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid
+        if [ "${MODE}" = "enforce" ]; then
+            boundary_has ip6tables -C OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser -m multiport --dports 80,443,853 -j REJECT --reject-with tcp-reset
+            boundary_has ip6tables -C OUTPUT -p udp -m owner ! --uid-owner pipewardenuser -m multiport --dports 443,853 -j REJECT --reject-with icmp6-port-unreachable
+        fi
+    fi
+    if [ "${PROXY_ALIVE_AT_TEARDOWN}" != "yes" ]; then
+        BOUNDARY_MISSING="${BOUNDARY_MISSING}process: mitmdump (proxy)"$'\n'
+    fi
+    BOUNDARY_INTACT="true"
+elif [ "${TLS_INTERCEPT}" != "true" ] && [ "${CONN_LOGGING}" = "true" ]; then
+    # Setup adds this LOG rule best-effort here, so only a rule that went in can go missing.
+    if [ "${NFW_CONN_LOG4:-true}" = "true" ]; then
+        boundary_has iptables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
+    fi
+    if [ "${IP6TABLES}" = "true" ]; then
+        boundary_has ip6tables -C OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid
+    fi
+    if [ "${MODE}" = "enforce" ] && [ "${DNS_ENABLED}" = "true" ]; then
+        boundary_has iptables -C OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+        boundary_has iptables -C OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+        boundary_has iptables -C OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
+        boundary_has iptables -C OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
+        if [ "${IP6TABLES}" = "true" ]; then
+            boundary_has ip6tables -C OUTPUT -p udp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with icmp6-port-unreachable
+            boundary_has ip6tables -C OUTPUT -p tcp ! -d ::1/128 -m owner ! --uid-owner 0 -m multiport --dports 53,853 -j REJECT --reject-with tcp-reset
+        fi
+    fi
+    BOUNDARY_INTACT="true"
+fi
+if [ "${BOUNDARY_INTACT}" = "true" ]; then
+    if [ "${DNS_ALIVE_AT_TEARDOWN}" = "no" ]; then
+        BOUNDARY_MISSING="${BOUNDARY_MISSING}process: dns_server.py (DNS interceptor)"$'\n'
+    fi
+    if [ -n "${BOUNDARY_MISSING}" ]; then
+        BOUNDARY_INTACT="false"
+        echo "PipeWarden: boundary NOT intact at teardown; missing:"
+        printf '%s' "${BOUNDARY_MISSING}" | sed 's/^/  /'
     fi
 fi
 
@@ -358,6 +427,8 @@ PW_CONN_LOG="${CONN_LOG}" \
 PW_REPORT_DIR="${REPORT_DIR}" \
 PW_BLINDSPOT_IPV6="${BLINDSPOT_IPV6}" \
 PW_BLINDSPOT_DOCKER="${BLINDSPOT_DOCKER}" \
+PW_BOUNDARY_INTACT="${BOUNDARY_INTACT}" \
+PW_BOUNDARY_MISSING="${BOUNDARY_MISSING}" \
 python3 - <<'PYEOF' || echo "Warning: health check failed"
 import json
 import os
@@ -387,6 +458,11 @@ dns_alive = os.environ.get("PW_DNS_ALIVE", "unknown")
 transparent = os.environ.get("PW_TRANSPARENT", "") == "true"
 blindspot_ipv6 = os.environ.get("PW_BLINDSPOT_IPV6", "") == "true"
 blindspot_docker = os.environ.get("PW_BLINDSPOT_DOCKER", "") == "true"
+boundary_intact = {"true": True, "false": False}.get(
+    os.environ.get("PW_BOUNDARY_INTACT", ""))
+boundary_missing = [
+    m for m in os.environ.get("PW_BOUNDARY_MISSING", "").splitlines() if m.strip()
+]
 
 warnings = []
 if proxy_alive == "no":
@@ -414,6 +490,15 @@ if blindspot_docker:
         "or policy-enforced"
     )
 
+# Teardown's exit step annotates this one, with the severity the mode calls for.
+summary_warnings = list(warnings)
+if boundary_intact is False:
+    summary_warnings.insert(0,
+        "the firewall boundary was NOT intact at teardown — rules or processes "
+        "setup installed were gone, so part of the job ran outside it: "
+        + "; ".join(boundary_missing)
+    )
+
 health = {
     "proxy_alive_at_teardown": proxy_alive,
     "dns_server_alive_at_teardown": dns_alive,
@@ -422,14 +507,16 @@ health = {
     "iptables_only_entries": ipt,
     "blindspot_ipv6_egress": blindspot_ipv6,
     "blindspot_docker_bridge": blindspot_docker,
-    "warnings": warnings,
+    "boundary_intact": boundary_intact,
+    "boundary_missing": boundary_missing,
+    "warnings": summary_warnings,
 }
 with open(os.path.join(os.environ["PW_REPORT_DIR"], "health.json"), "w") as fh:
     json.dump(health, fh, indent=2)
 
 lines = ["", "### Intercept health", ""]
-if warnings:
-    for w in warnings:
+if summary_warnings:
+    for w in summary_warnings:
         lines.append(f"> ⚠️ **{w}**")
         lines.append(">")
 else:
@@ -440,6 +527,8 @@ lines += [
     "| --- | --- |",
     f"| Proxy process alive at teardown | {proxy_alive} |",
     f"| DNS server alive at teardown | {dns_alive} |",
+    "| Boundary intact at teardown (rules + processes) | "
+    + {True: "yes", False: "**no**", None: "not checked"}[boundary_intact] + " |",
     f"| Proxy-leg entries (HTTP/HTTPS/TCP) | {proxy_leg} |",
     f"| DNS entries | {dns} |",
     f"| iptables-only entries | {ipt} |",
@@ -494,7 +583,7 @@ fi
 if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$(dirname "${GITHUB_OUTPUT}")" ]; then
     echo "report-path=${REPORT_DIR}" >> "${GITHUB_OUTPUT}"
     echo "blocked-count=${BLOCKED_COUNT}" >> "${GITHUB_OUTPUT}"
-    if [ "${MODE}" = "enforce" ] && [ "${BLOCKED_COUNT}" -gt 0 ]; then
+    if [ "${MODE}" = "enforce" ] && { [ "${BLOCKED_COUNT}" -gt 0 ] || [ "${BOUNDARY_INTACT}" = "false" ]; }; then
         echo "status=fail" >> "${GITHUB_OUTPUT}"
     else
         echo "status=pass" >> "${GITHUB_OUTPUT}"
@@ -565,6 +654,17 @@ fi
 # ---------------------------------------------------------------------------
 # 8. Exit code
 # ---------------------------------------------------------------------------
+if [ "${BOUNDARY_INTACT}" = "false" ]; then
+    BOUNDARY_SUMMARY="$(printf '%s' "${BOUNDARY_MISSING}" | paste -sd ';' - | sed 's/;/; /g')"
+    if [ "${MODE}" != "enforce" ]; then
+        echo "::warning title=PipeWarden boundary::firewall boundary was not intact at teardown, so part of the job ran unmonitored. Missing: ${BOUNDARY_SUMMARY}"
+    elif [ "${FAIL_ON_BLOCK}" = "false" ]; then
+        echo "::warning title=PipeWarden boundary::enforce boundary was not intact at teardown (missing: ${BOUNDARY_SUMMARY}); fail-on-block is false, so the job continues."
+    else
+        echo "::error title=PipeWarden boundary::enforce boundary was not intact at teardown, so part of the job ran unenforced — failing closed. Missing: ${BOUNDARY_SUMMARY}"
+        exit 1
+    fi
+fi
 # A verdict computed from a missing or partly unreadable log is not a pass.
 if [ "${MODE}" = "enforce" ] && { [ "${REPORT_OK}" != "true" ] || [ "${MALFORMED_LINES}" -gt 0 ]; }; then
     if [ "${FAIL_ON_BLOCK}" = "false" ]; then
