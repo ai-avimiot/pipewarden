@@ -206,7 +206,7 @@ sudo chmod -R u=rwX,go=rX "${RUNTIME_ROOT}"
 # into the runner at job time. Keep this in lockstep with the proxy container
 # base image (proxy/Dockerfile: mitmproxy/mitmproxy:<version>). Overridable via
 # the mitmproxy-version input for testing against a newer release.
-MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.0}"
+MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.1}"
 echo "::group::PipeWarden: Install proxy"
 if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     echo "TLS interception disabled — skipping proxy install (no MITM will run)."
@@ -469,6 +469,9 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     echo "Proxy started with PID ${PROXY_PID}"
 else
     # Non-transparent mode
+    # mitmproxy runs as the runner user; created now, the root DNS interceptor
+    # cannot create it first and lock the proxy out of its own log.
+    touch "${LOG_DIR}/connections.jsonl"
     mkdir -p ~/.mitmproxy
     cat "${CA_DIR}/ca-key.pem" "${CA_DIR}/ca.pem" > ~/.mitmproxy/mitmproxy-ca.pem
 
@@ -787,7 +790,8 @@ elif [ "${CANARY}" != "false" ]; then
         # it either way — a blocked canary entry passes the check too.
         CANARY_IP=""
         if [ -n "${UPSTREAM_DNS}" ] && command -v dig &>/dev/null; then
-            CANARY_IP="$(dig +short +time=3 +tries=1 @"${UPSTREAM_DNS%%,*}" A "${CANARY_HOST}" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+            # As root: the enforce DNS reject rules exempt only uid 0.
+            CANARY_IP="$(sudo dig +short +time=3 +tries=1 @"${UPSTREAM_DNS%%,*}" A "${CANARY_HOST}" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
         fi
         if [ -n "${CANARY_IP}" ]; then
             curl --silent --show-error --max-time 15 --output /dev/null \
@@ -804,14 +808,26 @@ elif [ "${CANARY}" != "false" ]; then
     fi
     # Poll for the canary entry (the proxy writes it a beat after the request
     # returns) instead of a flat 1s wait — break as soon as it lands.
+    canary_recorded() {
+        for _ in $(seq 1 10); do
+            if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q "\"protocol\": \"$1\""; then
+                return 0
+            fi
+            sleep 0.1
+        done
+        return 1
+    }
     CANARY_SEEN="false"
-    for _ in $(seq 1 10); do
-        if grep "\"host\": \"${CANARY_HOST}\"" "${LOG_DIR}/connections.jsonl" 2>/dev/null | grep -q '"protocol": "https"'; then
-            CANARY_SEEN="true"
-            break
-        fi
-        sleep 0.1
-    done
+    if canary_recorded https; then
+        CANARY_SEEN="true"
+    elif [ "${ENABLE_TRANSPARENT}" != "true" ]; then
+        # An HTTPS CONNECT dies at mitmproxy's eager upstream lookup, before
+        # any hook, when enforce DNS refuses the name; plain HTTP is hooked first.
+        curl --silent --show-error --max-time 15 --output /dev/null \
+            --proxy "http://127.0.0.1:${PROXY_PORT}" "http://${CANARY_HOST}/" \
+            || echo "Plain-HTTP canary request failed (not fatal by itself — checking the connection log)"
+        canary_recorded http && CANARY_SEEN="true"
+    fi
     if [ "${CANARY_SEEN}" = "true" ]; then
         echo "Canary OK — ${CANARY_HOST} was recorded by the proxy leg"
         # Drop startup noise (including the canary itself) so the report and

@@ -15,6 +15,7 @@ These checks are offline and cheap: they compare declared specifiers against
 pinned versions, no network and no install.
 """
 
+import importlib.metadata
 import json
 import re
 from pathlib import Path
@@ -146,3 +147,31 @@ def test_proxy_and_test_locks_agree_on_shared_pins():
             f"{name} is pinned to {proxy[name]} in proxy/requirements-lock.txt "
             f"but {tests[name]} in requirements/requirements-lock.txt"
         )
+
+
+@pytest.mark.parametrize(
+    "lock", ["requirements/requirements-lock.txt"]
+)
+def test_locks_with_mitmproxy_satisfy_its_own_metadata(lock: str):
+    """pip --require-hashes still resolves, so a pin past any range mitmproxy
+    declares makes the lock uninstallable. #204 merged brotli 1.2.1 while
+    mitmproxy 12.3.0 required <=1.2.0 and broke every native enforce job.
+    """
+    pins = _parse_pins((REPO_ROOT / lock).read_text(encoding="utf-8"))
+    installed = importlib.metadata.version("mitmproxy")
+    assert pins.get("mitmproxy") == installed, (
+        f"{lock} pins mitmproxy=={pins.get('mitmproxy')} but the test env has "
+        f"{installed}; regenerate every lock with scripts/update-lock-files.sh."
+    )
+    env = {"python_version": "3.12", "sys_platform": "linux", "platform_system": "Linux",
+           "extra": ""}
+    for raw in importlib.metadata.requires("mitmproxy") or []:
+        req = Requirement(raw)
+        if req.marker and not req.marker.evaluate(env):
+            continue
+        key = req.name.lower().replace("_", "-")
+        if key in pins:
+            assert req.specifier.contains(Version(pins[key]), prereleases=True), (
+                f"{lock} pins {req.name}=={pins[key]}, which mitmproxy {installed} "
+                f"forbids ('{req}'). Bump mitmproxy or keep the pin."
+            )

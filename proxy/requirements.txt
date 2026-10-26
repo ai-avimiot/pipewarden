@@ -4,11 +4,11 @@
 # it into proxy/requirements-lock.txt, and the Dockerfile installs from that lock
 # with --require-hashes.
 #
-# The base image is mitmproxy/mitmproxy:12.3.0, which already ships all of these.
+# The base image is mitmproxy/mitmproxy:12.3.1, which already ships all of these.
 # They are declared explicitly anyway so the lock pins and hash-verifies them
 # rather than silently inheriting whatever the base image happens to carry.
 #
-# IMPORTANT: the upper bounds mirror mitmproxy 12.3.0's own declared ranges
+# IMPORTANT: the upper bounds mirror mitmproxy 12.3.1's own declared ranges
 # (cryptography <=50.0.2, pyOpenSSL <=27.0.0). Exceeding them installs a version
 # mitmproxy itself cannot use and breaks the proxy at runtime. Raise these only
 # when the base image's mitmproxy version is bumped.
@@ -23,7 +23,7 @@ certifi>=2019.9.11
 
 # Pulled in transitively, capped here for the same reason: mitmproxy is absent
 # from this file (it comes from the base image), so the resolver cannot see its
-# ranges and floats transitives past them. mitmproxy 12.3.0 declares
+# ranges and floats transitives past them. mitmproxy 12.3.1 declares
 # typing-extensions<=4.16.0 on python<3.13; without this the image could
 # install a newer release over the very mitmproxy that forbids it.
 #
