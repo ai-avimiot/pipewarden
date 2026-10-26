@@ -35,7 +35,7 @@ floating `v3` tag. `latest` then advances to it; `v2` keeps tracking the latest
 | Major | Floating tag | Points to | Upgrade guide |
 |-------|--------------|--------|---------------|
 | 3 | `v3` | latest 3.x (current major) | [Migrating to v3.0](docs/migrating-to-v3.md) |
-| 2 | `v2` | 2.2.1 | [Migrating to v2.0](docs/migrating-to-v2.md) |
+| 2 | `v2` | 2.2.2 | [Migrating to v2.0](docs/migrating-to-v2.md) |
 | 1 | `v1` | 1.4.1 | |
 
 ## Recommendation
