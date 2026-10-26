@@ -19,7 +19,7 @@ pyyaml>=6.0.3
 # (see _get_trust_store, _cert_dns_names, verify_server_cert).
 cryptography>=42.0,<=50.0.2
 pyOpenSSL>=24.3,<=27.0.0
-certifi>=2019.9.11
+certifi>=2026.10.23
 
 # Pulled in transitively, capped here for the same reason: mitmproxy is absent
 # from this file (it comes from the base image), so the resolver cannot see its
