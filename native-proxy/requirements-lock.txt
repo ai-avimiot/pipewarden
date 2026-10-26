@@ -761,8 +761,8 @@ markupsafe==3.0.4 \
     #   flask
     #   jinja2
     #   werkzeug
-mitmproxy==12.3.0 \
-    --hash=sha256:29fd9e934bad86a321ff345ec141f894dbcc1ec9e3bf5deffba9ac2ea9db3c61
+mitmproxy==12.3.1 \
+    --hash=sha256:87afb808ac8d55383dbe6aa30eadeb0fedaeffd26210e7e23c25c9cd43bdb36a
     # via -r native-proxy/requirements.txt
 mitmproxy-linux==0.12.15 ; sys_platform == 'linux' \
     --hash=sha256:438615c3eaaa7a84b75ede3fccacdac1df31584746e6f3d58678d5883f06c1c2 \

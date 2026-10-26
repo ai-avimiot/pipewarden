@@ -207,7 +207,7 @@ sudo chmod -R u=rwX,go=rX "${RUNTIME_ROOT}"
 # into the runner at job time. Keep this in lockstep with the proxy container
 # base image (proxy/Dockerfile: mitmproxy/mitmproxy:<version>). Overridable via
 # the mitmproxy-version input for testing against a newer release.
-MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.0}"
+MITMPROXY_VERSION="${INPUT_MITMPROXY_VERSION:-12.3.1}"
 MITMPROXY_LOCK="${RUNTIME_ROOT}/native-proxy/requirements-lock.txt"
 LOCKED_MITMPROXY_VERSION="$(sed -n 's/^mitmproxy==\([^ ;\\]*\).*/\1/p' "${MITMPROXY_LOCK}")"
 if [ -n "${LOCKED_MITMPROXY_VERSION}" ] && [ "${MITMPROXY_VERSION}" = "${LOCKED_MITMPROXY_VERSION}" ]; then

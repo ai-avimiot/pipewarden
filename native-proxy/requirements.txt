@@ -4,9 +4,9 @@
 #
 # Keep in lockstep with proxy/Dockerfile (mitmproxy/mitmproxy:<version>) and the
 # MITMPROXY_VERSION defaults in setup.sh and action/src/main.js.
-mitmproxy==12.3.0
+mitmproxy==12.3.1
 
-# mitmproxy 12.3.0 declares these ceilings itself; restated so a mitmproxy bump
+# mitmproxy 12.3.1 declares these ceilings itself; restated so a mitmproxy bump
 # that forgets proxy/requirements.txt still fails here. Raise only with mitmproxy.
 cryptography<=50.0.2
 pyOpenSSL<=27.0.0
