@@ -1,0 +1,166 @@
+name: "PipeWarden Demo: v3 guards"
+
+# Live proof of the v3 enforcement features that unit tests only mock: the
+# internal-address guard (both proxy modes), allowed_ips, access: read-only,
+# and the mixed-version policy merge refusal.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'policy/**'
+      - 'proxy/**'
+      - 'scripts/**'
+      - 'native-proxy/**'
+      - '.github/pipewarden/demo-pipewarden-v3-guards.network-policy.yml'
+      - '.github/workflows/demo-pipewarden-v3-guards.yml'
+      - 'tests/fixtures/pw_test_dns.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    name: "v3 guards (transparent=${{ matrix.transparent }}, names via ${{ matrix.names }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Transparent mode names plain HTTP only from DNS answers it saw, so
+          # names come from a local resolver: this also proves the DNS-layer guard.
+          - transparent: 'true'
+            names: dns
+          # /etc/hosts skips the interceptor, so the proxy's own connect-time
+          # check is what has to catch the private address.
+          - transparent: 'false'
+            names: hosts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Local servers on private addresses"
+        run: |
+          for ip in 10.99.0.1 10.99.0.2; do
+            sudo ip addr add "${ip}/32" dev lo
+            sudo mkdir -p "/srv/${ip}" && echo "served-by-${ip}" | sudo tee "/srv/${ip}/index.html" > /dev/null
+            sudo sh -c "nohup python3 -m http.server 80 --bind ${ip} --directory /srv/${ip} > /tmp/http-${ip}.log 2>&1 &"
+          done
+          for ip in 10.99.0.1 10.99.0.2; do
+            for _ in $(seq 1 20); do curl -sf "http://${ip}/" > /dev/null && break; sleep 0.5; done
+            curl -sf "http://${ip}/" | grep -q "served-by-${ip}" || { echo "::error::server on ${ip} did not start"; exit 1; }
+          done
+
+      - name: "Name the servers (/etc/hosts)"
+        if: matrix.names == 'hosts'
+        run: |
+          printf '%s\n' "10.99.0.1 internal.pw-test" "169.254.169.254 metadata.pw-test" "10.99.0.2 mirror.pw-test" \
+            | sudo tee -a /etc/hosts
+
+      - name: "Name the servers (local resolver, used as PipeWarden's upstream)"
+        if: matrix.names == 'dns'
+        run: |
+          dev=$(ip route show default | awk '{print $5; exit}')
+          real=$(resolvectl status "${dev}" | grep -oP 'DNS Servers: \K\S+' | head -1)
+          echo "link ${dev}, real resolver ${real}"
+          sudo sh -c "nohup python3 tests/fixtures/pw_test_dns.py 127.0.0.2 ${real} \
+            internal.pw-test=10.99.0.1 metadata.pw-test=169.254.169.254 mirror.pw-test=10.99.0.2 \
+            > /tmp/pw-test-dns.log 2>&1 &"
+          sleep 1
+          sudo resolvectl dns "${dev}" 127.0.0.2
+          getent hosts mirror.pw-test | grep -q 10.99.0.2 || { echo "::error::local resolver not in use"; resolvectl status; exit 1; }
+          getent hosts example.com > /dev/null || { echo "::error::forwarding broken"; cat /tmp/pw-test-dns.log; exit 1; }
+
+      - name: "PipeWarden setup (enforce, v2 policy)"
+        uses: ./native-proxy/action-setup
+        with:
+          policy-file: .github/pipewarden/demo-pipewarden-v3-guards.network-policy.yml
+          mode: enforce
+          transparent: ${{ matrix.transparent }}
+          fail-on-block: 'false'
+
+      - name: "Guard, exemption and read-only behave live"
+        run: |
+          fail=0
+          probe() {  # probe <label> <expect: pass|block> <curl args...>
+            local label=$1 expect=$2; shift 2
+            local code body
+            body=$(curl -sS --max-time 15 -o - -w '\n%{http_code}' "$@" 2>&1 || true)
+            code=${body##*$'\n'}
+            echo "${label}: HTTP ${code} — $(head -c 160 <<<"${body%$'\n'*}" | tr '\n' ' ')"
+            if [ "${expect}" = pass ] && [ "${code}" != 200 ]; then
+              echo "::error::${label}: expected 200, got ${code}"; fail=1
+            fi
+            if [ "${expect}" = block ] && { [ "${code}" = 200 ] || grep -q 'served-by-' <<<"${body}"; }; then
+              echo "::error::${label}: reached the internal server"; fail=1
+            fi
+          }
+          probe "internal, no exemption" block http://internal.pw-test/
+          probe "metadata alias" block http://metadata.pw-test/latest/meta-data/
+          probe "exempted mirror GET" pass http://mirror.pw-test/
+          probe "exempted mirror POST (read-only)" block -X POST -d x=1 http://mirror.pw-test/
+          exit "${fail}"
+
+      - name: "PipeWarden teardown"
+        id: teardown
+        if: always()
+        uses: ./native-proxy/action-teardown
+
+      - name: "Report labels each block with the right reason"
+        env:
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          python3 - "${REPORT_DIR}/report.json" <<'EOF'
+          import json, sys
+          conns = json.load(open(sys.argv[1]))["connections"]
+          def reasons(host):
+              return [c.get("block_reason") or "" for c in conns
+                      if c.get("host") == host and c.get("status") == "blocked"]
+          expect = {
+              "internal.pw-test": "private address",
+              "metadata.pw-test": "cloud metadata",
+              "mirror.pw-test": "method POST",
+          }
+          bad = 0
+          for host, needle in expect.items():
+              got = reasons(host)
+              print(f"{host}: {got}")
+              if not any(needle in r for r in got):
+                  print(f"::error::{host}: no blocked entry whose reason mentions {needle!r}")
+                  bad = 1
+          allowed = [c for c in conns if c.get("host") == "mirror.pw-test" and c.get("status") == "allowed"]
+          if not allowed:
+              print("::error::the exempted mirror GET is not logged as allowed")
+              bad = 1
+          sys.exit(bad)
+          EOF
+
+  merge-refuses-mixed-versions:
+    name: "Policy merge refuses mixed versions, and says why"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "Add a v2 per-workflow policy next to the v1 common one"
+        run: |
+          grep -q '^version: "1"' .github/pipewarden/common.network-policy.yml
+          printf '%s\n' 'version: "2"' 'mode: enforce' 'rules:' '  - name: x' '    allow:' \
+            '      domains: ["example.invalid"]' > .github/pipewarden/demo-pipewarden-v3-guards.network-policy.yml
+      - name: "PipeWarden setup (must fail)"
+        id: setup
+        continue-on-error: true
+        uses: ./native-proxy/action-setup
+        with:
+          mode: enforce
+      - name: "Setup failed with the merge error, and left nothing behind"
+        env:
+          OUTCOME: ${{ steps.setup.outcome }}
+        run: |
+          [ "${OUTCOME}" = failure ] || { echo "::error::setup accepted mixed policy versions"; exit 1; }
+          grep -q 'Cannot merge policies' /tmp/pw-resolve.log \
+            || { echo "::error::resolver log has no merge error"; cat /tmp/pw-resolve.log; exit 1; }
+          if sudo iptables -t nat -S OUTPUT | grep -q REDIRECT; then
+            echo "::error::a redirect rule survived the failed setup"; exit 1
+          fi
+          echo "OK: refused with a clear error, rules rolled back"

@@ -314,6 +314,17 @@ Once the policy is stable, just point PipeWarden at it. Enforce is the default â
 
 Reports appear in the GitHub Job Summary and as downloadable artifacts.
 
+**GitHub-hosted runners call home on their own.** The runner's background agent intermittently contacts `hosted-compute-watchdog-*.githubapp.com` (DNS and HTTPS), independent of your steps. A discovery run may not see it, so an enforce job can fail at random on it. Allow it explicitly if you run enforce on GitHub-hosted runners:
+
+```yaml
+  - name: "GitHub-hosted runner watchdog"
+    appears: sometimes
+    allow:
+      domains: ["hosted-compute-watchdog-*.githubapp.com"]
+      ports: [443]
+      protocols: [https]
+```
+
 ## How it works
 
 PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions runner. iptables redirects all outbound HTTP/HTTPS traffic through the proxy â€” no `HTTP_PROXY` env vars needed, so even tools that ignore proxy settings are captured.

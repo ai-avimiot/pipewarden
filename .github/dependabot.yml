@@ -13,8 +13,8 @@ updates:
       - "dependencies"
     # mitmproxy caps nearly every one of its transitives, and a bump past one of
     # those ceilings is unmergeable by construction (pip --require-hashes ResolutionImpossible).
-    # Each is ignored above mitmproxy 12.3.0's ceiling (verified against its
-    # PyPI metadata on 2026-10-22) rather than left to generate dead PRs, as
+    # Each is ignored above mitmproxy 12.3.1's ceiling (verified against its
+    # PyPI metadata on 2026-10-26) rather than left to generate dead PRs, as
     # #90 (h2) and #71 (asgiref) once did. Revisit ALL of these when mitmproxy
     # is bumped, then regenerate via scripts/update-lock-files.sh.
     ignore:
@@ -29,7 +29,7 @@ updates:
       - dependency-name: "bcrypt"
         versions: [">5.0.0"]
       - dependency-name: "brotli"
-        versions: [">1.2.0"]
+        versions: [">1.2.1"]
       - dependency-name: "cryptography"
         versions: [">50.0.2"]
       - dependency-name: "flask"
@@ -92,8 +92,8 @@ updates:
       default-days: 3
     labels:
       - "dependencies"
-    # Same mitmproxy 12.3.0 ceilings as /requirements above: the proxy image is
-    # built FROM mitmproxy/mitmproxy:12.3.0, so a cryptography, pyopenssl or
+    # Same mitmproxy 12.3.1 ceilings as /requirements above: the proxy image is
+    # built FROM mitmproxy/mitmproxy:12.3.1, so a cryptography, pyopenssl or
     # typing-extensions past what that mitmproxy declares cannot be installed
     # alongside it (#107, #112 were dead PRs of this kind).
     #
