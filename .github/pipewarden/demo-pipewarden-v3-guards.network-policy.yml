@@ -23,3 +23,14 @@ rules:
       protocols: [http]
       allowed_ips: ["10.99.0.2/32"]
       access: read-only
+  - name: "GitHub (the teardown action fetches upload-artifact mid-job)"
+    allow:
+      domains: ["api.github.com", "github.com", "codeload.github.com", "*.githubusercontent.com"]
+      ports: [443]
+      protocols: [https]
+  - name: "GitHub-hosted runner watchdog"
+    appears: sometimes
+    allow:
+      domains: ["hosted-compute-watchdog-*.githubapp.com"]
+      ports: [443]
+      protocols: [https]
