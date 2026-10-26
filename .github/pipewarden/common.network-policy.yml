@@ -16,6 +16,14 @@ rules:
       ports: [443]
       protocols: [https]
 
+  - name: "GitHub-hosted runner watchdog (the runner's own agent, not a step)"
+    appears: sometimes
+    allow:
+      domains:
+        - "hosted-compute-watchdog-*.githubapp.com"
+      ports: [443]
+      protocols: [https]
+
   - name: "Ubuntu packages"
     allow:
       domains:
