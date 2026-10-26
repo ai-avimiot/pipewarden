@@ -7,6 +7,6 @@ mitmproxy>=12.3.0
 cryptography>=42.0,<=50.0.2
 dnspython>=2.9.0
 # Linting / type-checking (CI: see .github/workflows/test.yml)
-ruff>=0.17.1
+ruff>=0.17.2
 mypy>=2.4.0
 types-PyYAML>=6.0.12.20260906
