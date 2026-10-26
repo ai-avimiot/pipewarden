@@ -6,7 +6,7 @@ v3.0 tightens several enforce-mode defaults. Each change closes a way for traffi
 - uses: ai-avimiot/pipewarden/native-proxy/action@v3   # was @v2
 ```
 
-`@v2` stays on 2.2.1 and does not move, so a pipeline that is not ready keeps working there. Most changes only bite in `enforce`; in `monitor` the same traffic is reported as `would_block`, so **run one monitor job on `@v3` first** and read its report.
+`@v2` stays on the 2.2.x line (2.2.2 adds only security fixes), so a pipeline that is not ready keeps working there. Most changes only bite in `enforce`; in `monitor` the same traffic is reported as `would_block`, so **run one monitor job on `@v3` first** and read its report.
 
 | You use | Read |
 | --- | --- |
