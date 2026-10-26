@@ -15,3 +15,9 @@ jobs:
             *"Example Domain"*) echo "LEAK: reached example.com"; exit 1 ;;
           esac
           echo "blocked as expected: ${out:0:120}"
+      - name: Job container has no Docker daemon
+        run: |
+          if docker info > /dev/null 2>&1; then
+            echo "LEAK: the job container can reach a Docker daemon"; exit 1
+          fi
+          echo "no Docker daemon, as expected"

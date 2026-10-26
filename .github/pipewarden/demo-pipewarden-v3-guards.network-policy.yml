@@ -1,0 +1,25 @@
+# Policy for the v3 guard demo (demo-pipewarden-v3-guards.yml).
+#
+# Every destination is a local HTTP server on a private address, named through
+# /etc/hosts, so the job proves the guards without any third-party host.
+version: "2"
+mode: enforce
+
+rules:
+  - name: "internal host, no exemption (guard must block)"
+    allow:
+      domains: ["internal.pw-test"]
+      ports: [80]
+      protocols: [http]
+  - name: "metadata alias (guard must block)"
+    allow:
+      domains: ["metadata.pw-test"]
+      ports: [80]
+      protocols: [http]
+  - name: "exempted internal mirror, read-only"
+    allow:
+      domains: ["mirror.pw-test"]
+      ports: [80]
+      protocols: [http]
+      allowed_ips: ["10.99.0.2/32"]
+      access: read-only
