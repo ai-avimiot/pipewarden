@@ -14,6 +14,7 @@ on:
       - 'native-proxy/**'
       - '.github/pipewarden/demo-pipewarden-v3-guards.network-policy.yml'
       - '.github/workflows/demo-pipewarden-v3-guards.yml'
+      - 'tests/fixtures/pw_test_dns.py'
   workflow_dispatch:
 
 permissions:
@@ -21,12 +22,21 @@ permissions:
 
 jobs:
   guards:
-    name: "v3 guards (transparent=${{ matrix.transparent }})"
+    name: "v3 guards (transparent=${{ matrix.transparent }}, names via ${{ matrix.names }})"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        transparent: ['true', 'false']
+        include:
+          # Transparent mode names plain HTTP only from DNS answers it saw, so
+          # names come from a local resolver: this also proves the DNS-layer guard.
+          - transparent: 'true'
+            names: dns
+          # /etc/hosts skips the interceptor, so the proxy's own connect-time
+          # check is what has to catch the private address.
+          - transparent: 'false'
+            names: hosts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -37,12 +47,30 @@ jobs:
             sudo mkdir -p "/srv/${ip}" && echo "served-by-${ip}" | sudo tee "/srv/${ip}/index.html" > /dev/null
             sudo sh -c "nohup python3 -m http.server 80 --bind ${ip} --directory /srv/${ip} > /tmp/http-${ip}.log 2>&1 &"
           done
-          printf '%s\n' "10.99.0.1 internal.pw-test" "169.254.169.254 metadata.pw-test" "10.99.0.2 mirror.pw-test" \
-            | sudo tee -a /etc/hosts
           for ip in 10.99.0.1 10.99.0.2; do
             for _ in $(seq 1 20); do curl -sf "http://${ip}/" > /dev/null && break; sleep 0.5; done
             curl -sf "http://${ip}/" | grep -q "served-by-${ip}" || { echo "::error::server on ${ip} did not start"; exit 1; }
           done
+
+      - name: "Name the servers (/etc/hosts)"
+        if: matrix.names == 'hosts'
+        run: |
+          printf '%s\n' "10.99.0.1 internal.pw-test" "169.254.169.254 metadata.pw-test" "10.99.0.2 mirror.pw-test" \
+            | sudo tee -a /etc/hosts
+
+      - name: "Name the servers (local resolver, used as PipeWarden's upstream)"
+        if: matrix.names == 'dns'
+        run: |
+          dev=$(ip route show default | awk '{print $5; exit}')
+          real=$(resolvectl status "${dev}" | grep -oP 'DNS Servers: \K\S+' | head -1)
+          echo "link ${dev}, real resolver ${real}"
+          sudo sh -c "nohup python3 tests/fixtures/pw_test_dns.py 127.0.0.2 ${real} \
+            internal.pw-test=10.99.0.1 metadata.pw-test=169.254.169.254 mirror.pw-test=10.99.0.2 \
+            > /tmp/pw-test-dns.log 2>&1 &"
+          sleep 1
+          sudo resolvectl dns "${dev}" 127.0.0.2
+          getent hosts mirror.pw-test | grep -q 10.99.0.2 || { echo "::error::local resolver not in use"; resolvectl status; exit 1; }
+          getent hosts example.com > /dev/null || { echo "::error::forwarding broken"; cat /tmp/pw-test-dns.log; exit 1; }
 
       - name: "PipeWarden setup (enforce, v2 policy)"
         uses: ./native-proxy/action-setup
@@ -76,6 +104,7 @@ jobs:
 
       - name: "PipeWarden teardown"
         id: teardown
+        if: always()
         uses: ./native-proxy/action-teardown
 
       - name: "Report labels each block with the right reason"
@@ -110,6 +139,7 @@ jobs:
   merge-refuses-mixed-versions:
     name: "Policy merge refuses mixed versions, and says why"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: "Add a v2 per-workflow policy next to the v1 common one"

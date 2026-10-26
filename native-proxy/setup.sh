@@ -486,6 +486,9 @@ elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     echo "Proxy started with PID ${PROXY_PID}"
 else
     # Non-transparent mode
+    # mitmproxy runs as the runner user; created now, the root DNS interceptor
+    # cannot create it first and lock the proxy out of its own log.
+    touch "${LOG_DIR}/connections.jsonl"
     mkdir -p ~/.mitmproxy
     cat "${CA_DIR}/ca-key.pem" "${CA_DIR}/ca.pem" > ~/.mitmproxy/mitmproxy-ca.pem
 
