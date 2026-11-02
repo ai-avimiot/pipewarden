@@ -21,7 +21,7 @@ FROM docker:29-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb148093
 # the patched module versions below. go-archive 0.3 moved its compression
 # constants; act passes the zero value (uncompressed), so the field is dropped.
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS act-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS act-build
 ARG ACT_VERSION="0.2.89"
 ARG ACT_COMMIT="4f41128141"
 RUN git clone --depth 1 -b "v${ACT_VERSION}" https://github.com/nektos/act.git /src/act \
