@@ -1,0 +1,18 @@
+# Policy for the runner-agent soak (soak-runner-agent.yml): only GitHub, plus
+# the hosted runner's own agent relayed undecrypted because it pins TLS.
+version: "2"
+mode: enforce
+
+rules:
+  - name: "GitHub (the teardown action fetches upload-artifact mid-job)"
+    allow:
+      domains: ["api.github.com", "github.com", "codeload.github.com", "*.githubusercontent.com"]
+      ports: [443]
+      protocols: [https]
+  - name: "GitHub-hosted runner agent"
+    appears: sometimes
+    tls: passthrough
+    allow:
+      domains: ["hosted-compute-request-orchestrator-*.githubapp.com", "hosted-compute-watchdog-*.githubapp.com"]
+      ports: [443]
+      protocols: [https]
