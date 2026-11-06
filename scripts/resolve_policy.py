@@ -78,6 +78,8 @@ def _rule_to_yaml(rule) -> dict:
         out["appears"] = rule.appears
     if getattr(rule, "allow_request_body", False):
         out["allow_request_body"] = True
+    if getattr(rule, "tls", "intercept") != "intercept":
+        out["tls"] = rule.tls
     out["allow"] = allow
     return out
 

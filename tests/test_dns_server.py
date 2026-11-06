@@ -1,5 +1,6 @@
 """Tests for the DNS server module."""
 
+import json
 import os
 import struct
 import sys
@@ -139,10 +140,33 @@ class TestRememberIp:
     def setup_method(self):
         self._orig_max = dns_server.MAX_IP_MAP_ENTRIES
         dns_server.ip_to_domain.clear()
+        dns_server.ip_names.clear()
 
     def teardown_method(self):
         dns_server.MAX_IP_MAP_ENTRIES = self._orig_max
         dns_server.ip_to_domain.clear()
+        dns_server.ip_names.clear()
+
+    def test_keeps_every_name_of_a_shared_ip(self):
+        for name in ("a.com", "b.com", "a.com"):
+            _remember_ip("1.2.3.4", name)
+        assert dns_server.ip_to_domain["1.2.3.4"] == "a.com"
+        assert dns_server.ip_names["1.2.3.4"] == ["b.com", "a.com"]
+
+    def test_names_evicted_with_their_ip(self):
+        dns_server.MAX_IP_MAP_ENTRIES = 1
+        _remember_ip("10.0.0.1", "old.com")
+        _remember_ip("10.0.0.2", "new.com")
+        assert list(dns_server.ip_names) == ["10.0.0.2"]
+
+    def test_map_files_written(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "map.json")
+        monkeypatch.setattr(dns_server, "IP_MAP_PATH", path)
+        _remember_ip("1.2.3.4", "a.com")
+        _remember_ip("1.2.3.4", "b.com")
+        dns_server.update_ip_map()
+        assert json.loads(open(path).read()) == {"1.2.3.4": "b.com"}
+        assert json.loads(open(path + ".names").read()) == {"1.2.3.4": ["a.com", "b.com"]}
 
     def test_records_mapping(self):
         _remember_ip("1.2.3.4", "a.com")

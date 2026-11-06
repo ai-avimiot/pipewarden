@@ -21,6 +21,7 @@ VALID_METHODS = (
     "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "TRACE",
 )
 VALID_ACCESS = ("read-only",)
+VALID_TLS = ("intercept", "passthrough")
 
 # v1 policies stay valid forever: they are committed in users' repositories and
 # a major release is not a licence to break files that still express exactly
@@ -271,6 +272,8 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
 
         allowed_ips = _parse_allowed_ips(allow, i, name, version)
         methods = _parse_methods(allow, protocols, i, name, version)
+        tls = _parse_tls(raw_rule, domains, protocols, paths, methods,
+                         allow_request_body, i, name, version)
 
         rules.append(
             PolicyRule(
@@ -284,10 +287,41 @@ def parse_policy_string(content: str) -> tuple[str, list[PolicyRule]]:
                 allowed_ips=allowed_ips,
                 methods=methods,
                 internal_ip_guard=str(version) != "1",
+                tls=tls,
             )
         )
 
     return mode, rules
+
+
+def _parse_tls(raw_rule: dict, domains: list[str], protocols: list[str],
+               paths: list[str], methods: list[str], allow_request_body: bool,
+               i: int, name: str, version) -> str:
+    """Validate the per-rule ``tls:`` setting; passthrough is refused wherever
+    the rule would promise a check that needs the decrypted request."""
+    tls = raw_rule.get("tls", "intercept")
+    prefix = f"Rule {i} ('{name}'): 'tls'"
+    if tls not in VALID_TLS:
+        raise ValueError(f"{prefix} must be one of {VALID_TLS}, got {tls!r}")
+    if tls == "intercept":
+        return tls
+    if str(version) == "1":
+        raise ValueError(f"{prefix} requires policy version 2")
+    if "https" not in protocols:
+        raise ValueError(f"{prefix}: passthrough needs 'https' in protocols")
+    if not domains or any(d.strip(".*") == "" for d in domains):
+        raise ValueError(
+            f"{prefix}: passthrough needs named domains; a bare wildcard would "
+            f"exempt every host from inspection"
+        )
+    for key, value in (("paths", paths), ("methods", methods),
+                       ("allow_request_body", allow_request_body)):
+        if value:
+            raise ValueError(
+                f"{prefix}: passthrough cannot be combined with '{key}', which "
+                f"needs the decrypted request"
+            )
+    return tls
 
 
 def _parse_allowed_ips(allow: dict, i: int, name: str, version) -> list[str]:

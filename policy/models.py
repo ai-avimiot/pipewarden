@@ -103,6 +103,9 @@ class PolicyRule:
     methods: list[str] = field(default_factory=list)
     # False for version 1 rules, which predate the guard and must keep working.
     internal_ip_guard: bool = True
+    # "passthrough" relays this rule's TLS undecrypted once the ClientHello SNI
+    # and destination are checked: for clients that pin, so cannot be intercepted.
+    tls: str = "intercept"
 
     def to_dict(self) -> dict:
         """Serialize to a dictionary."""

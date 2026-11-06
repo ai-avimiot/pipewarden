@@ -785,7 +785,7 @@ class TestPinningSummary:
     def test_text_summary_hints_the_two_escape_hatches(self):
         text = format_summary(build_report([dict(self.CONN)]))
         assert "CERTIFICATE PINNING" in text
-        assert "tls-passthrough" in text
+        assert "tls: passthrough" in text
         assert "tls-intercept: false" in text
 
     def test_markdown_summary_names_the_host(self):

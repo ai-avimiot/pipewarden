@@ -428,6 +428,8 @@ class NetworkMonitorAddon:
 
         # DNS IP→domain map (populated by dns_server.py)
         self._dns_ip_map: dict[str, str] = {}
+        self._dns_ip_names: dict[str, list[str]] = {}
+        self._dns_names_mtime: float = 0
         self._dns_map_mtime: float = 0
 
         # Cache of definitive cert-verification verdicts keyed by
@@ -440,6 +442,9 @@ class NetworkMonitorAddon:
         # Allowed requests whose upstream IP was unknown at the request hook
         # (regular mode, plain HTTP), keyed by (client, host, port).
         self._awaiting_upstream: dict[tuple, list[tuple[object, ConnectionEntry]]] = {}
+        # SNI of each client connection relayed undecrypted under `tls: passthrough`.
+        self._passthrough: dict[object, str] = {}
+        self._has_passthrough = self.engine.has_passthrough()
 
     def _resolve_host_from_dns(self, ip: str) -> str:
         """Look up a domain name for an IP from the DNS resolver's map."""
@@ -452,6 +457,21 @@ class NetworkMonitorAddon:
         except (FileNotFoundError, ValueError, OSError):
             pass
         return self._dns_ip_map.get(ip, "")
+
+    def _dns_names(self, ip: str) -> list[str]:
+        """Every name the job's DNS resolved to *ip*, not just the latest."""
+        path = DNS_IP_MAP_PATH + ".names"
+        try:
+            mtime = os.path.getmtime(path)
+            if mtime > self._dns_names_mtime:
+                with open(path, "r") as f:
+                    self._dns_ip_names = json.load(f)
+                self._dns_names_mtime = mtime
+        except (FileNotFoundError, ValueError, OSError):
+            pass
+        names = self._dns_ip_names.get(ip) or []
+        latest = self._resolve_host_from_dns(ip)
+        return [*names, latest] if latest else list(names)
 
     # ------------------------------------------------------------------
     # mitmproxy lifecycle
@@ -466,6 +486,7 @@ class NetworkMonitorAddon:
         all traffic in enforce mode.
         """
         if not self.init_error:
+            self._wait_for_clienthello()
             return
         logger.critical(
             "Shutting down proxy: %s — fix the policy file and re-run.",
@@ -478,6 +499,90 @@ class NetworkMonitorAddon:
             # Not running under mitmproxy (e.g. direct instantiation in
             # tests) — nothing to shut down.
             pass
+
+    def _wait_for_clienthello(self) -> None:
+        if not self._has_passthrough:
+            return
+        try:
+            from mitmproxy import ctx
+            if not ctx.options.ignore_hosts:
+                # Any ignore_hosts entry makes mitmproxy defer its layer choice until the whole
+                # ClientHello is in; this one never matches, so it only buys next_layer the SNI.
+                ctx.options.update(ignore_hosts=["(?!)"])
+        except Exception:  # noqa: BLE001 - not running under mitmproxy
+            pass
+
+    # ------------------------------------------------------------------
+    # TLS passthrough
+    # ------------------------------------------------------------------
+
+    def next_layer(self, nextlayer) -> None:
+        """Relay a ``tls: passthrough`` connection undecrypted as raw TCP.
+
+        Raw TCP rather than mitmproxy's own ignore path, because ignored
+        connections reach no addon hook and would vanish from the log. The
+        tcp hooks then log, block and guard the connection as for any other.
+        """
+        if not self._has_passthrough or nextlayer.layer:
+            return
+        try:
+            context = nextlayer.context
+            sni = self._passthrough_sni(context, nextlayer.data_client())
+            if not sni:
+                return
+            from mitmproxy.proxy import layers
+            self._passthrough[_conn_key(context.client)] = sni
+            nextlayer.layer = layers.TCPLayer(context)
+        except Exception as exc:  # noqa: BLE001 - fall back to interception
+            logger.debug("next_layer passthrough error: %s", exc)
+
+    def _passthrough_sni(self, context, data: bytes) -> str:
+        """The SNI to relay undecrypted, or "" to intercept as usual.
+
+        The SNI must also be a name the destination was resolved for, or a
+        step could send a passthrough SNI to any address. mitmproxy has
+        connected upstream by now, so this cannot wait on a lookup of its
+        own; it relies on the job's DNS, and a miss falls back to
+        interception, where the SNI/certificate checks apply.
+        """
+        client = context.client
+        if getattr(client, "transport_protocol", "tcp") != "tcp" or getattr(client, "tls_established", False):
+            return ""
+        address = getattr(context.server, "address", None)
+        if not address:
+            return ""
+        from mitmproxy.net.tls import starts_like_tls_record
+        from mitmproxy.proxy.layers.tls import parse_client_hello
+        if not starts_like_tls_record(data):
+            return ""
+        try:
+            hello = parse_client_hello(data)
+        except ValueError:
+            return ""
+        sni = _norm_host((hello.sni if hello else "") or "")
+        if not sni or self.engine.passthrough_rule(ConnectionEntry(
+            timestamp="", protocol="https", host=sni, port=address[1], tls_sni=sni,
+        )) is None:
+            return ""
+        dest = str(address[0])
+        if _looks_like_ip(dest):
+            bound = sni in {_norm_host(n) for n in self._dns_names(dest)}
+        else:
+            bound = _norm_host(dest) == sni
+        if not bound:
+            logger.warning(
+                "tls passthrough refused for %s: the job's DNS did not resolve it to %s; "
+                "intercepting instead.", sni, dest,
+            )
+            return ""
+        return sni
+
+    def tcp_end(self, flow) -> None:
+        client = getattr(flow, "client_conn", None)
+        if client is not None:
+            self._passthrough.pop(_conn_key(client), None)
+
+    tcp_error = tcp_end
 
     # ------------------------------------------------------------------
     # HTTP / HTTPS interception
@@ -923,6 +1028,8 @@ class NetworkMonitorAddon:
         if status == "allowed":
             # Quiet: tcp_start already warned once; this runs per message.
             status = self._guard_internal_ip(entry, _upstream_ip(flow), quiet=True)
+        if status == "allowed" and entry.protocol == "https":
+            status = "passthrough"
         entry.status = status
         if status == "blocked":
             # mitmproxy's TCP layer ignores flow.kill(), so the relayed bytes are emptied instead.
@@ -933,6 +1040,18 @@ class NetworkMonitorAddon:
 
     def _tcp_entry(self, flow, bytes_transferred: int) -> ConnectionEntry:
         server_addr = flow.server_conn.address
+        client = getattr(flow, "client_conn", None)
+        sni = self._passthrough.get(_conn_key(client)) if client is not None else None
+        if sni:
+            return ConnectionEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                protocol="https",
+                host=sni,
+                port=server_addr[1],
+                bytes_transferred=bytes_transferred,
+                tls_sni=sni,
+                server_ip=server_addr[0] if _looks_like_ip(server_addr[0]) else "",
+            )
         host = server_addr[0]
         if _looks_like_ip(host):
             dns_domain = self._resolve_host_from_dns(host)
@@ -989,8 +1108,8 @@ class NetworkMonitorAddon:
             self._write_log(entry)
             logger.warning(
                 "TLS handshake refused by client for %s — looks like certificate "
-                "pinning. That client cannot be MITM-intercepted; exclude it with "
-                "tls-passthrough, or run the action with tls-intercept: false.",
+                "pinning. That client cannot be MITM-intercepted; add tls: passthrough "
+                "to the rule that allows it, or run the action with tls-intercept: false.",
                 host,
             )
         except Exception as exc:  # noqa: BLE001 - a diagnostic must never crash the proxy
