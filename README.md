@@ -321,7 +321,9 @@ Reports appear in the GitHub Job Summary and as downloadable artifacts.
     appears: sometimes
     tls: passthrough
     allow:
-      domains: ["hosted-compute-*.githubapp.com"]
+      domains:
+        - "hosted-compute-request-orchestrator-*.githubapp.com"
+        - "hosted-compute-watchdog-*.githubapp.com"
       ports: [443]
       protocols: [https]
 ```
@@ -629,7 +631,7 @@ rules:
       protocols: [https]
 ```
 
-The decision is made on the ClientHello, before any decryption. The SNI must match a passthrough rule's domains, port and `https` protocol. It must also be a name the job's own DNS resolved to the destination address (in explicit-proxy mode, the `CONNECT` host). So a step cannot borrow the exemption by sending a passthrough SNI to some other address: such a connection is intercepted as usual, and the SNI and certificate checks apply. Passthrough connections stay in the report as `status: passthrough`, with the SNI, the destination IP and the bytes relayed, and the internal-destination guard still applies. What you give up for that host is what needs the decrypted request: path, method and payload checks and upstream-certificate verification. That is why the parser rejects `tls: passthrough` together with `paths`, `methods` or `allow_request_body`, or on a bare `*` domain. The binding relies on PipeWarden's DNS (`dns: true`, the default). Without it, a destination given as an IP never matches, and the host stays intercepted.
+The decision is made on the ClientHello, before any decryption. The SNI must match a passthrough rule's domains, port and `https` protocol. It must also be a name the job's own DNS resolved to the destination address (in explicit-proxy mode, the `CONNECT` host). So a step cannot borrow the exemption by sending a passthrough SNI to some other address: such a connection is intercepted as usual, and the SNI and certificate checks apply. Passthrough connections stay in the report as `status: passthrough`, with the SNI, the destination IP and the bytes relayed, and the internal-destination guard still applies. What you give up for that host is what needs the decrypted request: path, method and payload checks and upstream-certificate verification. Inside a passthrough connection PipeWarden cannot see the HTTP `Host`, so a step that can reach the host could front another service behind the same load balancer. Keep passthrough rules to the exact names that pin. That is why the parser rejects `tls: passthrough` together with `paths`, `methods` or `allow_request_body`, or on a bare `*` domain. The binding relies on PipeWarden's DNS (`dns: true`, the default). Without it, a destination given as an IP never matches, and the host stays intercepted.
 
 **Fix the whole workflow — `tls-intercept: false`**: run with no MITM at all. No CA is generated or trusted and no proxy starts, so pinned and mTLS clients see the genuine certificate chain and work unchanged. PipeWarden falls back to **DNS-layer enforcement plus conntrack connection logging** — the same posture harden-runner takes. You keep allowlist enforcement on domains and a record of what was contacted; you lose body/path/query inspection and upstream-certificate verification, because nothing is in the TLS path to provide them.
 

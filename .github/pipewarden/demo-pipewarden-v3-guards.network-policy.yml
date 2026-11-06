@@ -32,6 +32,6 @@ rules:
     appears: sometimes
     tls: passthrough
     allow:
-      domains: ["hosted-compute-*.githubapp.com"]
+      domains: ["hosted-compute-request-orchestrator-*.githubapp.com", "hosted-compute-watchdog-*.githubapp.com"]
       ports: [443]
       protocols: [https]
