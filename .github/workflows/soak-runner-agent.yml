@@ -4,6 +4,10 @@ name: "Soak: hosted runner agent under TLS interception"
 # runner some 17-19 minutes in (#219). This job outlives that window with
 # tls: passthrough on, then checks the report.
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/soak-runner-agent.yml'
+      - '.github/pipewarden/soak-runner-agent.network-policy.yml'
   workflow_dispatch:
     inputs:
       minutes:
@@ -38,7 +42,7 @@ jobs:
 
       - name: "Stay alive past the reclaim window"
         env:
-          MINUTES: ${{ inputs.minutes }}
+          MINUTES: ${{ inputs.minutes || '26' }}
         run: |
           for i in $(seq 1 "${MINUTES}"); do
             sleep 60
