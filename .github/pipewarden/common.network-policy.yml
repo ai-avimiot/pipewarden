@@ -24,6 +24,14 @@ rules:
       ports: [443]
       protocols: [https]
 
+  - name: "Azure guest agent health (the runner's own, not a step)"
+    appears: sometimes
+    allow:
+      domains: ["169.254.169.254"]
+      ports: [80]
+      protocols: [http]
+      paths: ["/metadata/instance", "/metadata/instance[?]*"]
+
   - name: "Ubuntu packages"
     allow:
       domains:

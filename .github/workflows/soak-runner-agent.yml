@@ -2,7 +2,8 @@ name: "Soak: hosted runner agent under TLS interception"
 
 # Intercepted, the runner agent's pinned TLS fails and GitHub reclaims the
 # runner some 17-19 minutes in (#219). This job outlives that window with
-# tls: passthrough on, then checks the report.
+# tls: passthrough on, then checks the report. fail-on-block is off only for
+# the deliberate borrowed-SNI probe; any other block fails the last step.
 on:
   pull_request:
     paths:
@@ -73,5 +74,9 @@ jobs:
               print("::error::the runner agent was still intercepted (tls_pinned)"); bad = 1
           if any(c.get("status") == "passthrough" for c in borrowed):
               print("::error::the borrowed SNI was relayed undecrypted"); bad = 1
+          others = sorted({c.get("host") for c in conns
+                           if c.get("status") == "blocked" and "pwsoak" not in c.get("host", "")})
+          if others:
+              print(f"::error::blocked besides the deliberate probe: {others}"); bad = 1
           sys.exit(bad)
           PY
