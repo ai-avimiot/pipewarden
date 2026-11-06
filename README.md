@@ -328,6 +328,20 @@ Reports appear in the GitHub Job Summary and as downloadable artifacts.
       protocols: [https]
 ```
 
+The Azure guest agent on the same runners (`WALinuxAgent`, running as root) polls the instance metadata endpoint for health every few seconds, starting a couple of minutes into the job. Unallowed, each poll is a block, and with `fail-on-block: true` any enforce job longer than that fails at teardown. Allow only that one read: the metadata address's token paths (`/metadata/identity/...`) stay blocked. In `fnmatch`, a bare `?` matches any single character, so the query separator is written `[?]`:
+
+```yaml
+  - name: "Azure guest agent health"
+    appears: sometimes
+    allow:
+      domains: ["169.254.169.254"]
+      ports: [80]
+      protocols: [http]
+      paths: ["/metadata/instance", "/metadata/instance[?]*"]
+      methods: [GET]
+      allowed_ips: ["169.254.169.254/32"]
+```
+
 ## How it works
 
 PipeWarden runs mitmproxy as a transparent proxy directly on the GitHub Actions runner. iptables redirects all outbound HTTP/HTTPS traffic through the proxy — no `HTTP_PROXY` env vars needed, so even tools that ignore proxy settings are captured.
