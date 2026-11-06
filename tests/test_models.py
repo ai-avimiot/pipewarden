@@ -139,6 +139,7 @@ class TestPolicyRule:
             "allowed_ips": [],
             "methods": [],
             "internal_ip_guard": True,
+            "tls": "intercept",
         }
 
     def test_from_dict(self):

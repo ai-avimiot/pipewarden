@@ -92,7 +92,7 @@ Stated plainly, so you can tell before adopting whether it fits.
 | **File-integrity monitoring** | ❌ out of scope |
 | Windows / macOS runners | ❌ Linux only |
 | Self-hosted runners / ARC | ❌ not supported today |
-| Per-host TLS exclusion (`tls-passthrough`) | ⏳ planned |
+| Per-host TLS exclusion (`tls: passthrough` on a rule) | ✅ ([certificate pinning](#certificate-pinning-and-mtls)) |
 | Curated known-malicious blocklist | ❌ deliberately not — see below |
 
 **No threat feed, by design.** PipeWarden ships no blocklist of known-bad domains and fetches nothing at build time. Allowlisting is the model: in enforce mode everything not on your list is already blocked, including infrastructure no feed has heard of yet. A bundled list would also go stale, and a stale list is worse than none — it implies a coverage guarantee nobody is maintaining.
@@ -150,7 +150,7 @@ That's it. The report lands in your job summary, in `/tmp/report/`, and is uploa
 
 > Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
-**Versioning.** `@v3` tracks the latest 3.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major. v3 turns on stricter enforce defaults (internal-address guard for `version: "2"` policies, no Docker socket in container-mode job containers, fail-closed IPv6 setup and teardown boundary checks) — read [Migrating to v3.0](docs/migrating-to-v3.md) before moving the tag. `@v2` resolves to 2.2.2 (security fixes only) and `@v1` to 1.4.1; neither carries the 3.x defaults. For production, pin to an exact release (`@v3.0.0`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
+**Versioning.** `@v3` tracks the latest 3.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major. v3 turns on stricter enforce defaults (internal-address guard for `version: "2"` policies, no Docker socket in container-mode job containers, fail-closed IPv6 setup and teardown boundary checks) — read [Migrating to v3.0](docs/migrating-to-v3.md) before moving the tag. `@v2` resolves to 2.2.2 (security fixes only) and `@v1` to 1.4.1; neither carries the 3.x defaults. For production, pin to an exact release (`@v3.1.0`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
 
 > **Pinning to a SHA:** annotated tags resolve to a *tag object* SHA that Actions cannot use in `uses:`. Always pin to the **commit** SHA: `git rev-list -n 1 vX.Y.Z` (or take the SHA shown next to the tag on the release page), not `git rev-parse vX.Y.Z`.
 
@@ -277,7 +277,7 @@ A platform team can cap what any repo policy may allow. The boundary is an ordin
 python3 scripts/policy_boundary.py --boundary org-boundary.yml .github/pipewarden/*.yml
 ```
 
-Each domain pattern of a rule must be matched, for every name it can match, by a domain of one boundary rule whose other fields are at least as broad: `ports` and `protocols` are subsets (empty `ports` means all ports, so it is only covered by a boundary rule with empty `ports`), `paths` are glob subsets (empty means all paths), `methods` are a subset (empty means all methods), each `allowed_ips` CIDR lies inside a boundary CIDR (checked on every rule, including one with no protocols, since the DNS layer honours it), a domain that literally names an internal address or `localhost` is exempt in the boundary rule too, a `version: "1"` rule (which skips the internal-destination guard) only passes a `version: "1"` boundary, and `allow_request_body: true` needs a boundary rule that also sets it. Wildcards are compared as globs: `*.a.com` covers `*.b.a.com` and `x.a.com` but not the apex `a.com`, and `a.com` never covers `*.a.com`. Anything the checker cannot prove counts as a violation. Exit code: `0` all covered, `1` violations (one explanation per rule, plus `::error::` annotations under GitHub Actions), `2` an unreadable or invalid file.
+Each domain pattern of a rule must be matched, for every name it can match, by a domain of one boundary rule whose other fields are at least as broad: `ports` and `protocols` are subsets (empty `ports` means all ports, so it is only covered by a boundary rule with empty `ports`), `paths` are glob subsets (empty means all paths), `methods` are a subset (empty means all methods), each `allowed_ips` CIDR lies inside a boundary CIDR (checked on every rule, including one with no protocols, since the DNS layer honours it), a domain that literally names an internal address or `localhost` is exempt in the boundary rule too, a `version: "1"` rule (which skips the internal-destination guard) only passes a `version: "1"` boundary, `allow_request_body: true` needs a boundary rule that also sets it, and so does `tls: passthrough`. Wildcards are compared as globs: `*.a.com` covers `*.b.a.com` and `x.a.com` but not the apex `a.com`, and `a.com` never covers `*.a.com`. Anything the checker cannot prove counts as a violation. Exit code: `0` all covered, `1` violations (one explanation per rule, plus `::error::` annotations under GitHub Actions), `2` an unreadable or invalid file.
 
 As a required status check on policy changes:
 
@@ -314,13 +314,16 @@ Once the policy is stable, just point PipeWarden at it. Enforce is the default �
 
 Reports appear in the GitHub Job Summary and as downloadable artifacts.
 
-**GitHub-hosted runners call home on their own.** The runner's background agent intermittently contacts `hosted-compute-watchdog-*.githubapp.com` (DNS and HTTPS), independent of your steps. A discovery run may not see it, so an enforce job can fail at random on it. Allow it explicitly if you run enforce on GitHub-hosted runners:
+**GitHub-hosted runners call home on their own.** The runner's background agent (`hosted-compute-agent`) reports to `hosted-compute-request-orchestrator-*.githubapp.com` and `hosted-compute-watchdog-*.githubapp.com` over **pinned** TLS, independent of your steps. A discovery run may not see it. Intercepted, the agent's calls fail as `tls_pinned`, and some 17–19 minutes in GitHub stops hearing from the runner: the job hangs until its timeout, with no teardown, report or log. Shorter jobs never notice. Allow the agent and let its TLS through undecrypted (policy `version: "2"`):
 
 ```yaml
-  - name: "GitHub-hosted runner watchdog"
+  - name: "GitHub-hosted runner agent"
     appears: sometimes
+    tls: passthrough
     allow:
-      domains: ["hosted-compute-watchdog-*.githubapp.com"]
+      domains:
+        - "hosted-compute-request-orchestrator-*.githubapp.com"
+        - "hosted-compute-watchdog-*.githubapp.com"
       ports: [443]
       protocols: [https]
 ```
@@ -615,7 +618,20 @@ PipeWarden inspects TLS by terminating it: it presents a certificate it forged f
 
 PipeWarden **detects pinning and tells you**. When a client rejects the forged certificate, the TLS handshake failure is recorded and the report names the host with the two fixes below — so the failure surfaces as *"pinned.example.com refused interception"* instead of an opaque handshake error inside your own build step.
 
-**Fix one host — `tls-passthrough`** *(planned)*: tunnel a named host's TLS untouched (real cert to the client, client cert to the server) while everything else stays intercepted. The host is still visible as SNI/connection metadata and still subject to the DNS allowlist — degraded to connection-level enforcement, not disabled.
+**Fix one host — `tls: passthrough`**: set it on the rule that allows the host, and that host's TLS is relayed untouched (real cert to the client, client cert to the server) while everything else stays intercepted.
+
+```yaml
+version: "2"
+rules:
+  - name: "Pinned registry"
+    tls: passthrough
+    allow:
+      domains: ["registry.example.com"]
+      ports: [443]
+      protocols: [https]
+```
+
+The decision is made on the ClientHello, before any decryption. The SNI must match a passthrough rule's domains, port and `https` protocol. It must also be a name the job's own DNS resolved to the destination address (in explicit-proxy mode, the `CONNECT` host). So a step cannot borrow the exemption by sending a passthrough SNI to some other address: such a connection is intercepted as usual, and the SNI and certificate checks apply. Passthrough connections stay in the report as `status: passthrough`, with the SNI, the destination IP and the bytes relayed, and the internal-destination guard still applies. What you give up for that host is what needs the decrypted request: path, method and payload checks and upstream-certificate verification. Inside a passthrough connection PipeWarden cannot see the HTTP `Host`, so a step that can reach the host could front another service behind the same load balancer. Keep passthrough rules to the exact names that pin. That is why the parser rejects `tls: passthrough` together with `paths`, `methods` or `allow_request_body`, or on a bare `*` domain. The binding relies on PipeWarden's DNS (`dns: true`, the default). Without it, a destination given as an IP never matches, and the host stays intercepted.
 
 **Fix the whole workflow — `tls-intercept: false`**: run with no MITM at all. No CA is generated or trusted and no proxy starts, so pinned and mTLS clients see the genuine certificate chain and work unchanged. PipeWarden falls back to **DNS-layer enforcement plus conntrack connection logging** — the same posture harden-runner takes. You keep allowlist enforcement on domains and a record of what was contacted; you lose body/path/query inspection and upstream-certificate verification, because nothing is in the TLS path to provide them.
 

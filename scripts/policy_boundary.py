@@ -5,7 +5,7 @@
 
 Every rule of every policy must be subsumed by the boundary: each of its
 domain patterns must be covered by one boundary rule whose ports, protocols,
-paths, methods, allowed_ips and allow_request_body are at least as broad.
+paths, methods, allowed_ips, allow_request_body and tls are at least as broad.
 The check is conservative and offline — anything it cannot prove is reported
 as a violation. Exit 0 when everything is subsumed, 1 on any violation, 2 when
 a file cannot be read or parsed.
@@ -210,6 +210,9 @@ def dimension_gaps(candidate: PolicyRule, boundary: PolicyRule) -> list[str]:
 
     if candidate.allow_request_body and not boundary.allow_request_body:
         gaps.append("allow_request_body: true, boundary rule keeps payload scanning on")
+
+    if candidate.tls == "passthrough" and boundary.tls != "passthrough":
+        gaps.append("tls: passthrough, boundary rule keeps TLS interception on")
 
     return gaps
 

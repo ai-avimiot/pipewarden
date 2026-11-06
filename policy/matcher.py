@@ -199,6 +199,19 @@ class PolicyEngine:
             for rule in self.rules
         )
 
+    def passthrough_rule(self, connection: ConnectionEntry) -> PolicyRule | None:
+        """A matching rule with ``tls: passthrough``, else None (any-match, as above)."""
+        if connection.protocol != "https":
+            return None
+        return next(
+            (rule for rule in self.rules
+             if rule.tls == "passthrough" and self._matches(rule, connection)),
+            None,
+        )
+
+    def has_passthrough(self) -> bool:
+        return any(rule.tls == "passthrough" for rule in self.rules)
+
     def internal_ip_violation(self, connection: ConnectionEntry, ip: str) -> str:
         """Block reason if *ip* is an internal address no matching rule exempts, else "".
 

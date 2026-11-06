@@ -54,6 +54,10 @@ SUPPRESS_AAAA = os.environ.get("DNS_SUPPRESS_AAAA", "true").lower() != "false"
 
 # Shared ip→domain map (thread-safe via GIL for simple dict ops)
 ip_to_domain: dict[str, str] = {}
+# Every name each IP was handed out for, newest last: load balancers serve many
+# names from one IP, and tls: passthrough must bind its SNI to any of them.
+ip_names: dict[str, list[str]] = {}
+MAX_NAMES_PER_IP = 16
 
 # Set when the map has unwritten changes; a single flusher thread persists
 # it. Handler threads must not write the file directly: concurrent writers
@@ -78,8 +82,12 @@ def _remember_ip(ip: str, qname: str) -> None:
     if ip in ip_to_domain:
         del ip_to_domain[ip]
     ip_to_domain[ip] = qname
+    names = [n for n in ip_names.get(ip, []) if n != qname]
+    ip_names[ip] = (names + [qname])[-MAX_NAMES_PER_IP:]
     while len(ip_to_domain) > MAX_IP_MAP_ENTRIES:
-        del ip_to_domain[next(iter(ip_to_domain))]
+        evicted = next(iter(ip_to_domain))
+        del ip_to_domain[evicted]
+        ip_names.pop(evicted, None)
 
 
 def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
@@ -241,16 +249,21 @@ def log_dns_query(qname: str, qtype: int, resolved_ips: list[str],
 
 
 def update_ip_map() -> None:
-    """Write the current ip→domain map to a JSON file for the addon."""
+    """Write the current ip→domain map, and every name per IP, as JSON for the addon."""
     try:
-        tmp = IP_MAP_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            # dict() snapshots atomically under the GIL so concurrent
-            # _remember_ip calls can't mutate the dict mid-serialization.
-            json.dump(dict(ip_to_domain), f)
-        os.replace(tmp, IP_MAP_PATH)
+        # dict() snapshots atomically under the GIL so concurrent
+        # _remember_ip calls can't mutate the dict mid-serialization.
+        _write_json(IP_MAP_PATH, dict(ip_to_domain))
+        _write_json(IP_MAP_PATH + ".names", dict(ip_names))
     except Exception as e:
         logger.debug(f"Failed to write IP map: {e}")
+
+
+def _write_json(path: str, data: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
 
 
 def _map_flusher() -> None:

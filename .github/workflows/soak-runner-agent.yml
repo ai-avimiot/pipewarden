@@ -1,0 +1,77 @@
+name: "Soak: hosted runner agent under TLS interception"
+
+# Intercepted, the runner agent's pinned TLS fails and GitHub reclaims the
+# runner some 17-19 minutes in (#219). This job outlives that window with
+# tls: passthrough on, then checks the report.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/soak-runner-agent.yml'
+      - '.github/pipewarden/soak-runner-agent.network-policy.yml'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to keep the job alive"
+        default: "26"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "PipeWarden setup (enforce, agent passthrough)"
+        uses: ./native-proxy/action-setup
+        with:
+          policy-file: .github/pipewarden/soak-runner-agent.network-policy.yml
+          mode: enforce
+          fail-on-block: 'false'
+
+      - name: "A passthrough SNI sent to another address is not relayed"
+        run: |
+          ip=$(getent ahostsv4 api.github.com | awk 'NR==1{print $1}')
+          echo "borrowing SNI onto api.github.com (${ip})"
+          curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 \
+            --resolve "hosted-compute-watchdog-pwsoak.githubapp.com:443:${ip}" \
+            https://hosted-compute-watchdog-pwsoak.githubapp.com/ || true
+          echo "PW_BORROWED_IP=${ip}" >> "${GITHUB_ENV}"
+
+      - name: "Stay alive past the reclaim window"
+        env:
+          MINUTES: ${{ inputs.minutes || '26' }}
+        run: |
+          for i in $(seq 1 "${MINUTES}"); do
+            sleep 60
+            echo "minute ${i}: $(curl -s -o /dev/null -w '%{http_code}' https://api.github.com/zen)"
+          done
+
+      - name: "PipeWarden teardown"
+        id: teardown
+        if: always()
+        uses: ./native-proxy/action-teardown
+
+      - name: "The agent was relayed, never refused as pinned, and the borrowed SNI was not"
+        env:
+          REPORT_DIR: ${{ steps.teardown.outputs.report-path }}
+        run: |
+          python3 - "${REPORT_DIR}/report.json" <<'PY'
+          import json, os, sys
+          conns = json.load(open(sys.argv[1]))["connections"]
+          agent = [c for c in conns if c.get("host", "").startswith("hosted-compute-")]
+          statuses = sorted({c.get("status") for c in agent})
+          print("agent statuses:", statuses, "entries:", len(agent))
+          borrowed = [c for c in agent if "pwsoak" in c.get("host", "")]
+          print("borrowed:", [(c.get("status"), c.get("server_ip")) for c in borrowed])
+          bad = 0
+          if not any(c.get("status") == "passthrough" for c in agent):
+              print("::error::no passthrough entry for the runner agent"); bad = 1
+          if any(c.get("status") == "tls_pinned" and "pwsoak" not in c.get("host", "") for c in agent):
+              print("::error::the runner agent was still intercepted (tls_pinned)"); bad = 1
+          if any(c.get("status") == "passthrough" for c in borrowed):
+              print("::error::the borrowed SNI was relayed undecrypted"); bad = 1
+          sys.exit(bad)
+          PY

@@ -28,9 +28,10 @@ rules:
       domains: ["api.github.com", "github.com", "codeload.github.com", "*.githubusercontent.com"]
       ports: [443]
       protocols: [https]
-  - name: "GitHub-hosted runner watchdog"
+  - name: "GitHub-hosted runner agent"
     appears: sometimes
+    tls: passthrough
     allow:
-      domains: ["hosted-compute-watchdog-*.githubapp.com"]
+      domains: ["hosted-compute-request-orchestrator-*.githubapp.com", "hosted-compute-watchdog-*.githubapp.com"]
       ports: [443]
       protocols: [https]

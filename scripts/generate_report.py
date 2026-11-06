@@ -617,9 +617,9 @@ def format_summary(report: dict) -> str:
         for host in pinned["hosts"]:
             lines.append(f"  {host}")
         lines.append(
-            "  Fix: exclude these hosts with `tls-passthrough`, or run the "
-            "action with `tls-intercept: false` if the whole workflow needs "
-            "pinning or client certificates."
+            "  Fix: add `tls: passthrough` to the rule that allows each host, "
+            "or run the action with `tls-intercept: false` if the whole "
+            "workflow needs pinning or client certificates."
         )
         lines.append("")
 
@@ -866,9 +866,9 @@ def format_markdown_summary(report: dict) -> str:
             lines.append(f"- `{_md(host)}`")
         lines.append("")
         lines.append(
-            "> Exclude these hosts with `tls-passthrough`, or set "
-            "`tls-intercept: false` on the action if the whole workflow needs "
-            "pinning or client certificates. See "
+            "> Add `tls: passthrough` to the rule that allows each host, or "
+            "set `tls-intercept: false` on the action if the whole workflow "
+            "needs pinning or client certificates. See "
             "[Certificate pinning & mTLS](README.md#certificate-pinning-and-mtls)."
         )
         lines.append("")
