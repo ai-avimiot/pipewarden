@@ -14,29 +14,26 @@
 # Stage 1: grab the static Docker CLI binary
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 # To refresh manually: docker buildx imagetools inspect docker:<tag>
-FROM docker:29-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
+FROM docker:29-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f06d49b6e6f1 AS docker-cli
 
 # Stage 2: build act from its release tag. Upstream release binaries lag far
 # behind Go and x/* security fixes, so rebuild with a current toolchain and
-# the patched module versions below. go-archive 0.3 moved its compression
-# constants; act passes the zero value (uncompressed), so the field is dropped.
+# the patched module versions below.
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e AS act-build
-ARG ACT_VERSION="0.2.89"
-ARG ACT_COMMIT="4f41128141"
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS act-build
+ARG ACT_VERSION="0.2.97"
+ARG ACT_COMMIT="2540ba6c49"
 RUN git clone --depth 1 -b "v${ACT_VERSION}" https://github.com/nektos/act.git /src/act \
     && cd /src/act \
     && git rev-parse HEAD | grep -q "^${ACT_COMMIT}" \
     && go get \
-         github.com/go-git/go-git/v5@v5.19.2 \
-         github.com/klauspost/compress@v1.18.7 \
+         github.com/go-git/go-git/v5@v5.19.3 \
+         github.com/klauspost/compress@v1.20.4 \
          github.com/moby/go-archive@v0.3.3 \
-         github.com/moby/sys/user@v0.4.1 \
-         golang.org/x/crypto@v0.57.0 \
-         golang.org/x/net@v0.60.0 \
-         golang.org/x/text@v0.42.0 \
-    && sed -i -e '/compression := archive.Uncompressed/d' \
-              -e '/Compression: *compression,/d' pkg/container/docker_build.go \
+         github.com/moby/sys/user@v0.5.0 \
+         golang.org/x/crypto@v0.58.0 \
+         golang.org/x/net@v0.62.0 \
+         golang.org/x/text@v0.44.0 \
     && go mod tidy \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
          -ldflags "-s -w -X main.version=${ACT_VERSION}" -o /out/act .
@@ -44,7 +41,7 @@ RUN git clone --depth 1 -b "v${ACT_VERSION}" https://github.com/nektos/act.git /
 # Stage 3: pre-cache common GitHub Actions
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 # To refresh manually: docker buildx imagetools inspect ubuntu:<tag>
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS act-download
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS act-download
 RUN apt-get update -qq && apt-get install -y -qq git
 
 # Pre-cache common GitHub Actions so act doesn't clone them at runtime.
@@ -63,7 +60,7 @@ RUN mkdir -p /opt/act-cache \
        done
 
 # Stage 4: runtime image — same Ubuntu LTS (and digest) as build stage.
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 
 # Avoid interactive prompts during apt-get
 ENV DEBIAN_FRONTEND=noninteractive
