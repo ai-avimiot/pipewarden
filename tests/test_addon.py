@@ -767,6 +767,137 @@ class TestModePrecedence:
         assert addon.init_error is None  # missing file is discovery, not error
 
 
+def _ca_and_leaf(host: str, ca_cn: str = "CI/CD Network Monitor CA"):
+    """A CA certificate and a leaf for *host* signed by it, as (ca_cert, leaf_pem)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import Encoding
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.now(timezone.utc)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, ca_cn)])
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name).issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]))
+        .issuer_name(ca_name)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    return ca, leaf.public_bytes(Encoding.PEM)
+
+
+class TestProxySelfInterception:
+    """#231/#234: an upstream cert from PipeWarden's own CA means the proxy reached itself."""
+
+    _HOST = "sts.eu-central-1.amazonaws.com"
+    _POLICY = (
+        'version: "1"\n'
+        "mode: enforce\n"
+        "rules:\n"
+        "  - name: aws\n"
+        "    allow:\n"
+        '      domains: ["*.eu-central-1.amazonaws.com"]\n'
+        "      ports: [443]\n"
+        "      protocols: [https]\n"
+    )
+
+    def _setup(self, tmp_path, log_file, mode="enforce", host=_HOST):
+        policy = tmp_path / "aws.yml"
+        policy.write_text(self._POLICY)
+        addon = _make_addon(str(policy), mode=mode, log_path=log_file)
+        ca, leaf_pem = _ca_and_leaf(host)
+        addon._own_ca = ca
+        flow = MockHTTPFlow(
+            request=MockRequest(scheme="https", host=host, port=443, path="/", method="POST"),
+            client_conn=MockClientConn(sni=host),
+            server_conn=MockServerConnWithCert(
+                cert=MockCert(cn=host, issuer_cn="CI/CD Network Monitor CA", pem=leaf_pem)),
+        )
+        return addon, flow
+
+    def test_enforce_fails_the_request_retryably_without_counting_a_block(self, tmp_path, log_file):
+        addon, flow = self._setup(tmp_path, log_file)
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "proxy_error"
+        assert "tls_cert_valid" not in entry
+        assert "looped back" in entry["block_reason"]
+        assert flow.response.status_code == 502
+
+    def test_monitor_only_annotates(self, tmp_path, log_file):
+        addon, flow = self._setup(tmp_path, log_file, mode="monitor")
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "allowed"
+        assert "looped back" in entry["tls_cert_error"]
+        assert flow.response is None
+
+    def test_disallowed_host_is_still_a_policy_block(self, tmp_path, log_file):
+        addon, flow = self._setup(tmp_path, log_file, host="evil.example.com")
+
+        addon.request(flow)
+
+        assert _read_log_entries(log_file)[0]["status"] == "blocked"
+        assert flow.response.status_code == 403
+
+    def test_cert_from_another_ca_with_the_same_name_is_still_blocked(self, tmp_path, log_file):
+        """Only a signature by our CA counts, not an issuer that copies its name."""
+        addon, flow = self._setup(tmp_path, log_file)
+        addon._own_ca, _ = _ca_and_leaf(self._HOST)
+
+        addon.request(flow)
+
+        entry = _read_log_entries(log_file)[0]
+        assert entry["status"] == "blocked"
+        assert entry["tls_cert_valid"] is False
+        assert flow.response.status_code == 403
+
+    def test_own_ca_is_read_from_mitmproxy_confdir(self, tmp_path, monkeypatch):
+        import types
+
+        from cryptography.hazmat.primitives.serialization import Encoding
+
+        import proxy.addon as addon_mod
+
+        ca, _ = _ca_and_leaf(self._HOST)
+        (tmp_path / "mitmproxy-ca.pem").write_bytes(
+            b"-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n"
+            + ca.public_bytes(Encoding.PEM))
+        fake_ctx = types.SimpleNamespace(options=types.SimpleNamespace(confdir=str(tmp_path)))
+        monkeypatch.setitem(sys.modules, "mitmproxy", types.SimpleNamespace(ctx=fake_ctx))
+
+        assert addon_mod._load_own_ca() == ca
+
+    def test_missing_confdir_disables_detection_instead_of_failing(self, monkeypatch):
+        import types
+
+        import proxy.addon as addon_mod
+
+        fake_ctx = types.SimpleNamespace(options=types.SimpleNamespace(confdir="/nonexistent"))
+        monkeypatch.setitem(sys.modules, "mitmproxy", types.SimpleNamespace(ctx=fake_ctx))
+
+        assert addon_mod._load_own_ca() is None
+
+
 class TestCertVerifyCache:
     """Definitive verification verdicts are cached per cert+hostname."""
 

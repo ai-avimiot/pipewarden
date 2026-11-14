@@ -196,3 +196,18 @@ def test_enforce_ip6_rejects_fail_setup_instead_of_being_skipped():
     for line in _read(SETUP_SH).splitlines():
         if "ip6tables -A" in line and "-j REJECT" in line:
             assert "|| true" not in line, line
+
+
+def test_proxy_conntrack_zone_is_removed_by_rollback_and_teardown():
+    """The zone rule is not a REJECT, so the reject-symmetry tests above do not cover it."""
+    rule = "-t raw -D OUTPUT -p tcp -m owner --uid-owner pipewardenuser -j CT --zone-orig 7770"
+    assert rule in _read(SETUP_SH)
+    assert rule in _read(TEARDOWN_SH)
+
+
+def test_proxy_conntrack_zone_is_installed_before_the_redirect():
+    """Installed after, the proxy's first upstream connections could still loop."""
+    setup = _read(SETUP_SH)
+    zone = setup.index("iptables -t raw -A OUTPUT")
+    redirect = setup.index("iptables -t nat -A OUTPUT")
+    assert zone < redirect

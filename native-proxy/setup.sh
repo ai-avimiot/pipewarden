@@ -105,6 +105,7 @@ IPTABLES_INSTALLED="false"
 CONN_LOG4_INSTALLED="false"
 FORWARD_LOG_INSTALLED="false"
 IP6TABLES_INSTALLED="false"
+PROXY_CT_ZONE_INSTALLED="false"
 BLINDSPOT_IPV6="false"
 BLINDSPOT_DOCKER="false"
 RESOLV_CONF_BACKUP="/tmp/nfw-resolv.conf.bak"
@@ -127,6 +128,9 @@ rollback_on_failure() {
         sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
         sudo iptables -D OUTPUT -p tcp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
         sudo iptables -D OUTPUT -p udp --dport 853 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || true
+    fi
+    if [ "${PROXY_CT_ZONE_INSTALLED}" = "true" ]; then
+        sudo iptables -t raw -D OUTPUT -p tcp -m owner --uid-owner pipewardenuser -j CT --zone-orig 7770 2>/dev/null || true
     fi
     if [ "${FORWARD_LOG_INSTALLED}" = "true" ]; then
         sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || true
@@ -624,6 +628,15 @@ if [ "${ENABLE_TLS_INTERCEPT}" != "true" ]; then
     echo "::endgroup::"
 elif [ "${ENABLE_TRANSPARENT}" = "true" ]; then
     echo "::group::PipeWarden: Configure iptables rules"
+    # The exemption below is consulted only for new conntrack entries. When the proxy's
+    # upstream socket reuses the 4-tuple of a client connection it just reset, conntrack
+    # revives that entry and its redirect, looping the proxy into itself (#231, #234).
+    # A separate zone keeps the proxy's own connections from ever matching a client's.
+    if sudo iptables -t raw -A OUTPUT -p tcp -m owner --uid-owner pipewardenuser -j CT --zone-orig 7770 2>/dev/null; then
+        PROXY_CT_ZONE_INSTALLED="true"
+    else
+        echo "::warning title=PipeWarden setup::could not give the proxy its own conntrack zone (no CT target?); a rare upstream connection may loop back into the proxy and fail with a 502"
+    fi
     sudo iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 443 -j REDIRECT --to-port "${PROXY_PORT}"
     sudo iptables -t nat -A OUTPUT -p tcp -m owner ! --uid-owner pipewardenuser --dport 80 -j REDIRECT --to-port "${PROXY_PORT}"
     sudo iptables -A OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN: " --log-uid
@@ -970,6 +983,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     # surfaces them in health.json).
     echo "NFW_FORWARD_LOG=${FORWARD_LOG_INSTALLED}" >> "${GITHUB_ENV}"
     echo "NFW_IP6TABLES=${IP6TABLES_INSTALLED}" >> "${GITHUB_ENV}"
+    echo "NFW_PROXY_CT_ZONE=${PROXY_CT_ZONE_INSTALLED}" >> "${GITHUB_ENV}"
     echo "NFW_BLINDSPOT_IPV6=${BLINDSPOT_IPV6}" >> "${GITHUB_ENV}"
     echo "NFW_BLINDSPOT_DOCKER=${BLINDSPOT_DOCKER}" >> "${GITHUB_ENV}"
 fi

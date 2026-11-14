@@ -18,7 +18,7 @@ class ConnectionEntry:
     port: int
     path: str = ""  # for HTTP/S only
     method: str = ""  # for HTTP/S only
-    status: str = ""  # "allowed", "blocked", "would_block"
+    status: str = ""  # "allowed", "blocked", "would_block", "passthrough", "proxy_error"
     bytes_transferred: int = 0
     # TLS metadata
     tls_sni: str = ""  # Server Name Indication from ClientHello

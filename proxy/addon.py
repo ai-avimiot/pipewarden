@@ -93,6 +93,29 @@ def _get_x509_store():
     return _x509_store
 
 
+def _load_own_ca():
+    """PipeWarden's interception CA from mitmproxy's confdir, or None outside mitmproxy."""
+    try:
+        from mitmproxy import ctx
+        confdir = os.path.expanduser(ctx.options.confdir)
+        with open(os.path.join(confdir, "mitmproxy-ca.pem"), "rb") as fh:
+            data = fh.read()
+        start = data.index(b"-----BEGIN CERTIFICATE-----")
+        from cryptography import x509 as crypto_x509
+        return crypto_x509.load_pem_x509_certificate(data[start:])
+    except Exception:  # noqa: BLE001 - no CA means no loop detection, never a crash
+        return None
+
+
+def _issued_by(cert_pem: bytes, ca) -> bool:
+    try:
+        from cryptography import x509 as crypto_x509
+        crypto_x509.load_pem_x509_certificate(cert_pem).verify_directly_issued_by(ca)
+        return True
+    except Exception:  # noqa: BLE001 - any mismatch or parse failure means "not ours"
+        return False
+
+
 def _build_trust_store() -> ssl.SSLContext | None:
     """Build an SSL context loaded with the system trust store.
 
@@ -438,6 +461,7 @@ class NetworkMonitorAddon:
         # None ("could not verify") results are never cached so transient
         # errors don't stick.
         self._cert_verify_cache: dict[tuple, tuple[bool, str]] = {}
+        self._own_ca = None
         self._log_dir_ready = False
         # Allowed requests whose upstream IP was unknown at the request hook
         # (regular mode, plain HTTP), keyed by (client, host, port).
@@ -485,6 +509,7 @@ class NetworkMonitorAddon:
         Until this hook fires, the empty allowlist set in __init__ blocks
         all traffic in enforce mode.
         """
+        self._own_ca = _load_own_ca()
         if not self.init_error:
             self._wait_for_clienthello()
             return
@@ -620,8 +645,9 @@ class NetworkMonitorAddon:
         )
 
         # Verify server certificate for HTTPS
+        proxy_loop = False
         if is_https and hasattr(flow, "server_conn"):
-            self._check_server_cert(flow.server_conn, sni or host, entry)
+            proxy_loop = self._check_server_cert(flow.server_conn, sni or host, entry)
 
         # Record the resolved server IP
         if hasattr(flow, "server_conn") and hasattr(flow.server_conn, "address"):
@@ -668,6 +694,13 @@ class NetworkMonitorAddon:
                     "and that host is not allowed by policy"
                 )
                 logger.warning("Blocking %s:%s — %s", host, req.port, entry.block_reason)
+
+        # Our own CA upstream means the proxy reached itself, not the server: nothing was
+        # sent anywhere, so fail the request as retryable instead of counting a block.
+        if status == "allowed" and proxy_loop and self.mode == "enforce":
+            status = "proxy_error"
+            entry.block_reason = entry.tls_cert_error
+            logger.warning("Failing %s:%s with 502 — %s", host, req.port, entry.block_reason)
 
         # Certificate-based enforcement: in enforce mode, a connection the
         # policy would allow but whose upstream cert is *definitively* invalid
@@ -716,6 +749,15 @@ class NetworkMonitorAddon:
                 flow.response = http.Response.make(403, body, headers)
             except NameError:
                 flow.response = _make_blocked_response(body, headers)
+        elif status == "proxy_error":
+            body = (b"PipeWarden: the proxy's upstream connection looped back into the proxy, "
+                    b"so the request was not sent. Retrying it is safe.\n")
+            headers = {"Content-Type": "text/plain; charset=utf-8",
+                       "X-PipeWarden-Error": "proxy-loop"}
+            try:
+                flow.response = http.Response.make(502, body, headers)
+            except NameError:
+                flow.response = _make_blocked_response(body, headers, status_code=502)
 
         if status == "allowed" and upstream_unknown and self._guards_internal_ips():
             key = (_conn_key(flow.client_conn), req.host, req.port)
@@ -946,12 +988,16 @@ class NetworkMonitorAddon:
     # ------------------------------------------------------------------
 
     def _check_server_cert(self, server_conn, hostname: str,
-                           entry: ConnectionEntry) -> None:
-        """Verify the upstream server's TLS certificate."""
+                           entry: ConnectionEntry) -> bool:
+        """Verify the upstream server's TLS certificate.
+
+        Returns True when the upstream certificate was issued by PipeWarden's own CA,
+        i.e. the proxy's upstream connection was intercepted by the proxy itself.
+        """
         try:
             cert_list = getattr(server_conn, "certificate_list", None)
             if not cert_list:
-                return
+                return False
 
             leaf_cert = cert_list[0]
 
@@ -972,8 +1018,12 @@ class NetworkMonitorAddon:
                 except Exception:
                     pass
 
-            # Verify against system trust store (cached per cert+hostname)
             cert_pem = leaf_cert.to_pem()
+            if self._own_ca is not None and _issued_by(cert_pem, self._own_ca):
+                entry.tls_cert_error = "upstream connection looped back into PipeWarden's own proxy"
+                return True
+
+            # Verify against system trust store (cached per cert+hostname)
             cache_key = (cert_pem, hostname, tuple(chain_pems))
             cached = self._cert_verify_cache.get(cache_key)
             if cached is not None:
@@ -996,6 +1046,7 @@ class NetworkMonitorAddon:
 
         except Exception as e:
             logger.debug(f"Certificate check failed: {e}")
+        return False
 
     # ------------------------------------------------------------------
     # TCP connection logging
@@ -1428,14 +1479,15 @@ def _denial(entry: ConnectionEntry, kind: str, detail: str) -> tuple[bytes, dict
 class _BlockedResponse:
     """Minimal stand-in for ``mitmproxy.http.Response`` used in tests."""
 
-    def __init__(self, content: bytes, headers: dict[str, str]):
-        self.status_code = 403
+    def __init__(self, content: bytes, headers: dict[str, str], status_code: int = 403):
+        self.status_code = status_code
         self.content = content
         self.headers = headers
 
 
-def _make_blocked_response(content: bytes, headers: dict[str, str]) -> _BlockedResponse:
-    return _BlockedResponse(content, headers)
+def _make_blocked_response(content: bytes, headers: dict[str, str],
+                           status_code: int = 403) -> _BlockedResponse:
+    return _BlockedResponse(content, headers, status_code)
 
 
 # ------------------------------------------------------------------

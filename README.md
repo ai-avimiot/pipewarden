@@ -150,7 +150,7 @@ That's it. The report lands in your job summary, in `/tmp/report/`, and is uploa
 
 > Don't want the artifact, or want to rename it? Use `upload-artifact: false` or `artifact-name: my-report` on the action. You do **not** need your own `actions/upload-artifact` step — and adding one for `/tmp/report/` won't work with the single-step action, because the report is generated in the teardown post-step that runs *after* your job's steps.
 
-**Versioning.** `@v3` tracks the latest 3.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major. v3 turns on stricter enforce defaults (internal-address guard for `version: "2"` policies, no Docker socket in container-mode job containers, fail-closed IPv6 setup and teardown boundary checks) — read [Migrating to v3.0](docs/migrating-to-v3.md) before moving the tag. `@v2` resolves to 2.2.2 (security fixes only) and `@v1` to 1.4.1; neither carries the 3.x defaults. For production, pin to an exact release (`@v3.1.1`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
+**Versioning.** `@v3` tracks the latest 3.x.y (fixes + features, no breaking changes); `@latest` follows the newest release across all majors; breaking changes ship as a new major. v3 turns on stricter enforce defaults (internal-address guard for `version: "2"` policies, no Docker socket in container-mode job containers, fail-closed IPv6 setup and teardown boundary checks) — read [Migrating to v3.0](docs/migrating-to-v3.md) before moving the tag. `@v2` resolves to 2.2.2 (security fixes only) and `@v1` to 1.4.1; neither carries the 3.x defaults. For production, pin to an exact release (`@v3.1.2`) or a commit SHA — PipeWarden is a supply-chain tool, so treat a mutable tag as a moving dependency. See [VERSIONING.md](VERSIONING.md).
 
 > **Pinning to a SHA:** annotated tags resolve to a *tag object* SHA that Actions cannot use in `uses:`. Always pin to the **commit** SHA: `git rev-list -n 1 vX.Y.Z` (or take the SHA shown next to the tag on the release page), not `git rev-parse vX.Y.Z`.
 
@@ -374,7 +374,7 @@ Before any rule is removed, native-mode teardown also re-checks the boundary (`i
 
 | Setup | Checked at teardown |
 | --- | --- |
-| Transparent proxy (default) | The 80/443 redirects, the `NFW-CONN` connection LOG rule, the `NFW-FWD` rule when setup added it, `NFW-CONN6` when ip6tables was available, and that the proxy is running. In enforce also the QUIC (UDP 443) and DoT (853) rejects, the IPv6 web/DoT rejects (with ip6tables), and with `dns: true` the direct-DNS (53) rejects |
+| Transparent proxy (default) | The 80/443 redirects, the proxy's own conntrack zone rule when setup added it, the `NFW-CONN` connection LOG rule, the `NFW-FWD` rule when setup added it, `NFW-CONN6` when ip6tables was available, and that the proxy is running. In enforce also the QUIC (UDP 443) and DoT (853) rejects, the IPv6 web/DoT rejects (with ip6tables), and with `dns: true` the direct-DNS (53) rejects |
 | `tls-intercept: false` | The `NFW-CONN` LOG rule and `NFW-CONN6` when ip6tables was available. In enforce with `dns: true` also the DNS (53) and DoT (853) rejects, IPv6 ones included when ip6tables was available |
 | `transparent: false` (explicit proxy), or `tls-intercept: false` where setup could not install iptables rules | Nothing — reported as `not checked` |
 
@@ -392,6 +392,7 @@ PipeWarden generates detailed reports for every run:
 Each report includes:
 
 - **Per-destination breakdown** — domain, port, protocol, request count, bytes transferred
+- **Proxy errors** — `proxy_errors` counts requests that failed with a 502 because the proxy's upstream connection reached the proxy itself instead of the server. Nothing was sent, the request is safe to retry, and it does not count as a block.
 - **TLS certificate info** — issuer CA, validity, warnings for untrusted/self-signed certs
 - **IP enrichment** — ASN owner, country, reverse DNS (via Team Cymru)
 - **DNS query log** — every domain lookup with resolved IPs

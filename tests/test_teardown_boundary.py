@@ -61,6 +61,7 @@ def _run_check(tmp_path, *, missing=(), proxy_alive="yes", dns_alive="yes", **en
         "DNS_ENABLED": "true",
         "FORWARD_LOG": "true",
         "IP6TABLES": "true",
+        "PROXY_CT_ZONE": "true",
         "PROXY_PORT": "8080",
         "PROXY_ALIVE_AT_TEARDOWN": proxy_alive,
         "DNS_ALIVE_AT_TEARDOWN": dns_alive,
@@ -108,10 +109,17 @@ class TestBoundaryCheck:
 
     def test_uninstalled_optional_rules_are_not_checked(self, tmp_path):
         _, _, calls = _run_check(tmp_path, FORWARD_LOG="false", IP6TABLES="false",
-                                 DNS_ENABLED="false", dns_alive="disabled")
+                                 PROXY_CT_ZONE="false", DNS_ENABLED="false",
+                                 dns_alive="disabled")
         assert not any("FORWARD" in c for c in calls)
+        assert not any("--zone-orig" in c for c in calls)
         assert not any(c.startswith("ip6tables") for c in calls)
         assert not any("--dport 53" in c for c in calls)
+
+    def test_deleted_proxy_conntrack_zone_breaks_the_boundary(self, tmp_path):
+        intact, missing, _ = _run_check(tmp_path, missing=["--zone-orig 7770"])
+        assert intact == "false"
+        assert len(missing) == 1 and "-t raw" in missing[0]
 
     def test_intercept_off_enforce_checks_dns_rejects(self, tmp_path):
         intact, missing, calls = _run_check(
