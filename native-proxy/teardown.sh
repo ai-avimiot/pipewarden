@@ -24,6 +24,7 @@ FAIL_ON_BLOCK="${NFW_FAIL_ON_BLOCK:-true}"
 PROXY_PORT="${NFW_PROXY_PORT:-8080}"
 FORWARD_LOG="${NFW_FORWARD_LOG:-false}"
 IP6TABLES="${NFW_IP6TABLES:-false}"
+PROXY_CT_ZONE="${NFW_PROXY_CT_ZONE:-false}"
 BLINDSPOT_IPV6="${NFW_BLINDSPOT_IPV6:-false}"
 BLINDSPOT_DOCKER="${NFW_BLINDSPOT_DOCKER:-false}"
 ATTRIBUTION_MODE="${NFW_ATTRIBUTION_MODE:-off}"
@@ -76,6 +77,9 @@ if [ "${TRANSPARENT}" = "true" ]; then
             boundary_has iptables -C OUTPUT -p udp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-port-unreachable
             boundary_has iptables -C OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset
         fi
+    fi
+    if [ "${PROXY_CT_ZONE}" = "true" ]; then
+        boundary_has iptables -t raw -C OUTPUT -p tcp -m owner --uid-owner pipewardenuser -j CT --zone-orig 7770
     fi
     if [ "${FORWARD_LOG}" = "true" ]; then
         boundary_has iptables -C FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: "
@@ -188,6 +192,9 @@ if [ "${TRANSPARENT}" = "true" ]; then
     sudo iptables -D OUTPUT -p tcp --dport 53 ! -d 127.0.0.0/8 -m owner ! --uid-owner 0 -j REJECT --reject-with tcp-reset 2>/dev/null || true
     if [ "${FORWARD_LOG}" = "true" ]; then
         sudo iptables -D FORWARD -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-FWD: " 2>/dev/null || echo "Warning: Failed to delete FORWARD LOG rule"
+    fi
+    if [ "${PROXY_CT_ZONE}" = "true" ]; then
+        sudo iptables -t raw -D OUTPUT -p tcp -m owner --uid-owner pipewardenuser -j CT --zone-orig 7770 2>/dev/null || echo "Warning: Failed to delete the proxy conntrack zone rule"
     fi
     if [ "${IP6TABLES}" = "true" ] && command -v ip6tables &>/dev/null; then
         sudo ip6tables -D OUTPUT -m conntrack --ctstate NEW -j LOG --log-prefix "NFW-CONN6: " --log-uid 2>/dev/null || true

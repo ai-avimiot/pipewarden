@@ -165,6 +165,15 @@ class TestBuildReport:
         assert report["blocked_dns_queries"] == 1
         assert report["total_blocked"] == 2
 
+    def test_proxy_errors_are_counted_but_never_fail_the_job(self):
+        connections = [
+            {"protocol": "https", "status": "proxy_error", "host": "sts.amazonaws.com"},
+            {"protocol": "https", "status": "allowed", "host": "sts.amazonaws.com"},
+        ]
+        report = build_report(connections)
+        assert report["proxy_errors"] == 1
+        assert report["total_blocked"] == 0
+
     def test_connections_preserved(self):
         connections = [{"status": "allowed", "host": "x.com"}]
         report = build_report(connections)

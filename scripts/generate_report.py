@@ -146,6 +146,7 @@ def build_report(connections: list[dict]) -> dict:
         # Total enforcement actions across both legs; this is what the
         # fail-on-block decision is made on.
         "total_blocked": blocked_connections + blocked_dns_queries,
+        "proxy_errors": sum(1 for c in non_dns if c.get("status") == "proxy_error"),
         "dns_queries": len(dns_queries),
         "tls_pinned": _build_pinning_summary(non_dns),
         "exfiltration": _build_exfil_summary(non_dns),
