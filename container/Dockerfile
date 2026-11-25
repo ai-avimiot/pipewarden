@@ -21,18 +21,18 @@ FROM docker:29-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f0
 # the patched module versions below.
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS act-build
-ARG ACT_VERSION="0.2.97"
-ARG ACT_COMMIT="2540ba6c49"
+ARG ACT_VERSION="0.2.98"
+ARG ACT_COMMIT="cc720c1e73"
 RUN git clone --depth 1 -b "v${ACT_VERSION}" https://github.com/nektos/act.git /src/act \
     && cd /src/act \
     && git rev-parse HEAD | grep -q "^${ACT_COMMIT}" \
     && go get \
          github.com/go-git/go-git/v5@v5.19.3 \
-         github.com/klauspost/compress@v1.20.4 \
+         github.com/klauspost/compress@v1.20.5 \
          github.com/moby/go-archive@v0.3.3 \
          github.com/moby/sys/user@v0.5.0 \
-         golang.org/x/crypto@v0.58.0 \
-         golang.org/x/net@v0.62.0 \
+         golang.org/x/crypto@v0.59.0 \
+         golang.org/x/net@v0.63.0 \
          golang.org/x/text@v0.44.0 \
     && go mod tidy \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
