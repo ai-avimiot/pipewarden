@@ -22,7 +22,7 @@ FROM docker:29-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f0
 # Pinned by digest (tag kept for readability; Dependabot refreshes it).
 FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS act-build
 ARG ACT_VERSION="0.2.98"
-ARG ACT_COMMIT="cc720c1e73"
+ARG ACT_COMMIT="4a64dea3f0"
 RUN git clone --depth 1 -b "v${ACT_VERSION}" https://github.com/nektos/act.git /src/act \
     && cd /src/act \
     && git rev-parse HEAD | grep -q "^${ACT_COMMIT}" \
