@@ -23878,15 +23878,15 @@ module.exports = reflectGetProto
 /***/ 68497:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
-var balanced = __webpack_require__(59380);
+var balanced = __webpack_require__(59380)
 
-module.exports = expandTop;
+module.exports = expandTop
 
-var escSlash = '\0SLASH'+Math.random()+'\0';
-var escOpen = '\0OPEN'+Math.random()+'\0';
-var escClose = '\0CLOSE'+Math.random()+'\0';
-var escComma = '\0COMMA'+Math.random()+'\0';
-var escPeriod = '\0PERIOD'+Math.random()+'\0';
+var escSlash = '\0SLASH' + Math.random().toFixed(16) + '\0'
+var escOpen = '\0OPEN' + Math.random().toFixed(16) + '\0'
+var escClose = '\0CLOSE' + Math.random().toFixed(16) + '\0'
+var escComma = '\0COMMA' + Math.random().toFixed(16) + '\0'
+var escPeriod = '\0PERIOD' + Math.random().toFixed(16) + '\0'
 
 var EXPANSION_MAX = 100000
 
@@ -23922,41 +23922,155 @@ var EXPANSION_MAX_DEPTH = 1000
 // times the scan may restart. Real `{a},b}` input needs a handful.
 var EXPANSION_MAX_REWRITES = 1000
 
+// `EXPANSION_MAX_STEPS` bounds the work one `expandTop` call does, which `max`,
+// `maxLength` and `maxDepth` don't: nested sets are rescanned at every level
+// and chained groups each rebuild up to `max` results, so 2KB of input could
+// block the event loop for over 30 seconds. Each character scanned, result
+// built and sequence value generated is a step, and each `expand` call costs
+// `CALL_STEPS` more. Past the budget, the set being expanded and everything
+// after it stay literal. A glob needs a few hundred steps, and nesting all the
+// way to `EXPANSION_MAX_DEPTH` about 4M.
+var EXPANSION_MAX_STEPS = 20000000
+
+// What one `expand` call costs on top of what it scans and builds. Setting
+// one up takes about as long as scanning 16 characters, and a set whose
+// results are wrapped to be expanded again makes one call per result, each
+// scanning and building next to nothing: 64KB of
+// `('{{' + ','.repeat(316) + '}{' + ','.repeat(316) + '}}').repeat(n)` made
+// 4M such calls, which spent the budget three times as slowly as anything
+// else.
+var CALL_STEPS = 16
+
 function numeric(str) {
-  return parseInt(str, 10) == str
-    ? parseInt(str, 10)
-    : str.charCodeAt(0);
+  return parseInt(str, 10) == str ? parseInt(str, 10) : str.charCodeAt(0)
 }
 
 function escapeBraces(str) {
-  return str.split('\\\\').join(escSlash)
-            .split('\\{').join(escOpen)
-            .split('\\}').join(escClose)
-            .split('\\,').join(escComma)
-            .split('\\.').join(escPeriod);
+  return str
+    .split('\\\\')
+    .join(escSlash)
+    .split('\\{')
+    .join(escOpen)
+    .split('\\}')
+    .join(escClose)
+    .split('\\,')
+    .join(escComma)
+    .split('\\.')
+    .join(escPeriod)
 }
 
 function unescapeBraces(str) {
-  return str.split(escSlash).join('\\')
-            .split(escOpen).join('{')
-            .split(escClose).join('}')
-            .split(escComma).join(',')
-            .split(escPeriod).join('.');
+  return str
+    .split(escSlash)
+    .join('\\')
+    .split(escOpen)
+    .join('{')
+    .split(escClose)
+    .join('}')
+    .split(escComma)
+    .join(',')
+    .split(escPeriod)
+    .join('.')
 }
-
 
 // Like `target.push(...items)` but doesn't overflow the stack
 function pushAll(target, items) {
   for (var i = 0; i < items.length; i++) {
-    target.push(items[i]);
+    target.push(items[i])
   }
+}
+
+// `budget` is `{ remaining }`, one counter shared by every level and group of
+// an `expandTop` call, so the bound holds for the call as a whole.
+//
+// `balanced`, run on `masked` (see `maskUnmatchedOpens`), sliced from `str`
+// and charged for the characters it walks: up to the group's `}`, or the
+// whole string when there is no match or unmatched `{` come first, which
+// `unmatched` then flags for masking. Once a call overdraws the budget, it
+// and every later one return undefined, so the rest stays literal.
+function balancedWithBudget(str, masked, budget) {
+  if (budget.remaining < 0) {
+    return undefined
+  }
+  var r = balanced.range('{', '}', masked)
+  var unmatched = r !== undefined && masked.indexOf('{') < r[0]
+  budget.remaining -= r && !unmatched ? r[1] + 1 : str.length
+  if (!r || budget.remaining < 0) {
+    return undefined
+  }
+  return {
+    end: r[1],
+    pre: str.slice(0, r[0]),
+    body: str.slice(r[0] + 1, r[1]),
+    post: str.slice(r[1] + 1),
+    unmatched: unmatched,
+  }
+}
+
+// `masked` with every `{` that has no matching `}` swapped for a `\0`, which
+// keeps the length, so a scan of it still lines up with the string it was
+// made from. Such a `{` is literal either way, but `balanced` only learns that
+// one is unmatched by reading to the end of the string, so with one at the
+// head of every group (`'{a,{b,c}'.repeat(n)`) each scan read the rest of the
+// input. That was quadratic, and once the step budget charged for it, it ran
+// out partway through and left the rest literal. A scan of the masked copy
+// stops at the group's `}`. It is one pass, charged as such.
+function maskUnmatchedOpens(masked, budget) {
+  budget.remaining -= masked.length
+  var open = []
+  for (var i = 0; i < masked.length; i++) {
+    var c = masked.charCodeAt(i)
+    if (c === 0x7b) {
+      open.push(i)
+    } else if (c === 0x7d && open.length) {
+      open.pop()
+    }
+  }
+  var out = ''
+  var last = 0
+  for (var j = 0; j < open.length; j++) {
+    out += masked.slice(last, open[j]) + '\0'
+    last = open[j] + 1
+  }
+  return out + masked.slice(last)
+}
+
+// Whether `str` has a `,` not followed by another `,`, with a `}` after it on
+// the same line - what `/,(?!,).*\}/.test(str)` asks, answered in one pass from
+// the end. The regex tries every `,` and backtracks through the rest of its
+// line from each, which is quadratic, and the `{a},b}` rewrite asks again on
+// every pass. Like a scan, it is charged for the whole string and refused if
+// that overdraws the budget.
+function commaSetFollows(str, budget) {
+  budget.remaining -= str.length
+  if (budget.remaining < 0) {
+    return false
+  }
+  // Whether a `}` follows the current position before the line ends
+  var close = false
+  for (var i = str.length - 1; i >= 0; i--) {
+    var c = str.charCodeAt(i)
+    if (c === 0x7d) {
+      close = true
+    } else if (c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029) {
+      // A line terminator, which `.` does not match
+      close = false
+    } else if (c === 0x2c && close && str.charCodeAt(i + 1) !== 0x2c) {
+      return true
+    }
+  }
+  return false
 }
 
 // Basically just str.split(","), but handling cases
 // where we have nested braced sections, which should be
 // treated as individual members, like {a,{b,c},d}
-function parseCommaParts(str) {
-  var parts = [];
+//
+// Returns `undefined` if the step budget runs out before the whole set is
+// split, since splitting what is left on every comma would tear apart the
+// nested sets it still holds.
+function parseCommaParts(str, budget) {
+  var parts = []
 
   // Walk the brace groups iteratively. Recursing on `post` once per group let a
   // chain of them exhaust the stack - the parsing-side counterpart to
@@ -23964,46 +24078,60 @@ function parseCommaParts(str) {
   // `maxLength` can bound, since it happens before expansion.
   //
   // The part the next chunk continues
-  var carry = '';
+  var carry = ''
 
   for (;;) {
-    var m = balanced('{', '}', str);
+    // A set's body holds no unmatched `{`, so there is nothing to mask.
+    var m = balancedWithBudget(str, str, budget)
+
+    if (budget.remaining < 0) {
+      return undefined
+    }
 
     if (!m) {
-      var tail = str.split(',');
-      tail[0] = carry + tail[0];
-      pushAll(parts, tail);
-      return parts;
+      var tail = str.split(',')
+      tail[0] = carry + tail[0]
+      pushAll(parts, tail)
+      return parts
     }
 
-    var pre = m.pre;
-    var body = m.body;
-    var post = m.post;
-    var p = pre.split(',');
+    var pre = m.pre
+    var body = m.body
+    var post = m.post
+    var p = pre.split(',')
 
-    p[0] = carry + p[0];
-    p[p.length-1] += '{' + body + '}';
+    p[0] = carry + p[0]
+    p[p.length - 1] += '{' + body + '}'
 
     if (!post.length) {
-      pushAll(parts, p);
-      return parts;
+      pushAll(parts, p)
+      return parts
     }
 
-    carry = p.pop();
-    pushAll(parts, p);
-    str = post;
+    carry = p.pop()
+    pushAll(parts, p)
+    str = post
   }
 }
 
-function expandTop(str, options) {
-  if (!str)
-    return [];
+// An option that is left out or null, or that is NaN, gets its default. Every
+// comparison against NaN is false, so a NaN bound would never be reached:
+// `{ maxSteps: NaN }` let 15KB of input block the event loop for 16 seconds,
+// and `{ maxDepth: NaN }` overflowed the stack again (CVE-2026-102278). Pass
+// `Infinity` to lift a bound.
+function bound(value, fallback) {
+  return value == null || isNaN(value) ? fallback : value
+}
 
-  options = options || {};
-  var max = options.max == null ? EXPANSION_MAX : options.max;
-  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
-  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
-  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
+function expandTop(str, options) {
+  if (!str) return []
+
+  options = options || {}
+  var max = bound(options.max, EXPANSION_MAX)
+  var maxLength = bound(options.maxLength, EXPANSION_MAX_LENGTH)
+  var maxDepth = bound(options.maxDepth, EXPANSION_MAX_DEPTH)
+  var maxRewrites = bound(options.maxRewrites, EXPANSION_MAX_REWRITES)
+  var maxSteps = bound(options.maxSteps, EXPANSION_MAX_STEPS)
 
   // I don't know why Bash 4.3 does this, but it does.
   // Anything starting with {} will have the first two bytes preserved
@@ -24012,64 +24140,72 @@ function expandTop(str, options) {
   // One could argue that this is a bug in Bash, but since the goal of
   // this module is to match Bash's rules, we escape a leading {}
   if (str.substr(0, 2) === '{}') {
-    str = '\\{\\}' + str.substr(2);
+    str = '\\{\\}' + str.substr(2)
   }
 
-  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
+  return expand(
+    escapeBraces(str),
+    max,
+    maxLength,
+    maxDepth,
+    0,
+    maxRewrites,
+    { remaining: maxSteps },
+    true
+  ).map(unescapeBraces)
 }
 
 function embrace(str) {
-  return '{' + str + '}';
+  return '{' + str + '}'
 }
 function isPadded(el) {
-  return /^-?0\d/.test(el);
+  return /^-?0\d/.test(el)
 }
 
 function lte(i, y) {
-  return i <= y;
+  return i <= y
 }
 function gte(i, y) {
-  return i >= y;
+  return i >= y
 }
 
 // Build `{ acc[a] + pre + values[v] }` for every combination, capping the
 // number of results at `max` and the total number of characters at `maxLength`.
 // This is the one place output grows, so bounding it here keeps the single
 // accumulator - and therefore memory - flat regardless of how many brace groups
-// are combined (CVE-2026-14257).
-function combine(
-  acc,
-  pre,
-  values,
-  max,
-  maxLength,
-  dropEmpties
-) {
+// are combined (CVE-2026-14257). Each result built is a step, since `max` and
+// `maxLength` bound one combination, not how many brace groups are combined.
+function combine(acc, pre, values, max, maxLength, dropEmpties, budget) {
   var out = []
   var length = 0
-  for (var a = 0; a < acc.length; a++) {
-    for (var v = 0; v < values.length; v++) {
-      if (out.length >= max) return out
-      var expansion = acc[a] + pre + values[v]
-      // Bash drops empty results at the top level. Skip them before they count
-      // against `max`, so `max` bounds the number of *kept* results.
-      if (dropEmpties && !expansion) continue
-      if (length + expansion.length > maxLength) return out
+  // Bash drops empty results at the top level, and they don't count against
+  // `max`, so `max` bounds the number of *kept* results. Only an empty
+  // `acc[a] + pre` can make one, so for those the empty values are skipped
+  // without being visited. Visiting them one at a time let a set of empties
+  // cost `acc.length * values.length` while keeping nothing.
+  var nonEmpty
+  outer: for (var a = 0; a < acc.length; a++) {
+    var prefix = acc[a] + pre
+    var vs = values
+    if (dropEmpties && !prefix) {
+      if (!nonEmpty) nonEmpty = values.filter(Boolean)
+      vs = nonEmpty
+    }
+    for (var v = 0; v < vs.length; v++) {
+      if (out.length >= max) break outer
+      var expansion = prefix + vs[v]
+      if (length + expansion.length > maxLength) break outer
       out.push(expansion)
       length += expansion.length
     }
   }
+  budget.remaining -= out.length
   return out
 }
 
 // The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
-// sequence body.
-function expandSequence(
-  body,
-  isAlphaSequence,
-  max,
-  maxLength
-) {
+// sequence body, or `undefined` if the step budget runs out generating them.
+function expandSequence(body, isAlphaSequence, max, maxLength, budget) {
   var n = body.split(/\.\./)
   var N = []
   // A sequence body always splits into two or three parts, but the compiler
@@ -24093,9 +24229,21 @@ function expandSequence(
     test = gte
   }
   var pad = n.some(isPadded)
+  // A padded value is built a character at a time to `width`, which the input
+  // sets, so it costs one step per character: 64KB of
+  // `('{' + '0'.repeat(100) + '..99999}').repeat(n)` took 7 seconds charged
+  // one step per value.
+  var cost = pad ? width : 1
 
   var length = 0
   for (var i = x; test(i, y) && N.length < max; i += incr) {
+    // Each value is a step. `max` and `maxLength` bound one sequence, but a
+    // chain of them still generated up to `max` values each, however few
+    // combining could keep.
+    budget.remaining -= cost
+    if (budget.remaining < 0) {
+      return undefined
+    }
     var c
     if (isAlphaSequence) {
       c = String.fromCharCode(i)
@@ -24130,13 +24278,17 @@ function expand(
   maxDepth,
   depth,
   maxRewrites,
+  budget,
   isTop
 ) {
+  // An overdraft here makes the first scan refuse, so `str` stays literal.
+  budget.remaining -= CALL_STEPS
+
   // Too deeply nested to keep following: treat the rest as literal, the same
   // way a group that cannot expand is already handled. Truncating rather than
   // throwing keeps expansion total, matching `max` and `maxLength`.
   if (depth > maxDepth) {
-    return [str];
+    return [str]
   }
 
   // Consume the string's top-level brace groups left to right, threading a
@@ -24156,17 +24308,40 @@ function expand(
   var rewrites = 0
   var dropEmpties = false
   var firstGroup = true
+  // `str` with its unmatched `{` masked, once a scan has run into them
+  var masked = str
 
   for (;;) {
-    const m = balanced('{', '}', str)
+    const m = balancedWithBudget(str, masked, budget)
 
-    // No brace set left: the rest of the string is literal.
+    // No brace set left, or no step budget left to look for one: the rest of
+    // the string is literal.
     if (!m) {
-      return combine(acc, str, [''], max, maxLength, dropEmpties)
+      return combine(acc, str, [''], max, maxLength, dropEmpties, budget)
+    }
+    if (m.unmatched) {
+      masked = maskUnmatchedOpens(masked, budget)
     }
 
     // no need to expand pre, since it is guaranteed to be free of brace-sets
     const pre = m.pre
+
+    // This set and the rest of the string, literal: for a set that cannot
+    // expand, and for one the step budget runs out on. Once it is overdrawn,
+    // every set still being expanded, at every level, stays literal like this -
+    // otherwise each level above would go on combining, and wrapping and
+    // expanding again, results the budget was too small for.
+    var literal = function () {
+      return combine(
+        acc,
+        pre + '{' + m.body + '}' + m.post,
+        [''],
+        max,
+        maxLength,
+        dropEmpties,
+        budget
+      )
+    }
 
     if (/\$$/.test(pre)) {
       acc = combine(
@@ -24175,35 +24350,37 @@ function expand(
         [''],
         max,
         maxLength,
-        dropEmpties && !m.post.length
+        dropEmpties && !m.post.length,
+        budget
       )
       firstGroup = false
       if (!m.post.length) break
       str = m.post
+      masked = masked.slice(m.end + 1)
       continue
     }
 
-    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
-    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
-    var isSequence = isNumericSequence || isAlphaSequence;
-    var isOptions = m.body.indexOf(',') >= 0;
+    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body)
+    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(
+      m.body
+    )
+    var isSequence = isNumericSequence || isAlphaSequence
+    var isOptions = m.body.indexOf(',') >= 0
     if (!isSequence && !isOptions) {
       // {a},b}
-      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
-        rewrites++;
-        str = m.pre + '{' + m.body + escClose + m.post;
-        isTop = true;
-        continue;
+      if (rewrites < maxRewrites && commaSetFollows(m.post, budget)) {
+        rewrites++
+        str = m.pre + '{' + m.body + escClose + m.post
+        // Taking a `}` away never gives an unmatched `{` a partner, so what
+        // is masked stays unmatched. The `{` it closed can be left without
+        // one, and the next scan masks it.
+        masked =
+          masked.slice(0, m.end) + escClose + masked.slice(m.end + 1)
+        isTop = true
+        continue
       }
       // Nothing here expands, so the whole remaining string is literal.
-      return combine(
-        acc,
-        pre + '{' + m.body + '}' + m.post,
-        [''],
-        max,
-        maxLength,
-        dropEmpties
-      )
+      return literal()
     }
 
     if (firstGroup) {
@@ -24211,27 +24388,59 @@ function expand(
       firstGroup = false
     }
 
-    var values;
+    var values
     if (isSequence) {
-      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+      values = expandSequence(
+        m.body,
+        isAlphaSequence,
+        max,
+        maxLength,
+        budget
+      )
+      if (!values) {
+        return literal()
+      }
     } else {
-      var n = parseCommaParts(m.body);
+      var n = parseCommaParts(m.body, budget)
+      // The step budget ran out partway through the set.
+      if (!n) {
+        return literal()
+      }
       if (n.length === 1 && n[0] !== undefined) {
         // x{{a,b}}y ==> x{a}y x{b}y
-        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+        n = expand(
+          n[0],
+          max,
+          maxLength,
+          maxDepth,
+          depth + 1,
+          maxRewrites,
+          budget,
+          false
+        ).map(embrace)
+        // The step budget ran out expanding the set's only part.
+        if (budget.remaining < 0) {
+          return literal()
+        }
         //XXX is this necessary? Can't seem to hit it in tests.
         /* c8 ignore start */
         if (n.length === 1) {
-          acc = combine(
+          var single = combine(
             acc,
             pre + n[0],
             [''],
             max,
             maxLength,
-            dropEmpties && !m.post.length
+            dropEmpties && !m.post.length,
+            budget
           )
+          if (budget.remaining < 0) {
+            return literal()
+          }
+          acc = single
           if (!m.post.length) break
           str = m.post
+          masked = masked.slice(m.end + 1)
           continue
         }
         /* c8 ignore stop */
@@ -24252,11 +24461,27 @@ function expand(
       values = []
       var valuesLength = 0
       outer: for (var j = 0; j < n.length; j++) {
-        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false)
+        var expanded = expand(
+          n[j],
+          max,
+          maxLength,
+          maxDepth,
+          depth + 1,
+          maxRewrites,
+          budget,
+          false
+        )
+        // The step budget ran out expanding a member.
+        if (budget.remaining < 0) {
+          return literal()
+        }
         for (var k = 0; k < expanded.length; k++) {
           var v = expanded[k]
           if (dropsEmpties && !v) continue
-          if (values.length >= max || valuesLength + v.length > maxLength) {
+          if (
+            values.length >= max ||
+            valuesLength + v.length > maxLength
+          ) {
             break outer
           }
           values.push(v)
@@ -24265,9 +24490,23 @@ function expand(
       }
     }
 
-    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length)
+    var next = combine(
+      acc,
+      pre,
+      values,
+      max,
+      maxLength,
+      dropEmpties && !m.post.length,
+      budget
+    )
+    // The step budget ran out combining the set's values in.
+    if (budget.remaining < 0) {
+      return literal()
+    }
+    acc = next
     if (!m.post.length) break
     str = m.post
+    masked = masked.slice(m.end + 1)
   }
 
   return acc
@@ -32648,10 +32887,12 @@ var hasMap = typeof Map === 'function' && Map.prototype;
 var mapSizeDescriptor = Object.getOwnPropertyDescriptor && hasMap ? Object.getOwnPropertyDescriptor(Map.prototype, 'size') : null;
 var mapSize = hasMap && mapSizeDescriptor && typeof mapSizeDescriptor.get === 'function' ? mapSizeDescriptor.get : null;
 var mapForEach = hasMap && Map.prototype.forEach;
+var mapEntries = hasMap && Map.prototype.entries;
 var hasSet = typeof Set === 'function' && Set.prototype;
 var setSizeDescriptor = Object.getOwnPropertyDescriptor && hasSet ? Object.getOwnPropertyDescriptor(Set.prototype, 'size') : null;
 var setSize = hasSet && setSizeDescriptor && typeof setSizeDescriptor.get === 'function' ? setSizeDescriptor.get : null;
 var setForEach = hasSet && Set.prototype.forEach;
+var setValues = hasSet && Set.prototype.values;
 var hasWeakMap = typeof WeakMap === 'function' && WeakMap.prototype;
 var weakMapHas = hasWeakMap ? WeakMap.prototype.has : null;
 var hasWeakSet = typeof WeakSet === 'function' && WeakSet.prototype;
@@ -32671,12 +32912,22 @@ var $concat = Array.prototype.concat;
 var $join = Array.prototype.join;
 var $arrSlice = Array.prototype.slice;
 var $floor = Math.floor;
+var $max = Math.max;
+var $min = Math.min;
+var $round = Math.round;
+var $sqrt = Math.sqrt;
 var bigIntValueOf = typeof BigInt === 'function' ? BigInt.prototype.valueOf : null;
 var gOPS = Object.getOwnPropertySymbols;
 var symToString = typeof Symbol === 'function' && typeof Symbol.iterator === 'symbol' ? Symbol.prototype.toString : null;
 var hasShammedSymbols = typeof Symbol === 'function' && typeof Symbol.iterator === 'object';
 // ie, `has-tostringtag/shams
-var toStringTag = typeof Symbol === 'function' && Symbol.toStringTag && (typeof Symbol.toStringTag === hasShammedSymbols ? 'object' : 'symbol')
+var toStringTag = typeof Symbol === 'function'
+    && Symbol.toStringTag
+    && (
+        hasShammedSymbols
+            ? typeof Symbol.toStringTag === 'object'
+            : typeof Symbol.toStringTag === 'symbol'
+    )
     ? Symbol.toStringTag
     : null;
 var isEnumerable = Object.prototype.propertyIsEnumerable;
@@ -32688,6 +32939,37 @@ var gPO = (typeof Reflect === 'function' ? Reflect.getPrototypeOf : Object.getPr
         }
         : null
 );
+
+var mapIteratorNext = mapEntries && gPO ? gPO(mapEntries.call(new Map())).next : null;
+var setIteratorNext = setValues && gPO ? gPO(setValues.call(new Set())).next : null;
+
+// TODO: replace with `which-typed-array`, and `call-bound` for `TypedArray.prototype.length`
+/* global Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array */
+var typedArrayProto = typeof Uint8Array === 'function' && gPO ? gPO(Uint8Array.prototype) : null;
+var typedArrayTag = typedArrayProto && toStringTag ? getterOf(typedArrayProto, toStringTag) : null;
+var typedArrayLength = typedArrayProto ? getterOf(typedArrayProto, 'length') : null;
+var typedArrayToString = /^\[object (?:Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32|Float16|Float32|Float64|BigInt64|BigUint64)Array\]$/;
+var typedArrayLengths = { __proto__: null };
+if (!typedArrayLength) {
+    var TypedArrays = [
+        typeof Int8Array === 'function' && Int8Array,
+        typeof Uint8Array === 'function' && Uint8Array,
+        typeof Uint8ClampedArray === 'function' && Uint8ClampedArray,
+        typeof Int16Array === 'function' && Int16Array,
+        typeof Uint16Array === 'function' && Uint16Array,
+        typeof Int32Array === 'function' && Int32Array,
+        typeof Uint32Array === 'function' && Uint32Array,
+        typeof Float32Array === 'function' && Float32Array,
+        typeof Float64Array === 'function' && Float64Array
+    ];
+    for (var ta = 0; ta < TypedArrays.length; ta++) {
+        var TypedArray = TypedArrays[ta];
+        var lengthGetter = TypedArray && getterOf(TypedArray.prototype, 'length');
+        if (lengthGetter) {
+            typedArrayLengths[toStr(new TypedArray(0))] = lengthGetter;
+        }
+    }
+}
 
 function addNumericSeparator(num, str) {
     if (
@@ -32712,6 +32994,7 @@ function addNumericSeparator(num, str) {
 }
 
 var utilInspect = __webpack_require__(58502);
+var getStringWidth = __webpack_require__(63077);
 var inspectCustom = utilInspect.custom;
 var inspectSymbol = isSymbol(inspectCustom) ? inspectCustom : null;
 
@@ -32726,7 +33009,7 @@ var quoteREs = {
     single: /(['\\])/g
 };
 
-module.exports = function inspect_(obj, options, depth, seen) {
+module.exports = function inspect_(obj, options, depth, seen, breakState) { // eslint-disable-line max-params
     var opts = options || {};
 
     if (has(opts, 'quoteStyle') && !has(quotes, opts.quoteStyle)) {
@@ -32738,8 +33021,21 @@ module.exports = function inspect_(obj, options, depth, seen) {
             : opts.maxStringLength !== null
         )
     ) {
-        throw new TypeError('option "maxStringLength", if provided, must be a positive integer, Infinity, or `null`');
+        throw new TypeError('option "maxStringLength", if provided, must be a non-negative integer, Infinity, or `null`');
     }
+    if (
+        has(opts, 'maxCollectionLength')
+        && opts.maxCollectionLength !== null
+        && opts.maxCollectionLength !== Infinity
+        && !(
+            typeof opts.maxCollectionLength === 'number'
+            && opts.maxCollectionLength >= 0
+            && $floor(opts.maxCollectionLength) === opts.maxCollectionLength
+        )
+    ) {
+        throw new TypeError('option "maxCollectionLength", if provided, must be a non-negative integer, Infinity, or `null`');
+    }
+    var maxCollectionLength = typeof opts.maxCollectionLength === 'number' ? opts.maxCollectionLength : Infinity;
     var customInspect = has(opts, 'customInspect') ? opts.customInspect : true;
     if (typeof customInspect !== 'boolean' && customInspect !== 'symbol') {
         throw new TypeError('option "customInspect", if provided, must be `true`, `false`, or `\'symbol\'`');
@@ -32757,6 +33053,22 @@ module.exports = function inspect_(obj, options, depth, seen) {
         throw new TypeError('option "numericSeparator", if provided, must be `true` or `false`');
     }
     var numericSeparator = opts.numericSeparator;
+    if (has(opts, 'multilineStrings') && typeof opts.multilineStrings !== 'boolean') {
+        throw new TypeError('option "multilineStrings", if provided, must be `true` or `false`');
+    }
+
+    var hasBreakLength = has(opts, 'breakLength');
+    if (
+        hasBreakLength
+        && opts.breakLength !== Infinity
+        && (
+            typeof opts.breakLength !== 'number'
+            || opts.breakLength < 0
+            || parseInt(opts.breakLength, 10) !== opts.breakLength
+        )
+    ) {
+        throw new TypeError('option "breakLength", if provided, must be a non-negative integer or `Infinity`');
+    }
 
     if (typeof obj === 'undefined') {
         return 'undefined';
@@ -32789,7 +33101,14 @@ module.exports = function inspect_(obj, options, depth, seen) {
         return isArray(obj) ? '[Array]' : '[Object]';
     }
 
-    var indent = getIndent(opts, depth);
+    var indent = getIndent(hasBreakLength && (typeof opts.indent === 'undefined' || opts.indent === null) ? { indent: 2 } : opts, depth);
+    var layout = hasBreakLength ? {
+        breakLength: opts.breakLength,
+        depth: depth,
+        indent: indent,
+        maxCollectionLength: maxCollectionLength,
+        state: breakState || { currentDepth: depth }
+    } : null;
 
     if (typeof seen === 'undefined') {
         seen = [];
@@ -32798,25 +33117,49 @@ module.exports = function inspect_(obj, options, depth, seen) {
     }
 
     function inspect(value, from, noIndent) {
+        var nextSeen = seen;
         if (from) {
-            seen = $arrSlice.call(seen);
-            seen.push(from);
+            nextSeen = $arrSlice.call(seen);
+            nextSeen.push(from);
         }
-        if (noIndent) {
+        if (noIndent && !layout) {
             var newOpts = {
                 depth: opts.depth
             };
             if (has(opts, 'quoteStyle')) {
                 newOpts.quoteStyle = opts.quoteStyle;
             }
-            return inspect_(value, newOpts, depth + 1, seen);
+            if (has(opts, 'maxCollectionLength')) {
+                newOpts.maxCollectionLength = opts.maxCollectionLength;
+            }
+            return inspect_(value, newOpts, depth + 1, nextSeen);
         }
-        return inspect_(value, opts, depth + 1, seen);
+        return inspect_(value, opts, depth + 1, nextSeen, layout ? layout.state : breakState);
+    }
+
+    // like `util.inspect`, track the depth of the most recently entered non-empty object, so a container only fits on one line when few levels are nested below it
+    function enter() {
+        if (layout) {
+            var previousDepth = layout.state.currentDepth;
+            layout.state.currentDepth = depth;
+            return previousDepth;
+        }
+        return null;
+    }
+    function leaveIfEmpty(entries, previousDepth) {
+        if (layout && entries.length === 0) {
+            layout.state.currentDepth = previousDepth;
+        }
     }
 
     if (typeof obj === 'function' && !isRegExp(obj)) { // in older engines, regexes are callable
         var name = nameOf(obj);
+        var fnDepth = enter();
         var keys = arrObjKeys(obj, inspect);
+        leaveIfEmpty(keys, fnDepth);
+        if (layout && keys.length > 0) {
+            return breakLines(keys, bracesOf('{', '}', '[Function' + (name ? ': ' + name : ' (anonymous)') + ']', ' '), layout);
+        }
         return '[Function' + (name ? ': ' + name : ' (anonymous)') + ']' + (keys.length > 0 ? ' { ' + $join.call(keys, ', ') + ' }' : '');
     }
     if (isSymbol(obj)) {
@@ -32836,18 +33179,27 @@ module.exports = function inspect_(obj, options, depth, seen) {
     }
     if (isArray(obj)) {
         if (obj.length === 0) { return '[]'; }
-        var xs = arrObjKeys(obj, inspect);
+        enter();
+        var xs = arrObjKeys(obj, inspect, maxCollectionLength);
+        if (layout) {
+            return breakLines(xs, bracesOf('[', ']', '', ' '), layout, obj);
+        }
         if (indent && !singleLineValues(xs)) {
             return '[' + indentedJoin(xs, indent) + ']';
         }
         return '[ ' + $join.call(xs, ', ') + ' ]';
     }
     if (isError(obj)) {
+        var errorDepth = enter();
         var parts = arrObjKeys(obj, inspect);
         if (!('cause' in Error.prototype) && 'cause' in obj && !isEnumerable.call(obj, 'cause')) {
-            return '{ [' + String(obj) + '] ' + $join.call($concat.call('[cause]: ' + inspect(obj.cause), parts), ', ') + ' }';
+            parts = $concat.call(['[cause]: ' + inspect(obj.cause)], parts);
         }
+        leaveIfEmpty(parts, errorDepth);
         if (parts.length === 0) { return '[' + String(obj) + ']'; }
+        if (layout) {
+            return breakLines(parts, bracesOf('{ [' + String(obj) + ']', '}', '', ' '), layout);
+        }
         return '{ [' + String(obj) + '] ' + $join.call(parts, ', ') + ' }';
     }
     if (typeof obj === 'object' && customInspect) {
@@ -32859,21 +33211,55 @@ module.exports = function inspect_(obj, options, depth, seen) {
     }
     if (isMap(obj)) {
         var mapParts = [];
-        if (mapForEach) {
+        var mapDepth = enter();
+        if (mapIteratorNext && maxCollectionLength < mapSize.call(obj)) {
+            var mapIterator = mapEntries.call(obj);
+            var mapStep;
+            while (mapParts.length < maxCollectionLength && !(mapStep = mapIteratorNext.call(mapIterator)).done) {
+                mapParts.push(inspect(mapStep.value[0], obj, true) + ' => ' + inspect(mapStep.value[1], obj));
+            }
+        } else if (mapForEach) {
             mapForEach.call(obj, function (value, key) {
-                mapParts.push(inspect(key, obj, true) + ' => ' + inspect(value, obj));
+                if (mapParts.length < maxCollectionLength) {
+                    mapParts.push(inspect(key, obj, true) + ' => ' + inspect(value, obj));
+                }
             });
         }
-        return collectionOf('Map', mapSize.call(obj), mapParts, indent);
+        var mapLength = mapSize.call(obj);
+        if (maxCollectionLength !== Infinity && mapLength > mapParts.length) {
+            mapParts.push(moreItems(mapLength - mapParts.length));
+        }
+        leaveIfEmpty(mapParts, mapDepth);
+        if (layout) {
+            return breakLines(mapParts, bracesOf('Map (' + mapLength + ') {', '}', '', ''), layout);
+        }
+        return collectionOf('Map', mapLength, mapParts, indent);
     }
     if (isSet(obj)) {
         var setParts = [];
-        if (setForEach) {
+        var setDepth = enter();
+        if (setIteratorNext && maxCollectionLength < setSize.call(obj)) {
+            var setIterator = setValues.call(obj);
+            var setStep;
+            while (setParts.length < maxCollectionLength && !(setStep = setIteratorNext.call(setIterator)).done) {
+                setParts.push(inspect(setStep.value, obj));
+            }
+        } else if (setForEach) {
             setForEach.call(obj, function (value) {
-                setParts.push(inspect(value, obj));
+                if (setParts.length < maxCollectionLength) {
+                    setParts.push(inspect(value, obj));
+                }
             });
         }
-        return collectionOf('Set', setSize.call(obj), setParts, indent);
+        var setLength = setSize.call(obj);
+        if (maxCollectionLength !== Infinity && setLength > setParts.length) {
+            setParts.push(moreItems(setLength - setParts.length));
+        }
+        leaveIfEmpty(setParts, setDepth);
+        if (layout) {
+            return breakLines(setParts, bracesOf('Set (' + setLength + ') {', '}', '', ''), layout);
+        }
+        return collectionOf('Set', setLength, setParts, indent);
     }
     if (isWeakMap(obj)) {
         return weakCollectionOf('WeakMap');
@@ -32897,7 +33283,7 @@ module.exports = function inspect_(obj, options, depth, seen) {
         return markBoxed(inspect(String(obj)));
     }
     // note: in IE 8, sometimes `global !== window` but both are the prototypes of each other
-    /* eslint-env browser */
+    /* global window */
     if (typeof window !== 'undefined' && obj === window) {
         return '{ [object Window] }';
     }
@@ -32908,13 +33294,18 @@ module.exports = function inspect_(obj, options, depth, seen) {
         return '{ [object globalThis] }';
     }
     if (!isDate(obj) && !isRegExp(obj)) {
-        var ys = arrObjKeys(obj, inspect);
+        var objectDepth = enter();
+        var ys = arrObjKeys(obj, inspect, maxCollectionLength);
+        leaveIfEmpty(ys, objectDepth);
         var isPlainObject = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
-        var protoTag = obj instanceof Object ? '' : 'null prototype';
+        var protoTag = (gPO ? gPO(obj) === null : !(obj instanceof Object)) ? 'null prototype' : '';
         var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? 'Object' : '';
         var constructorTag = isPlainObject || typeof obj.constructor !== 'function' ? '' : obj.constructor.name ? obj.constructor.name + ' ' : '';
         var tag = constructorTag + (stringTag || protoTag ? '[' + $join.call($concat.call([], stringTag || [], protoTag || []), ': ') + '] ' : '');
         if (ys.length === 0) { return tag + '{}'; }
+        if (layout) {
+            return breakLines(ys, bracesOf(tag + '{', '}', '', ' '), layout);
+        }
         if (indent) {
             return tag + '{' + indentedJoin(ys, indent) + '}';
         }
@@ -32980,6 +33371,30 @@ function has(obj, key) {
 
 function toStr(obj) {
     return objectToString.call(obj);
+}
+
+function isTypedArray(obj) {
+    if (typedArrayTag) {
+        return !!typedArrayTag.call(obj);
+    }
+    return !toStringTag && $test.call(typedArrayToString, toStr(obj));
+}
+
+function getTypedArrayLength(obj) {
+    if (typedArrayLength) {
+        return typedArrayLength.call(obj);
+    }
+    var getter = typedArrayLengths[toStr(obj)];
+    return getter ? getter.call(obj) : obj.length;
+}
+
+function getterOf(obj, key) {
+    var descriptor = Object.getOwnPropertyDescriptor ? Object.getOwnPropertyDescriptor(obj, key) : null;
+    return descriptor && typeof descriptor.get === 'function' ? descriptor.get : null;
+}
+
+function moreItems(count) {
+    return '... ' + count + ' more item' + (count > 1 ? 's' : '');
 }
 
 function nameOf(f) {
@@ -33089,7 +33504,7 @@ function inspectString(str, opts) {
     var quoteRE = quoteREs[opts.quoteStyle || 'single'];
     quoteRE.lastIndex = 0;
     // eslint-disable-next-line no-control-regex
-    var s = $replace.call($replace.call(str, quoteRE, '\\$1'), /[\x00-\x1f]/g, lowbyte);
+    var s = $replace.call($replace.call(str, quoteRE, '\\$1'), opts.multilineStrings ? /[\x00-\x09\x0b-\x1f]/g : /[\x00-\x1f]/g, lowbyte);
     return wrapQuotes(s, 'single', opts);
 }
 
@@ -33117,6 +33532,118 @@ function weakCollectionOf(type) {
 function collectionOf(type, size, entries, indent) {
     var joinedEntries = indent ? indentedJoin(entries, indent) : $join.call(entries, ', ');
     return type + ' (' + size + ') {' + joinedEntries + '}';
+}
+
+// the following three functions port the line-breaking logic of node's `util.inspect` (with its default `compact: 3`), from `lib/internal/util/inspect.js`
+function isBelowBreakLength(entries, start, breakLength) {
+    if (breakLength === Infinity) {
+        return singleLineValues(entries);
+    }
+    var totalLength = entries.length + start;
+    if (totalLength + entries.length > breakLength) {
+        return false;
+    }
+    for (var i = 0; i < entries.length; i++) {
+        totalLength += entries[i].length;
+        if (totalLength > breakLength) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function padTo(str, width, atStart) {
+    var fill = width > str.length ? $join.call(Array(width - str.length + 1), ' ') : '';
+    return atStart ? fill + str : str + fill;
+}
+
+function groupArrayElements(entries, layout, value) {
+    var separatorSpace = 2; // a comma and a space
+    var totalLength = 0;
+    var maxLength = 0;
+    var outputLength = entries.length;
+    if (layout.maxCollectionLength < entries.length) {
+        outputLength -= 1; // leave the `... N more items` entry out of the grouping
+    }
+    var dataLen = [];
+    for (var i = 0; i < outputLength; i++) {
+        dataLen[i] = getStringWidth(entries[i]);
+        totalLength += dataLen[i] + separatorSpace;
+        if (maxLength < dataLen[i]) {
+            maxLength = dataLen[i];
+        }
+    }
+    var actualMax = maxLength + separatorSpace;
+    var indentationLvl = layout.indent.prev.length;
+    if ((actualMax * 3) + indentationLvl >= layout.breakLength || (totalLength / actualMax <= 5 && maxLength > 6)) {
+        return entries;
+    }
+    var averageBias = $sqrt(actualMax - (totalLength / entries.length));
+    var biasedMax = $max(actualMax - 3 - averageBias, 1);
+    var columns = $min(
+        $round($sqrt(2.5 * biasedMax * outputLength) / biasedMax),
+        $floor((layout.breakLength - indentationLvl) / actualMax),
+        12, // `compact` * 4
+        15
+    );
+    if (columns <= 1) {
+        return entries;
+    }
+    var maxLineLength = [];
+    for (var c = 0; c < columns; c++) {
+        var lineMaxLength = 0;
+        for (var j = c; j < entries.length; j += columns) {
+            if (dataLen[j] > lineMaxLength) {
+                lineMaxLength = dataLen[j];
+            }
+        }
+        maxLineLength[c] = lineMaxLength + separatorSpace;
+    }
+    var numeric = true;
+    for (var k = 0; k < entries.length && numeric; k++) {
+        numeric = typeof value[k] === 'number' || typeof value[k] === 'bigint';
+    }
+    var grouped = [];
+    for (var row = 0; row < outputLength; row += columns) {
+        var max = $min(row + columns, outputLength);
+        var str = '';
+        var col = row;
+        for (; col < max - 1; col++) {
+            str += padTo(entries[col] + ', ', maxLineLength[col - row] + (entries[col].length - dataLen[col]), numeric);
+        }
+        var lastPadding = maxLineLength[col - row] + (entries[col].length - dataLen[col]) - separatorSpace;
+        str += numeric ? padTo(entries[col], lastPadding, true) : entries[col];
+        grouped.push(str);
+    }
+    if (outputLength < entries.length) {
+        grouped.push(entries[outputLength]);
+    }
+    return grouped;
+}
+
+// `padding` goes inside the braces only when the entries fit on one line
+function bracesOf(opening, closing, base, padding) {
+    return [
+        opening,
+        closing,
+        base,
+        padding
+    ];
+}
+
+function breakLines(entries, braces, layout, arrayValue) {
+    var output = arrayValue && entries.length > 6 ? groupArrayElements(entries, layout, arrayValue) : entries;
+    var base = braces[2] ? braces[2] + ' ' : '';
+    if (layout.state.currentDepth - layout.depth < 3 && output.length === entries.length) {
+        var start = output.length + layout.indent.prev.length + braces[0].length + braces[2].length + 10;
+        if (isBelowBreakLength(output, start, layout.breakLength)) {
+            var joined = $join.call(output, ', ');
+            if (indexOf(joined, '\n') < 0) {
+                return base + braces[0] + braces[3] + joined + braces[3] + braces[1];
+            }
+        }
+    }
+    return base + braces[0] + indentedJoin(output, layout.indent) + braces[1];
 }
 
 function singleLineValues(xs) {
@@ -33149,14 +33676,27 @@ function indentedJoin(xs, indent) {
     return lineJoiner + $join.call(xs, ',' + lineJoiner) + '\n' + indent.prev;
 }
 
-function arrObjKeys(obj, inspect) {
+function arrObjKeys(obj, inspect, maxLength) {
     var isArr = isArray(obj);
+    var limit = typeof maxLength === 'number' ? maxLength : Infinity;
+    var typedLength = !isArr && limit !== Infinity && isTypedArray(obj) ? getTypedArrayLength(obj) : null;
+    if (typeof typedLength !== 'number' || typedLength <= limit) {
+        typedLength = null;
+    }
     var xs = [];
     if (isArr) {
-        xs.length = obj.length;
-        for (var i = 0; i < obj.length; i++) {
+        xs.length = obj.length < limit ? obj.length : limit;
+        for (var i = 0; i < obj.length && i < limit; i++) {
             xs[i] = has(obj, i) ? inspect(obj[i], obj) : '';
         }
+        if (obj.length > limit) {
+            xs.push(moreItems(obj.length - limit));
+        }
+    } else if (typedLength !== null) {
+        for (var t = 0; t < limit; t++) {
+            xs.push(t + ': ' + inspect(obj[t], obj));
+        }
+        xs.push(moreItems(typedLength - limit));
     }
     var syms = typeof gOPS === 'function' ? gOPS(obj) : [];
     var symMap;
@@ -33170,6 +33710,7 @@ function arrObjKeys(obj, inspect) {
     for (var key in obj) { // eslint-disable-line no-restricted-syntax
         if (!has(obj, key)) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
         if (isArr && String(Number(key)) === key && key < obj.length) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
+        if (typedLength !== null && String(Number(key)) === key && key < typedLength) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
         if (hasShammedSymbols && symMap['$' + key] instanceof Symbol) {
             // this is to prevent shammed Symbols, which are stored as strings, from being included in the string key section
             continue; // eslint-disable-line no-restricted-syntax, no-continue
@@ -33188,6 +33729,126 @@ function arrObjKeys(obj, inspect) {
     }
     return xs;
 }
+
+
+/***/ }),
+
+/***/ 63077:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+var $charCodeAt = String.prototype.charCodeAt;
+var $indexOf = String.prototype.indexOf;
+var $normalize = String.prototype.normalize;
+var $slice = String.prototype.slice;
+var $split = String.prototype.split;
+var $floor = Math.floor;
+var $parseInt = parseInt;
+
+var ranges = __webpack_require__(47859);
+
+var starts = [];
+var ends = [];
+var widths = [];
+var tokens = $split.call(ranges, ',');
+var previousEnd = -1;
+for (var t = 0; t < tokens.length; t++) {
+    var dot = $indexOf.call(tokens[t], '.');
+    starts[t] = previousEnd + 1 + $parseInt($slice.call(tokens[t], 1, dot), 36);
+    previousEnd = starts[t] + $parseInt($slice.call(tokens[t], dot + 1), 36);
+    ends[t] = previousEnd;
+    widths[t] = Number($slice.call(tokens[t], 0, 1));
+}
+
+function codePointWidth(code) {
+    var low = 0;
+    var high = starts.length - 1;
+    while (low <= high) {
+        var mid = $floor((low + high) / 2);
+        if (code < starts[mid]) {
+            high = mid - 1;
+        } else if (code > ends[mid]) {
+            low = mid + 1;
+        } else {
+            return widths[mid];
+        }
+    }
+    return 1;
+}
+
+function unicodeWidth(str) {
+    var width = 0;
+    for (var i = 0; i < str.length; i++) {
+        var code = $charCodeAt.call(str, i);
+        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+            var next = $charCodeAt.call(str, i + 1);
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                code = ((code - 0xD800) * 0x400) + (next - 0xDC00) + 0x10000;
+                i += 1;
+            }
+        }
+        width += codePointWidth(code);
+    }
+    return width;
+}
+
+// like node, only the part of the string after its first non-ASCII character is NFC-normalized and looked up
+module.exports = function getStringWidth(str) {
+    var width = 0;
+    for (var i = 0; i < str.length; i++) {
+        var code = $charCodeAt.call(str, i);
+        if (code >= 127) {
+            var rest = $slice.call(str, i);
+            return width + unicodeWidth($normalize ? $normalize.call(rest, 'NFC') : rest);
+        }
+        width += code >= 32 ? 1 : 0;
+    }
+    return width;
+};
+
+
+/***/ }),
+
+/***/ 47859:
+/***/ ((module) => {
+
+/*
+ * generated by `npm run generate:string-width`; do not edit.
+ * display widths of code points, as computed by node's ICU-based `getStringWidth`, for Unicode 17.0.
+ * every code point not in a range has width 1. each comma-separated range is: its width, then (in base 36) the gap since the previous range ended, a dot, and its length minus 1.
+ */
+
+var $join = Array.prototype.join;
+
+module.exports = $join.call([
+    '00.v,02n.w,0gw.33,07n.6,07b.18,01.0,01.1,01.1,01.0,01k.5,0a.a,01.0,01a.k,0g.0,02t.7,01.5,02.1,01.3,',
+    '0x.0,01.0,0u.q,02j.a,01m.8,09.0,0o.3,01.8,01.2,01.4,017.2,01g.1,05.8,016.1k,01j.0,01.0,04.7,04.0,',
+    '03.6,0a.1,0t.0,01m.0,04.3,08.0,0k.1,0q.0,02.1,01l.0,04.1,04.1,02.2,03.0,0u.1,03.0,0b.1,01l.0,04.4,',
+    '01.1,04.0,0k.1,0m.5,01.0,01m.0,02.0,01.3,08.0,07.1,0b.1,0u.0,01p.0,0c.0,01e.0,03.0,01j.0,01.2,05.2,',
+    '01.3,07.1,0b.1,0t.0,01m.0,02.0,06.0,05.1,0k.1,0s.1,01l.1,04.3,08.0,0k.1,0t.0,020.0,07.2,01.0,02i.0,',
+    '02.6,0c.7,02q.0,02.8,0b.6,021.1,0r.0,01.0,01.0,01j.d,01.4,01.1,05.a,01.z,09.0,02u.3,01.5,01.1,02.1,',
+    '0p.1,04.2,0g.3,0d.0,02.1,06.0,0f.0,22q.2n,0e5.2,0qa.2,0t.1,0u.1,0u.1,01s.1,01.6,08.0,02.a,09.0,',
+    '019.4,039.1,0y.0,03a.2,04.1,09.0,06.2,063.1,02.0,01m.0,01.6,01.0,01.0,02.7,06.9,02.0,01c.19,02.b,',
+    '0k.3,01c.0,01.4,01.0,05.0,014.8,0c.1,0w.3,02.1,01.2,01k.0,01.1,03.0,01.2,01m.7,02.1,048.2,01.c,01.6,',
+    '04.0,06.0,03.1,05i.1r,0ej.4,0q.4,01d.4,01.9,02o.w,2fd.1,2d.1,25a.3,23.0,22.0,2eh.1,2l.1,2q.7,2g.b,',
+    '217.0,2a.5,23.0,2d.0,28.1,2h.1,25.1,28.0,25.0,2l.0,27.1,21.0,24.0,22.0,27.0,24.1,2s.0,2z.0,21.0,',
+    '24.2,21.0,21p.2,2o.0,2e.0,2nv.1,21f.0,24.0,0bd.2,03x.0,02o.v,23k.p,21.2g,2c.5x,2q.26,22.2d,22.2u,',
+    '25.16,21.2l,21.2d,29.1b,21.13,28.mkc,23.1i,0bs.3,01.9,0w.1,028.1,07k.0,03.0,04.0,0p.1,05.0,047.1,',
+    '0q.h,0d.0,012.7,0p.a,2e.s,03.2,01c.0,02.3,02.1,013.0,01v.5,02.1,02.1,0c.0,08.0,01b.0,01f.0,01.2,',
+    '02.1,05.1,01.0,016.1,08.0,06m.0,02.0,04.0,2i.8mb,26l8.e7,0u.0,0kh.f,20.9,06.f,20.y,21.i,21.3,043.0,',
+    '21.2n,23j.6,0i.2,0e9.0,06a.0,045.4,01ae.2,01.1,05.3,014.2,04.0,04l.1,0fx.3,01t.4,08t.1,025.5,01y.a,',
+    '01d.3,03f.0,01i.e,015.0,02.1,0a.2,01d.3,02.1,02.0,04.0,0a.0,01e.2,010.4,01.7,01q.0,0c.1,01g.8,0a.3,',
+    '02.0,02n.2,02.0,01.1,06.0,02.0,04d.0,03.7,0l.1,01l.1,03.0,011.6,03.4,01y.5,0d.0,01.0,01.0,0e.1,',
+    '02d.7,02.2,01.0,0n.0,02c.5,01.0,04.1,01.1,06m.3,06.1,01.1,0r.1,02d.7,02.0,01.1,02y.0,01.0,02.5,01.0,',
+    '02t.0,01.0,02.3,01.4,077.8,01.1,074.1,01.0,04.0,040.3,02.1,04.0,0w.9,014.5,02.3,08.0,09.5,02.2,',
+    '01a.c,01.1,05i.0,01.2,01.0,05l.6,01.5,01.0,02a.l,02.6,01.1,01.1,03e.5,03.0,01.1,01.6,01.0,020.1,',
+    '03.0,01.0,09n.1,0b.1,01g.4,05.0,01.0,0n.0,0445.g,06.e,08ug.b,03.2,01xc.4,01n.6,0t4.0,01r.3,225.4,',
+    '2b.6,29.5p1,215.v,22p.36,26pp.3,21.6,21.1,21.82,2f.0,2t.2,22.0,2e.3,28.az,01wh.1,01.3,03mk.19,02.m,',
+    '2ev.1,30.4,02.2,09.f,02.6,0u.3,2d.1,30.3,03l.2,257.2e,29.m,01ah.1i,04.1d,08.0,0e.0,0m.4,01.e,011s.6,',
+    '01.g,02.6,01.1,01.4,02s.0,04g.6,0af.0,01p.3,0e4.3,072.1,06r.0,02.0,07.1,05.0,0d6.6,031.6,21bt.0,',
+    '25m.0,25a.0,22.9,223.s,2d.17,24.8,27.1,2e.5,24a.w,2c.8,21.1x,21.l,2c.16,24.4,2c.g,23.0,23.1y,21.0,',
+    '21.56,22.1q,2d.3,21.n,2i.0,2q.1,2d.0,22e.2c,21c.1x,26.0,23.2,22.3,23.3,2b.1,27.8,26b.b,24.0,27v.1a,',
+    '21.9,21.54,234.c,23.a,23.1k,21.0,24.f,22.b,24.9,2zr.1ekd,22.1ekd,0e1oj.0,0u.2n,03k.6n'
+], '');
 
 
 /***/ }),
@@ -40773,15 +41434,15 @@ readdirGlob.ReaddirGlob = ReaddirGlob;
 /***/ 33967:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
-var balanced = __webpack_require__(59380);
+var balanced = __webpack_require__(59380)
 
-module.exports = expandTop;
+module.exports = expandTop
 
-var escSlash = '\0SLASH'+Math.random()+'\0';
-var escOpen = '\0OPEN'+Math.random()+'\0';
-var escClose = '\0CLOSE'+Math.random()+'\0';
-var escComma = '\0COMMA'+Math.random()+'\0';
-var escPeriod = '\0PERIOD'+Math.random()+'\0';
+var escSlash = '\0SLASH' + Math.random().toFixed(16) + '\0'
+var escOpen = '\0OPEN' + Math.random().toFixed(16) + '\0'
+var escClose = '\0CLOSE' + Math.random().toFixed(16) + '\0'
+var escComma = '\0COMMA' + Math.random().toFixed(16) + '\0'
+var escPeriod = '\0PERIOD' + Math.random().toFixed(16) + '\0'
 
 var EXPANSION_MAX = 100000
 
@@ -40817,41 +41478,155 @@ var EXPANSION_MAX_DEPTH = 1000
 // times the scan may restart. Real `{a},b}` input needs a handful.
 var EXPANSION_MAX_REWRITES = 1000
 
+// `EXPANSION_MAX_STEPS` bounds the work one `expandTop` call does, which `max`,
+// `maxLength` and `maxDepth` don't: nested sets are rescanned at every level
+// and chained groups each rebuild up to `max` results, so 2KB of input could
+// block the event loop for over 30 seconds. Each character scanned, result
+// built and sequence value generated is a step, and each `expand` call costs
+// `CALL_STEPS` more. Past the budget, the set being expanded and everything
+// after it stay literal. A glob needs a few hundred steps, and nesting all the
+// way to `EXPANSION_MAX_DEPTH` about 4M.
+var EXPANSION_MAX_STEPS = 20000000
+
+// What one `expand` call costs on top of what it scans and builds. Setting
+// one up takes about as long as scanning 16 characters, and a set whose
+// results are wrapped to be expanded again makes one call per result, each
+// scanning and building next to nothing: 64KB of
+// `('{{' + ','.repeat(316) + '}{' + ','.repeat(316) + '}}').repeat(n)` made
+// 4M such calls, which spent the budget three times as slowly as anything
+// else.
+var CALL_STEPS = 16
+
 function numeric(str) {
-  return parseInt(str, 10) == str
-    ? parseInt(str, 10)
-    : str.charCodeAt(0);
+  return parseInt(str, 10) == str ? parseInt(str, 10) : str.charCodeAt(0)
 }
 
 function escapeBraces(str) {
-  return str.split('\\\\').join(escSlash)
-            .split('\\{').join(escOpen)
-            .split('\\}').join(escClose)
-            .split('\\,').join(escComma)
-            .split('\\.').join(escPeriod);
+  return str
+    .split('\\\\')
+    .join(escSlash)
+    .split('\\{')
+    .join(escOpen)
+    .split('\\}')
+    .join(escClose)
+    .split('\\,')
+    .join(escComma)
+    .split('\\.')
+    .join(escPeriod)
 }
 
 function unescapeBraces(str) {
-  return str.split(escSlash).join('\\')
-            .split(escOpen).join('{')
-            .split(escClose).join('}')
-            .split(escComma).join(',')
-            .split(escPeriod).join('.');
+  return str
+    .split(escSlash)
+    .join('\\')
+    .split(escOpen)
+    .join('{')
+    .split(escClose)
+    .join('}')
+    .split(escComma)
+    .join(',')
+    .split(escPeriod)
+    .join('.')
 }
-
 
 // Like `target.push(...items)` but doesn't overflow the stack
 function pushAll(target, items) {
   for (var i = 0; i < items.length; i++) {
-    target.push(items[i]);
+    target.push(items[i])
   }
+}
+
+// `budget` is `{ remaining }`, one counter shared by every level and group of
+// an `expandTop` call, so the bound holds for the call as a whole.
+//
+// `balanced`, run on `masked` (see `maskUnmatchedOpens`), sliced from `str`
+// and charged for the characters it walks: up to the group's `}`, or the
+// whole string when there is no match or unmatched `{` come first, which
+// `unmatched` then flags for masking. Once a call overdraws the budget, it
+// and every later one return undefined, so the rest stays literal.
+function balancedWithBudget(str, masked, budget) {
+  if (budget.remaining < 0) {
+    return undefined
+  }
+  var r = balanced.range('{', '}', masked)
+  var unmatched = r !== undefined && masked.indexOf('{') < r[0]
+  budget.remaining -= r && !unmatched ? r[1] + 1 : str.length
+  if (!r || budget.remaining < 0) {
+    return undefined
+  }
+  return {
+    end: r[1],
+    pre: str.slice(0, r[0]),
+    body: str.slice(r[0] + 1, r[1]),
+    post: str.slice(r[1] + 1),
+    unmatched: unmatched,
+  }
+}
+
+// `masked` with every `{` that has no matching `}` swapped for a `\0`, which
+// keeps the length, so a scan of it still lines up with the string it was
+// made from. Such a `{` is literal either way, but `balanced` only learns that
+// one is unmatched by reading to the end of the string, so with one at the
+// head of every group (`'{a,{b,c}'.repeat(n)`) each scan read the rest of the
+// input. That was quadratic, and once the step budget charged for it, it ran
+// out partway through and left the rest literal. A scan of the masked copy
+// stops at the group's `}`. It is one pass, charged as such.
+function maskUnmatchedOpens(masked, budget) {
+  budget.remaining -= masked.length
+  var open = []
+  for (var i = 0; i < masked.length; i++) {
+    var c = masked.charCodeAt(i)
+    if (c === 0x7b) {
+      open.push(i)
+    } else if (c === 0x7d && open.length) {
+      open.pop()
+    }
+  }
+  var out = ''
+  var last = 0
+  for (var j = 0; j < open.length; j++) {
+    out += masked.slice(last, open[j]) + '\0'
+    last = open[j] + 1
+  }
+  return out + masked.slice(last)
+}
+
+// Whether `str` has a `,` not followed by another `,`, with a `}` after it on
+// the same line - what `/,(?!,).*\}/.test(str)` asks, answered in one pass from
+// the end. The regex tries every `,` and backtracks through the rest of its
+// line from each, which is quadratic, and the `{a},b}` rewrite asks again on
+// every pass. Like a scan, it is charged for the whole string and refused if
+// that overdraws the budget.
+function commaSetFollows(str, budget) {
+  budget.remaining -= str.length
+  if (budget.remaining < 0) {
+    return false
+  }
+  // Whether a `}` follows the current position before the line ends
+  var close = false
+  for (var i = str.length - 1; i >= 0; i--) {
+    var c = str.charCodeAt(i)
+    if (c === 0x7d) {
+      close = true
+    } else if (c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029) {
+      // A line terminator, which `.` does not match
+      close = false
+    } else if (c === 0x2c && close && str.charCodeAt(i + 1) !== 0x2c) {
+      return true
+    }
+  }
+  return false
 }
 
 // Basically just str.split(","), but handling cases
 // where we have nested braced sections, which should be
 // treated as individual members, like {a,{b,c},d}
-function parseCommaParts(str) {
-  var parts = [];
+//
+// Returns `undefined` if the step budget runs out before the whole set is
+// split, since splitting what is left on every comma would tear apart the
+// nested sets it still holds.
+function parseCommaParts(str, budget) {
+  var parts = []
 
   // Walk the brace groups iteratively. Recursing on `post` once per group let a
   // chain of them exhaust the stack - the parsing-side counterpart to
@@ -40859,46 +41634,60 @@ function parseCommaParts(str) {
   // `maxLength` can bound, since it happens before expansion.
   //
   // The part the next chunk continues
-  var carry = '';
+  var carry = ''
 
   for (;;) {
-    var m = balanced('{', '}', str);
+    // A set's body holds no unmatched `{`, so there is nothing to mask.
+    var m = balancedWithBudget(str, str, budget)
+
+    if (budget.remaining < 0) {
+      return undefined
+    }
 
     if (!m) {
-      var tail = str.split(',');
-      tail[0] = carry + tail[0];
-      pushAll(parts, tail);
-      return parts;
+      var tail = str.split(',')
+      tail[0] = carry + tail[0]
+      pushAll(parts, tail)
+      return parts
     }
 
-    var pre = m.pre;
-    var body = m.body;
-    var post = m.post;
-    var p = pre.split(',');
+    var pre = m.pre
+    var body = m.body
+    var post = m.post
+    var p = pre.split(',')
 
-    p[0] = carry + p[0];
-    p[p.length-1] += '{' + body + '}';
+    p[0] = carry + p[0]
+    p[p.length - 1] += '{' + body + '}'
 
     if (!post.length) {
-      pushAll(parts, p);
-      return parts;
+      pushAll(parts, p)
+      return parts
     }
 
-    carry = p.pop();
-    pushAll(parts, p);
-    str = post;
+    carry = p.pop()
+    pushAll(parts, p)
+    str = post
   }
 }
 
-function expandTop(str, options) {
-  if (!str)
-    return [];
+// An option that is left out or null, or that is NaN, gets its default. Every
+// comparison against NaN is false, so a NaN bound would never be reached:
+// `{ maxSteps: NaN }` let 15KB of input block the event loop for 16 seconds,
+// and `{ maxDepth: NaN }` overflowed the stack again (CVE-2026-102278). Pass
+// `Infinity` to lift a bound.
+function bound(value, fallback) {
+  return value == null || isNaN(value) ? fallback : value
+}
 
-  options = options || {};
-  var max = options.max == null ? EXPANSION_MAX : options.max;
-  var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
-  var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
-  var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
+function expandTop(str, options) {
+  if (!str) return []
+
+  options = options || {}
+  var max = bound(options.max, EXPANSION_MAX)
+  var maxLength = bound(options.maxLength, EXPANSION_MAX_LENGTH)
+  var maxDepth = bound(options.maxDepth, EXPANSION_MAX_DEPTH)
+  var maxRewrites = bound(options.maxRewrites, EXPANSION_MAX_REWRITES)
+  var maxSteps = bound(options.maxSteps, EXPANSION_MAX_STEPS)
 
   // I don't know why Bash 4.3 does this, but it does.
   // Anything starting with {} will have the first two bytes preserved
@@ -40907,64 +41696,72 @@ function expandTop(str, options) {
   // One could argue that this is a bug in Bash, but since the goal of
   // this module is to match Bash's rules, we escape a leading {}
   if (str.substr(0, 2) === '{}') {
-    str = '\\{\\}' + str.substr(2);
+    str = '\\{\\}' + str.substr(2)
   }
 
-  return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
+  return expand(
+    escapeBraces(str),
+    max,
+    maxLength,
+    maxDepth,
+    0,
+    maxRewrites,
+    { remaining: maxSteps },
+    true
+  ).map(unescapeBraces)
 }
 
 function embrace(str) {
-  return '{' + str + '}';
+  return '{' + str + '}'
 }
 function isPadded(el) {
-  return /^-?0\d/.test(el);
+  return /^-?0\d/.test(el)
 }
 
 function lte(i, y) {
-  return i <= y;
+  return i <= y
 }
 function gte(i, y) {
-  return i >= y;
+  return i >= y
 }
 
 // Build `{ acc[a] + pre + values[v] }` for every combination, capping the
 // number of results at `max` and the total number of characters at `maxLength`.
 // This is the one place output grows, so bounding it here keeps the single
 // accumulator - and therefore memory - flat regardless of how many brace groups
-// are combined (CVE-2026-14257).
-function combine(
-  acc,
-  pre,
-  values,
-  max,
-  maxLength,
-  dropEmpties
-) {
+// are combined (CVE-2026-14257). Each result built is a step, since `max` and
+// `maxLength` bound one combination, not how many brace groups are combined.
+function combine(acc, pre, values, max, maxLength, dropEmpties, budget) {
   var out = []
   var length = 0
-  for (var a = 0; a < acc.length; a++) {
-    for (var v = 0; v < values.length; v++) {
-      if (out.length >= max) return out
-      var expansion = acc[a] + pre + values[v]
-      // Bash drops empty results at the top level. Skip them before they count
-      // against `max`, so `max` bounds the number of *kept* results.
-      if (dropEmpties && !expansion) continue
-      if (length + expansion.length > maxLength) return out
+  // Bash drops empty results at the top level, and they don't count against
+  // `max`, so `max` bounds the number of *kept* results. Only an empty
+  // `acc[a] + pre` can make one, so for those the empty values are skipped
+  // without being visited. Visiting them one at a time let a set of empties
+  // cost `acc.length * values.length` while keeping nothing.
+  var nonEmpty
+  outer: for (var a = 0; a < acc.length; a++) {
+    var prefix = acc[a] + pre
+    var vs = values
+    if (dropEmpties && !prefix) {
+      if (!nonEmpty) nonEmpty = values.filter(Boolean)
+      vs = nonEmpty
+    }
+    for (var v = 0; v < vs.length; v++) {
+      if (out.length >= max) break outer
+      var expansion = prefix + vs[v]
+      if (length + expansion.length > maxLength) break outer
       out.push(expansion)
       length += expansion.length
     }
   }
+  budget.remaining -= out.length
   return out
 }
 
 // The expansion values of a single numeric (`1..5`) or alphabetic (`a..e..2`)
-// sequence body.
-function expandSequence(
-  body,
-  isAlphaSequence,
-  max,
-  maxLength
-) {
+// sequence body, or `undefined` if the step budget runs out generating them.
+function expandSequence(body, isAlphaSequence, max, maxLength, budget) {
   var n = body.split(/\.\./)
   var N = []
   // A sequence body always splits into two or three parts, but the compiler
@@ -40988,9 +41785,21 @@ function expandSequence(
     test = gte
   }
   var pad = n.some(isPadded)
+  // A padded value is built a character at a time to `width`, which the input
+  // sets, so it costs one step per character: 64KB of
+  // `('{' + '0'.repeat(100) + '..99999}').repeat(n)` took 7 seconds charged
+  // one step per value.
+  var cost = pad ? width : 1
 
   var length = 0
   for (var i = x; test(i, y) && N.length < max; i += incr) {
+    // Each value is a step. `max` and `maxLength` bound one sequence, but a
+    // chain of them still generated up to `max` values each, however few
+    // combining could keep.
+    budget.remaining -= cost
+    if (budget.remaining < 0) {
+      return undefined
+    }
     var c
     if (isAlphaSequence) {
       c = String.fromCharCode(i)
@@ -41025,13 +41834,17 @@ function expand(
   maxDepth,
   depth,
   maxRewrites,
+  budget,
   isTop
 ) {
+  // An overdraft here makes the first scan refuse, so `str` stays literal.
+  budget.remaining -= CALL_STEPS
+
   // Too deeply nested to keep following: treat the rest as literal, the same
   // way a group that cannot expand is already handled. Truncating rather than
   // throwing keeps expansion total, matching `max` and `maxLength`.
   if (depth > maxDepth) {
-    return [str];
+    return [str]
   }
 
   // Consume the string's top-level brace groups left to right, threading a
@@ -41051,17 +41864,40 @@ function expand(
   var rewrites = 0
   var dropEmpties = false
   var firstGroup = true
+  // `str` with its unmatched `{` masked, once a scan has run into them
+  var masked = str
 
   for (;;) {
-    const m = balanced('{', '}', str)
+    const m = balancedWithBudget(str, masked, budget)
 
-    // No brace set left: the rest of the string is literal.
+    // No brace set left, or no step budget left to look for one: the rest of
+    // the string is literal.
     if (!m) {
-      return combine(acc, str, [''], max, maxLength, dropEmpties)
+      return combine(acc, str, [''], max, maxLength, dropEmpties, budget)
+    }
+    if (m.unmatched) {
+      masked = maskUnmatchedOpens(masked, budget)
     }
 
     // no need to expand pre, since it is guaranteed to be free of brace-sets
     const pre = m.pre
+
+    // This set and the rest of the string, literal: for a set that cannot
+    // expand, and for one the step budget runs out on. Once it is overdrawn,
+    // every set still being expanded, at every level, stays literal like this -
+    // otherwise each level above would go on combining, and wrapping and
+    // expanding again, results the budget was too small for.
+    var literal = function () {
+      return combine(
+        acc,
+        pre + '{' + m.body + '}' + m.post,
+        [''],
+        max,
+        maxLength,
+        dropEmpties,
+        budget
+      )
+    }
 
     if (/\$$/.test(pre)) {
       acc = combine(
@@ -41070,35 +41906,37 @@ function expand(
         [''],
         max,
         maxLength,
-        dropEmpties && !m.post.length
+        dropEmpties && !m.post.length,
+        budget
       )
       firstGroup = false
       if (!m.post.length) break
       str = m.post
+      masked = masked.slice(m.end + 1)
       continue
     }
 
-    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
-    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
-    var isSequence = isNumericSequence || isAlphaSequence;
-    var isOptions = m.body.indexOf(',') >= 0;
+    var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body)
+    var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(
+      m.body
+    )
+    var isSequence = isNumericSequence || isAlphaSequence
+    var isOptions = m.body.indexOf(',') >= 0
     if (!isSequence && !isOptions) {
       // {a},b}
-      if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
-        rewrites++;
-        str = m.pre + '{' + m.body + escClose + m.post;
-        isTop = true;
-        continue;
+      if (rewrites < maxRewrites && commaSetFollows(m.post, budget)) {
+        rewrites++
+        str = m.pre + '{' + m.body + escClose + m.post
+        // Taking a `}` away never gives an unmatched `{` a partner, so what
+        // is masked stays unmatched. The `{` it closed can be left without
+        // one, and the next scan masks it.
+        masked =
+          masked.slice(0, m.end) + escClose + masked.slice(m.end + 1)
+        isTop = true
+        continue
       }
       // Nothing here expands, so the whole remaining string is literal.
-      return combine(
-        acc,
-        pre + '{' + m.body + '}' + m.post,
-        [''],
-        max,
-        maxLength,
-        dropEmpties
-      )
+      return literal()
     }
 
     if (firstGroup) {
@@ -41106,27 +41944,59 @@ function expand(
       firstGroup = false
     }
 
-    var values;
+    var values
     if (isSequence) {
-      values = expandSequence(m.body, isAlphaSequence, max, maxLength);
+      values = expandSequence(
+        m.body,
+        isAlphaSequence,
+        max,
+        maxLength,
+        budget
+      )
+      if (!values) {
+        return literal()
+      }
     } else {
-      var n = parseCommaParts(m.body);
+      var n = parseCommaParts(m.body, budget)
+      // The step budget ran out partway through the set.
+      if (!n) {
+        return literal()
+      }
       if (n.length === 1 && n[0] !== undefined) {
         // x{{a,b}}y ==> x{a}y x{b}y
-        n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
+        n = expand(
+          n[0],
+          max,
+          maxLength,
+          maxDepth,
+          depth + 1,
+          maxRewrites,
+          budget,
+          false
+        ).map(embrace)
+        // The step budget ran out expanding the set's only part.
+        if (budget.remaining < 0) {
+          return literal()
+        }
         //XXX is this necessary? Can't seem to hit it in tests.
         /* c8 ignore start */
         if (n.length === 1) {
-          acc = combine(
+          var single = combine(
             acc,
             pre + n[0],
             [''],
             max,
             maxLength,
-            dropEmpties && !m.post.length
+            dropEmpties && !m.post.length,
+            budget
           )
+          if (budget.remaining < 0) {
+            return literal()
+          }
+          acc = single
           if (!m.post.length) break
           str = m.post
+          masked = masked.slice(m.end + 1)
           continue
         }
         /* c8 ignore stop */
@@ -41147,11 +42017,27 @@ function expand(
       values = []
       var valuesLength = 0
       outer: for (var j = 0; j < n.length; j++) {
-        var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false)
+        var expanded = expand(
+          n[j],
+          max,
+          maxLength,
+          maxDepth,
+          depth + 1,
+          maxRewrites,
+          budget,
+          false
+        )
+        // The step budget ran out expanding a member.
+        if (budget.remaining < 0) {
+          return literal()
+        }
         for (var k = 0; k < expanded.length; k++) {
           var v = expanded[k]
           if (dropsEmpties && !v) continue
-          if (values.length >= max || valuesLength + v.length > maxLength) {
+          if (
+            values.length >= max ||
+            valuesLength + v.length > maxLength
+          ) {
             break outer
           }
           values.push(v)
@@ -41160,9 +42046,23 @@ function expand(
       }
     }
 
-    acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length)
+    var next = combine(
+      acc,
+      pre,
+      values,
+      max,
+      maxLength,
+      dropEmpties && !m.post.length,
+      budget
+    )
+    // The step budget ran out combining the set's values in.
+    if (budget.remaining < 0) {
+      return literal()
+    }
+    acc = next
     if (!m.post.length) break
     str = m.post
+    masked = masked.slice(m.end + 1)
   }
 
   return acc
